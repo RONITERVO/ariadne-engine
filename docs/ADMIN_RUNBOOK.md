@@ -277,6 +277,12 @@ prod_UiToQK6ecDGBRj
 
 Cloud Run receives this as `STRIPE_PRODUCT_ID`. Checkout still creates per-session dynamic prices so users can buy different prepaid credit amounts, but every line item now belongs to the dashboard-managed Ariadne usage credits product instead of creating auto-generated products.
 
+Promotion codes:
+
+- Checkout sessions allow Stripe promotion codes.
+- Create 10% off public/new-user codes in Stripe Dashboard when needed.
+- Create 100% off friend codes with normal Stripe promotion-code restrictions. Fully-discounted checkouts still grant the requested Ariadne credits through the `checkout.session.completed` webhook path.
+
 ## Firestore
 
 List indexes:

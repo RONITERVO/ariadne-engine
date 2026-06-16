@@ -126,7 +126,7 @@ Returns prepaid, used, reserved, and remaining credit micros.
 
 ### `POST /v1/billing/checkout-session`
 
-Creates a Stripe Checkout session for Ariadne prepaid credits.
+Creates a Stripe Checkout session for Ariadne prepaid credits. Stripe promotion codes are enabled on the Checkout page.
 
 ```json
 { "amountCents": 1000 }
@@ -134,7 +134,7 @@ Creates a Stripe Checkout session for Ariadne prepaid credits.
 
 ### `POST /v1/webhooks/stripe`
 
-Stripe webhook route. It verifies the raw request body and grants credits idempotently for `payment_intent.succeeded`.
+Stripe webhook route. It verifies the raw request body and grants credits idempotently for `payment_intent.succeeded`. Fully-discounted coupon checkouts can complete without a PaymentIntent, so `checkout.session.completed` also grants credits when the Checkout total is zero.
 
 ## Story repos
 

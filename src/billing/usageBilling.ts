@@ -177,6 +177,7 @@ export class UsageBillingService {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       customer,
+      allow_promotion_codes: true,
       success_url: `${appUrl}/?billing=success`,
       cancel_url: `${appUrl}/?billing=cancel`,
       line_items: [{
@@ -214,16 +215,9 @@ export class UsageBillingService {
 
     const event = stripe.webhooks.constructEvent(rawBody, signature, this.config.stripeWebhookSecret);
     if (event.type === 'payment_intent.succeeded') {
-      const intent = event.data.object as Stripe.PaymentIntent;
-      const uid = String(intent.metadata?.firebaseUid || '');
-      const creditMicros = Math.max(0, Math.floor(Number(intent.metadata?.ariadneCreditMicros) || centsToCreditMicros(intent.amount_received)));
-      if (uid && creditMicros > 0) {
-        await this.grantCredits(uid, creditMicros, `stripe:${event.id}`, {
-          paymentIntentId: intent.id,
-          amount: intent.amount_received,
-          currency: intent.currency
-        });
-      }
+      await this.grantPaymentIntentCredits(event.data.object as Stripe.PaymentIntent, event.id);
+    } else if (event.type === 'checkout.session.completed') {
+      await this.grantFullyDiscountedCheckoutCredits(event.data.object as Stripe.Checkout.Session);
     }
     return { received: true };
   }
@@ -364,6 +358,36 @@ export class UsageBillingService {
     return granted;
   }
 
+  private async grantPaymentIntentCredits(intent: Stripe.PaymentIntent, eventId: string): Promise<void> {
+    const uid = String(intent.metadata?.firebaseUid || '');
+    const creditMicros = readCreditMicros(intent.metadata, centsToCreditMicros(intent.amount_received));
+    if (uid && creditMicros > 0) {
+      await this.grantCredits(uid, creditMicros, `stripe:${eventId}`, {
+        paymentIntentId: intent.id,
+        amount: intent.amount_received,
+        currency: intent.currency
+      });
+    }
+  }
+
+  private async grantFullyDiscountedCheckoutCredits(session: Stripe.Checkout.Session): Promise<void> {
+    if (session.mode !== 'payment' || session.payment_status !== 'paid') return;
+    if ((session.amount_total ?? 0) > 0 || session.payment_intent) return;
+
+    const uid = String(session.metadata?.firebaseUid || '');
+    const creditMicros = readCreditMicros(session.metadata, centsToCreditMicros(session.amount_subtotal ?? 0));
+    if (uid && creditMicros > 0) {
+      await this.grantCredits(uid, creditMicros, `stripe:checkout:${session.id}`, {
+        checkoutSessionId: session.id,
+        amount: session.amount_total ?? 0,
+        amountSubtotal: session.amount_subtotal ?? null,
+        amountDiscount: session.total_details?.amount_discount ?? null,
+        currency: session.currency ?? this.config.currency,
+        discountFullyCovered: true
+      });
+    }
+  }
+
   private async getOrCreateStripeCustomer(user: DecodedIdToken): Promise<string> {
     const userRef = this.db.collection('users').doc(user.uid);
     const snapshot = await userRef.get();
@@ -393,7 +417,7 @@ export class UsageBillingService {
     return customer.id;
   }
 
-  private requireStripe(): Stripe {
+  protected requireStripe(): Stripe {
     if (!this.config.stripeSecretKey) throw new BillingError('Stripe is not configured.', 500, 'stripe_not_configured');
     return new Stripe(this.config.stripeSecretKey);
   }
@@ -441,4 +465,8 @@ function normalizeCheckoutAmount(value: unknown, config: BillingConfig): number 
 
 function centsToCreditMicros(cents: number): number {
   return Math.max(0, Math.floor(cents)) * 10_000;
+}
+
+function readCreditMicros(metadata: Stripe.Metadata | null | undefined, fallback: number): number {
+  return Math.max(0, Math.floor(Number(metadata?.ariadneCreditMicros) || fallback));
 }

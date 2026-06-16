@@ -61,7 +61,9 @@ Client Firestore rules allow users to read only their own user, entitlement, and
 
 ## Billing
 
-Paid users buy prepaid Ariadne credits through Stripe Checkout. `STRIPE_PRODUCT_ID` points Checkout at the dashboard-managed Stripe product for Ariadne credits. Internally, usage is tracked in credit micros, where `1_000_000` credit micros equals one major unit of `BILLING_CURRENCY`.
+Paid users buy prepaid Ariadne credits through Stripe Checkout. `STRIPE_PRODUCT_ID` points Checkout at the dashboard-managed Stripe product for Ariadne credits, and Checkout allows Stripe promotion codes. Internally, usage is tracked in credit micros, where `1_000_000` credit micros equals one major unit of `BILLING_CURRENCY`.
+
+For launch discounts, create Stripe coupons/promotion codes in the Stripe Dashboard. Use percentage-off coupons for public campaigns, such as 10% off for new users. For friends, 100% off promotion codes work too; the webhook grants the full requested Ariadne credits from Checkout metadata when Stripe completes a fully-discounted zero-dollar session.
 
 Gemini Live token issuance reserves and then settles one fixed session charge. The default Live catalog bills every Live session as 30 seconds and the entitlement document enforces at most one active paid Live session per Firebase user.
 
