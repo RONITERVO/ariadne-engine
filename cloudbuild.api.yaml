@@ -4,8 +4,8 @@ substitutions:
   _REGION: europe-west1
   _REPOSITORY: ariadne
   _SERVICE: ariadne-api
-  _APP_URL: https://ariadne-engine.web.app
-  _CORS_ORIGINS: https://ariadne-engine.web.app
+  _APP_URL: https://ariadne-engine-rt.web.app
+  _CORS_ORIGINS: https://ariadne-engine-rt.web.app
   _BILLING_CURRENCY: usd
 
 steps:

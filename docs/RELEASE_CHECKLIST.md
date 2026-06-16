@@ -9,7 +9,7 @@
 - [ ] Set a strict `CORS_ORIGINS` allow-list.
 - [ ] Keep `ARIADNE_ALLOW_MOCK_PROVIDER=false`.
 - [ ] Set `ARIADNE_PAID_USAGE_ENABLED=true` and `ARIADNE_FIREBASE_AUTH_REQUIRED=true`.
-- [ ] Configure Firebase Auth for the hosted frontend.
+- [ ] Configure Firebase Auth for the hosted frontend. The `ariadne-engine-rt` deployment currently uses anonymous Auth; enable Google or another account-linkable provider before relying on cross-device account recovery.
 - [ ] Set `GEMINI_API_KEYS` and server-key rotation limits.
 - [ ] Configure Stripe Checkout and `STRIPE_WEBHOOK_SECRET`.
 - [ ] Confirm `/v1/webhooks/stripe` grants credits idempotently.

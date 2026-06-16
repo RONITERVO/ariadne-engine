@@ -10,7 +10,7 @@ import {
   getFirebaseIdToken,
   isFirebaseConfigured,
   onFirebaseAuthStateChanged,
-  signInWithGoogle,
+  signInFirebase,
   signOutFirebase,
   type FirebaseUser
 } from './firebase';
@@ -157,7 +157,7 @@ els.apiKey.addEventListener('input', () => {
   scheduleBoot();
 });
 els.apiKey.addEventListener('paste', () => window.setTimeout(scheduleBoot, 0));
-els.signIn.addEventListener('click', () => void signInWithGoogle().catch(error => setGateStatus(messageFrom(error))));
+els.signIn.addEventListener('click', () => void signInFirebase().catch(error => setGateStatus(messageFrom(error))));
 els.signOut.addEventListener('click', () => void signOutFirebase().catch(error => setGateStatus(messageFrom(error))));
 els.buyCredits.addEventListener('click', () => void buyCredits());
 

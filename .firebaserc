@@ -1,5 +1,5 @@
 {
   "projects": {
-    "default": "ariadne-engine"
+    "default": "ariadne-engine-rt"
   }
 }

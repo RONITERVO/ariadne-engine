@@ -9,3 +9,4 @@ coverage/
 *.tsbuildinfo
 .vite/
 web/dist/
+.firebase/
