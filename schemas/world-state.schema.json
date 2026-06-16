@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ariadne.engine/schemas/world-state.schema.json",
+  "title": "WorldState",
+  "type": "object",
+  "required": ["branchId", "headTurnId", "scene", "entities", "facts", "threads"],
+  "properties": {
+    "branchId": { "type": "string" },
+    "headTurnId": { "type": "string" },
+    "scene": {
+      "type": "object",
+      "required": ["locationId", "summary", "presentEntityIds"],
+      "properties": {
+        "locationId": { "type": "string" },
+        "summary": { "type": "string" },
+        "presentEntityIds": { "type": "array", "items": { "type": "string" } },
+        "tone": { "type": "string" }
+      }
+    },
+    "entities": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["id", "kind", "name", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string", "enum": ["player", "character", "item", "location", "faction", "concept"] },
+          "name": { "type": "string" },
+          "status": { "type": "string" },
+          "attributes": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    "facts": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "threads": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+    "contextBudget": {
+      "type": "object",
+      "properties": {
+        "estimatedTokens": { "type": "integer" },
+        "safeBudgetTokens": { "type": "integer" },
+        "closureMode": { "type": "boolean" },
+        "remainingTurnBudget": { "type": "integer" }
+      }
+    }
+  }
+}

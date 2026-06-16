@@ -1,0 +1,54 @@
+{
+  "hosting": {
+    "public": "web/dist",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(js|css|woff2|png|jpg|jpeg|svg|webp)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=31536000, immutable"
+          }
+        ]
+      },
+      {
+        "source": "/index.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      }
+    ],
+    "rewrites": [
+      {
+        "source": "/health",
+        "run": {
+          "serviceId": "ariadne-api",
+          "region": "europe-west1"
+        }
+      },
+      {
+        "source": "/v1/**",
+        "run": {
+          "serviceId": "ariadne-api",
+          "region": "europe-west1"
+        }
+      },
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

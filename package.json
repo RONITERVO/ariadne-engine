@@ -1,0 +1,47 @@
+{
+  "name": "ariadne-engine",
+  "version": "0.3.0",
+  "description": "Hands-free, BYOK, branchable AI story engine with transcript-only voice loop",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server/index.ts",
+    "dev:web": "vite web --host 0.0.0.0",
+    "build": "npm run build:api && npm run build:web",
+    "start": "node dist/server/index.js",
+    "typecheck": "npm run typecheck:api && npm run typecheck:web",
+    "test": "node --import tsx --test \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm test && npm run build && node scripts/check-release.mjs",
+    "build:api": "tsc -p tsconfig.json",
+    "build:web": "vite build web",
+    "typecheck:api": "tsc --noEmit",
+    "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
+    "deploy:api": "gcloud builds submit --config cloudbuild.api.yaml",
+    "deploy:firebase": "npm run build:web && firebase deploy --only hosting,firestore"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.0",
+    "@fastify/helmet": "^13.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "@google/genai": "^1.0.0",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.0.0",
+    "fastify-raw-body": "^5.0.0",
+    "firebase": "^12.14.0",
+    "firebase-admin": "^14.0.0",
+    "pg": "^8.13.1",
+    "stripe": "^22.2.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.8.3",
+    "vite": "^8.0.16"
+  }
+}

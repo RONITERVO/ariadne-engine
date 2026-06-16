@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ariadne.engine/schemas/story-event.schema.json",
+  "title": "StoryEventPatch",
+  "type": "object",
+  "required": ["turnId", "events", "facts", "threads", "warnings"],
+  "properties": {
+    "turnId": { "type": "string" },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["eventType", "summary", "participants", "certainty"],
+        "properties": {
+          "eventType": {
+            "type": "string",
+            "enum": [
+              "PLAYER_MOVED",
+              "CHARACTER_APPEARED",
+              "CHARACTER_LEFT",
+              "ITEM_GAINED",
+              "ITEM_LOST",
+              "SECRET_REVEALED",
+              "PROMISE_MADE",
+              "PROMISE_FULFILLED",
+              "PROMISE_BROKEN",
+              "RELATIONSHIP_CHANGED",
+              "COMBAT_STARTED",
+              "COMBAT_ENDED",
+              "INJURY_APPLIED",
+              "THREAD_OPENED",
+              "THREAD_RESOLVED",
+              "WORLD_RULE_ESTABLISHED",
+              "OTHER"
+            ]
+          },
+          "summary": { "type": "string" },
+          "participants": { "type": "array", "items": { "type": "string" } },
+          "locationId": { "type": ["string", "null"] },
+          "certainty": { "type": "string", "enum": ["canon", "rumored", "unknown"] },
+          "metadata": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    "facts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["subjectId", "predicate", "value", "certainty"],
+        "properties": {
+          "subjectId": { "type": "string" },
+          "predicate": { "type": "string" },
+          "value": {},
+          "certainty": { "type": "string", "enum": ["canon", "rumored", "unknown"] },
+          "knownBy": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["threadId", "status", "summary"],
+        "properties": {
+          "threadId": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "advanced", "resolved", "abandoned"] },
+          "summary": { "type": "string" },
+          "priority": { "type": "integer", "minimum": 1, "maximum": 5 }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "type", "message"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["low", "medium", "high"] },
+          "type": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }
+  }
+}

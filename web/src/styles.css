@@ -1,0 +1,160 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f4f4f1;
+  background: #000;
+  line-height: 1.5;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #000;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.transcript-shell {
+  width: min(980px, calc(100% - 28px));
+  min-height: 100vh;
+  margin: 0 auto;
+  display: grid;
+  align-content: center;
+}
+
+.key-gate {
+  width: min(520px, 100%);
+  margin: 0 auto;
+  padding: 28px 0;
+}
+
+.key-gate.is-hidden { display: none; }
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: #a7a7a0;
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(2rem, 8vw, 4rem);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.copy,
+.status {
+  max-width: 42rem;
+  color: #bdbdb6;
+  font-size: 1rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 22px 0 12px;
+}
+
+button {
+  min-height: 42px;
+  border: 1px solid #3a3a36;
+  border-radius: 8px;
+  padding: 0 14px;
+  color: #f4f4f1;
+  background: #151513;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #6f6f66;
+  background: #20201d;
+}
+
+input {
+  width: 100%;
+  border: 1px solid #2d2d2a;
+  border-radius: 8px;
+  padding: 14px 15px;
+  color: #f4f4f1;
+  background: #080808;
+  outline: none;
+}
+
+input:focus {
+  border-color: #c4c4ba;
+}
+
+.transcript {
+  display: none;
+  align-self: stretch;
+  min-height: 100vh;
+  padding: 28px 0;
+  overflow: auto;
+}
+
+.transcript.is-live {
+  display: grid;
+  align-content: end;
+  gap: 12px;
+}
+
+.line {
+  max-width: 78ch;
+  padding: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.line.user {
+  justify-self: end;
+  color: #f4f4f1;
+  text-align: right;
+}
+
+.line.model {
+  justify-self: start;
+  color: #d7d7d0;
+}
+
+.line.system {
+  justify-self: center;
+  color: #777770;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.line.interim {
+  opacity: 0.65;
+}
+
+.role {
+  display: block;
+  margin-bottom: 2px;
+  color: #777770;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+@media (max-width: 640px) {
+  .transcript-shell {
+    width: min(100% - 20px, 980px);
+  }
+
+  .transcript {
+    padding: 18px 0;
+  }
+
+  .line {
+    max-width: 92%;
+  }
+}

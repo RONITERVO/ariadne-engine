@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ariadne Engine</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main class="transcript-shell" aria-label="Ariadne realtime transcript">
+      <section id="key-gate" class="key-gate" aria-labelledby="key-title">
+        <p class="eyebrow">Ariadne Engine</p>
+        <h1 id="key-title">Enter the void.</h1>
+        <p class="copy">Sign in for credits or paste a Gemini key.</p>
+        <div class="actions">
+          <button id="sign-in" type="button">Sign in</button>
+          <button id="sign-out" type="button" hidden>Sign out</button>
+          <button id="buy-credits" type="button" hidden>Buy credits</button>
+        </div>
+        <input
+          id="api-key"
+          type="password"
+          placeholder="Google AI Studio / Gemini API key"
+          autocomplete="off"
+          spellcheck="false"
+          autofocus
+        />
+        <p id="gate-status" class="status" role="status"></p>
+      </section>
+
+      <section id="transcript" class="transcript" aria-live="polite" aria-label="Realtime transcript"></section>
+    </main>
+
+    <script type="module" src="/src/app.ts"></script>
+  </body>
+</html>
