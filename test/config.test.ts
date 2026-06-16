@@ -26,7 +26,8 @@ test('production config accepts firestore plus strict CORS, server keys, and Str
     APP_URL: 'https://app.example',
     STRIPE_SECRET_KEY: 'sk_test_example',
     STRIPE_WEBHOOK_SECRET: 'whsec_example',
-    STRIPE_PRODUCT_ID: 'prod_example'
+    STRIPE_PRODUCT_ID: 'prod_example',
+    ARIADNE_ADMIN_EMAILS: 'Owner@Example.com, ops@example.com '
   } as NodeJS.ProcessEnv);
 
   assert.equal(config.storage, 'firestore');
@@ -35,6 +36,7 @@ test('production config accepts firestore plus strict CORS, server keys, and Str
   assert.equal(config.paidUsageEnabled, true);
   assert.equal(config.firebaseAuthRequired, true);
   assert.equal(config.billing.stripeProductId, 'prod_example');
+  assert.deepEqual(config.adminEmails, ['owner@example.com', 'ops@example.com']);
 });
 
 test('production config rejects whitespace-only required secrets and URLs', () => {

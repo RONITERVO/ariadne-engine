@@ -36,6 +36,7 @@ export interface BranchMutationLease {
   leaseId: string;
   repoId: string;
   branchId: string;
+  ownerUserId?: string | null;
   expiresAt: string;
 }
 

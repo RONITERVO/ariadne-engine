@@ -19,6 +19,10 @@ input {
   font: inherit;
 }
 
+table {
+  border-collapse: collapse;
+}
+
 .transcript-shell {
   width: min(980px, calc(100% - 28px));
   min-height: 100vh;
@@ -145,6 +149,150 @@ input:focus {
   text-transform: uppercase;
 }
 
+.admin-shell {
+  width: min(1440px, calc(100% - 28px));
+  margin: 0 auto;
+  padding: 24px 0 48px;
+}
+
+.admin-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.admin-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.42fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.admin-panel {
+  min-width: 0;
+  border-top: 1px solid #30302d;
+  padding-top: 14px;
+}
+
+.admin-panel h2,
+.admin-doc-section h3 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.admin-table-wrap,
+.admin-detail {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  min-width: 640px;
+  color: #f4f4f1;
+  font-size: 0.88rem;
+}
+
+.admin-table th,
+.admin-table td {
+  border-bottom: 1px solid #272724;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-table th {
+  color: #a7a7a0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.admin-table small,
+.admin-muted {
+  display: block;
+  color: #8c8c84;
+  font-size: 0.78rem;
+}
+
+.admin-link-button {
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  color: #f4f4f1;
+  background: transparent;
+  font-weight: 700;
+  text-align: left;
+}
+
+.admin-link-button:hover {
+  background: transparent;
+  color: #c8e6ff;
+}
+
+.admin-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.admin-metric {
+  min-width: 0;
+  border-top: 1px solid #2d2d2a;
+  padding-top: 8px;
+}
+
+.admin-metric span {
+  display: block;
+  color: #8c8c84;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.admin-metric strong {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 0.92rem;
+}
+
+.admin-doc-section {
+  margin-top: 18px;
+  border-top: 1px solid #30302d;
+  padding-top: 14px;
+}
+
+.admin-doc-table {
+  min-width: 840px;
+}
+
+.admin-doc-table pre {
+  max-width: 560px;
+  max-height: 320px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid #272724;
+  border-radius: 6px;
+  color: #d7d7d0;
+  background: #080808;
+  font-size: 0.78rem;
+}
+
+summary {
+  cursor: pointer;
+}
+
 @media (max-width: 640px) {
   .transcript-shell {
     width: min(100% - 20px, 980px);
@@ -156,5 +304,28 @@ input:focus {
 
   .line {
     max-width: 92%;
+  }
+
+  .admin-shell {
+    width: min(100% - 20px, 1440px);
+    padding-top: 18px;
+  }
+
+  .admin-header,
+  .admin-layout {
+    display: block;
+  }
+
+  .admin-actions {
+    justify-content: flex-start;
+    margin-top: 14px;
+  }
+
+  .admin-panel {
+    margin-top: 18px;
+  }
+
+  .admin-summary {
+    grid-template-columns: 1fr;
   }
 }

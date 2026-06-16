@@ -20,6 +20,7 @@ cd D:\Projects\Games\ariadne-engine\ariadne-engine
 
 ## Admin Links
 
+- Ariadne admin dashboard: https://ariadne-engine-rt.firebaseapp.com/admin
 - Firebase project overview: https://console.firebase.google.com/project/ariadne-engine-rt/overview
 - Firebase Authentication users: https://console.firebase.google.com/project/ariadne-engine-rt/authentication/users
 - Firebase sign-in providers: https://console.firebase.google.com/project/ariadne-engine-rt/authentication/providers
@@ -289,6 +290,16 @@ Promotion codes:
 - Create 100% off friend codes with normal Stripe promotion-code restrictions. Fully-discounted checkouts still grant the requested Ariadne credits through the `checkout.session.completed` webhook path.
 
 ## Firestore
+
+Use the Ariadne admin dashboard before using the Firestore data tab for user support. The dashboard groups documents by Firebase UID and shows the user profile, Stripe customer ID, credit entitlement, usage records, story repos, branches, turns, patches, warnings, and locks together.
+
+Firestore is the raw storage inspector. Every story operational document should include `ownerUserId` so a document can be mapped back to the exact Firebase Auth user without manually joining through `storyRepos`.
+
+Backfill launch-test data after deploying ownership-field changes:
+
+```powershell
+npm run admin:backfill-owner-user-id
+```
 
 List indexes:
 
