@@ -95,6 +95,7 @@ type LiveTurn = {
   sentThroughMs: number;
   tailTimer: number | null;
   closeTimer: number | null;
+  emptyTurnTimer: number | null;
   expectedHeadTurnId: string | null;
   userTranscript: string;
   assistantTranscript: string;
@@ -115,6 +116,7 @@ const PRE_ROLL_MS = 2000;
 const POST_ROLL_MS = 2000;
 const SPEECH_IDLE_MS = 1500;
 const PCM_BUFFER_MS = 10_000;
+const EMPTY_LIVE_TURN_TIMEOUT_MS = 12_000;
 
 const state: RepoState = {
   repoId: sessionStorage.getItem(STORAGE.repoId),
@@ -195,7 +197,6 @@ async function boot(): Promise<void> {
     await startMicrophoneBuffer();
     startTranscriptOnlyMode();
     startRecognitionLoop();
-    addLine('system', 'listening');
   } catch (error) {
     setGateStatus(messageFrom(error));
   } finally {
@@ -292,6 +293,7 @@ function startRecognitionLoop(): void {
   recognition.maxAlternatives = 1;
   recognition.onresult = onSpeechResult;
   recognition.onerror = event => {
+    if (event.error === 'no-speech' || event.error === 'aborted') return;
     const label = event.error ? `speech recognition: ${event.error}` : 'speech recognition interrupted';
     addLine('system', event.message ? `${label} ${event.message}` : label);
   };
@@ -315,10 +317,10 @@ function onSpeechResult(event: SpeechRecognitionEventLike): void {
   }
 
   if (!heardText) return;
+  const triggerText = finalText || heardText;
+  if (!shouldStartLiveTurn(triggerText, Boolean(finalText))) return;
+
   void ensureLiveTurnStarted().then(() => {
-    if (activeTurn && finalText) {
-      activeTurn.userTranscript = appendTranscript(activeTurn.userTranscript, finalText);
-    }
     scheduleTurnTail();
   });
 }
@@ -360,8 +362,7 @@ async function startLiveTurn(): Promise<void> {
             automaticActivityDetection: { disabled: true },
             activityHandling: ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
             turnCoverage: TurnCoverage.TURN_INCLUDES_ALL_INPUT
-          },
-          explicitVadSignal: true
+          }
         },
         callbacks: {
           onmessage: message => onLiveMessage(message),
@@ -376,6 +377,7 @@ async function startLiveTurn(): Promise<void> {
       sentThroughMs: preRollFromMs,
       tailTimer: null,
       closeTimer: null,
+      emptyTurnTimer: null,
       expectedHeadTurnId: token.branchHeadTurnId,
       userTranscript: '',
       assistantTranscript: '',
@@ -394,15 +396,21 @@ async function startLiveTurn(): Promise<void> {
 }
 
 function scheduleTurnTail(): void {
-  if (!activeTurn) return;
-  if (activeTurn.tailTimer) window.clearTimeout(activeTurn.tailTimer);
-  activeTurn.tailTimer = window.setTimeout(() => {
-    if (!activeTurn) return;
-    activeTurn.closeTimer = window.setTimeout(() => {
-      if (!activeTurn) return;
+  const turn = activeTurn;
+  if (!turn) return;
+  if (turn.tailTimer) window.clearTimeout(turn.tailTimer);
+  turn.tailTimer = window.setTimeout(() => {
+    if (activeTurn !== turn) return;
+    turn.closeTimer = window.setTimeout(() => {
+      if (activeTurn !== turn) return;
       sendLiveChunksThrough(Date.now());
-      activeTurn.session.sendRealtimeInput({ activityEnd: {} });
-      activeTurn.session.sendRealtimeInput({ audioStreamEnd: true });
+      turn.session.sendRealtimeInput({ activityEnd: {} });
+      turn.session.sendRealtimeInput({ audioStreamEnd: true });
+      turn.emptyTurnTimer = window.setTimeout(() => {
+        if (activeTurn === turn && (!turn.userTranscript.trim() || !turn.assistantTranscript.trim())) {
+          void finalizeLiveTurn(turn);
+        }
+      }, EMPTY_LIVE_TURN_TIMEOUT_MS);
     }, POST_ROLL_MS);
   }, SPEECH_IDLE_MS);
 }
@@ -450,6 +458,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   activeTurn = null;
   if (turn.tailTimer) window.clearTimeout(turn.tailTimer);
   if (turn.closeTimer) window.clearTimeout(turn.closeTimer);
+  if (turn.emptyTurnTimer) window.clearTimeout(turn.emptyTurnTimer);
 
   try {
     turn.session.close();
@@ -591,6 +600,13 @@ function appendTranscript(existing: string, delta: string): string {
   if (!existing) return clean;
   if (existing.endsWith(clean)) return existing;
   return `${existing} ${clean}`.replace(/\s+/g, ' ').trim();
+}
+
+function shouldStartLiveTurn(text: string, isFinal: boolean): boolean {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  if (!/[A-Za-z0-9]/.test(clean)) return false;
+  if (isFinal) return clean.length >= 2;
+  return clean.length >= 12 && clean.split(' ').length >= 2;
 }
 
 function updateOrCreateLine(existing: HTMLElement | null, role: 'user' | 'model' | 'system', text: string, interim: boolean): HTMLElement {
