@@ -12,7 +12,7 @@
 - [ ] Configure Firebase Google Auth for the hosted frontend and confirm anonymous Auth is disabled.
 - [ ] Set `GEMINI_API_KEYS` and server-key rotation limits.
 - [ ] Configure Stripe Checkout, `STRIPE_WEBHOOK_SECRET`, and dashboard-managed `STRIPE_PRODUCT_ID`.
-- [ ] Confirm `/v1/webhooks/stripe` grants credits idempotently.
+- [ ] Confirm `/v1/webhooks/stripe` subscribes to `payment_intent.succeeded` and `checkout.session.completed`, then grants credits idempotently.
 - [ ] Confirm overlapping turn requests on the same branch return conflict instead of creating competing heads.
 - [ ] Confirm Live turns include `expectedHeadTurnId` and stale Live commits are rejected.
 - [ ] Add a user-facing cost warning for BYOK Gemini usage if you expose anything beyond the transcript-only developer surface.

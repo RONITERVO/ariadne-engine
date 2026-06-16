@@ -269,6 +269,11 @@ https://ariadne-engine-rt.web.app/v1/webhooks/stripe
 
 Use Stripe Dashboard to manage webhook endpoints, payment method domains, payments, customers, and Checkout sessions. The backend reads `STRIPE_WEBHOOK_SECRET` from Secret Manager; if the endpoint secret changes in Stripe, add a new Secret Manager version and redeploy the API.
 
+The enabled Ariadne webhook endpoint must subscribe to:
+
+- `payment_intent.succeeded`
+- `checkout.session.completed`
+
 Dashboard-managed Stripe product:
 
 ```text
