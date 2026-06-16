@@ -14,10 +14,8 @@ export interface AppConfig {
   host: string;
   logLevel: string;
   corsOrigins: string[] | true;
-  storage: 'memory' | 'postgres' | 'firestore';
-  databaseUrl?: string;
+  storage: 'memory' | 'firestore';
   allowMockProvider: boolean;
-  allowUnsafeProduction: boolean;
   defaultProvider: 'google-ai-studio';
   actorModel: string;
   canonizerModel: string;
@@ -40,16 +38,10 @@ export interface AppConfig {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const storage = readEnum(env.ARIADNE_STORAGE, ['memory', 'postgres', 'firestore'] as const, 'memory');
-  const databaseUrl = env.DATABASE_URL;
-  if (storage === 'postgres' && !databaseUrl) {
-    throw new Error('DATABASE_URL is required when ARIADNE_STORAGE=postgres');
-  }
-
+  const storage = readEnum(env.ARIADNE_STORAGE, ['memory', 'firestore'] as const, 'memory');
   const appEnv = env.NODE_ENV ?? 'development';
   const corsOrigins = parseCorsOrigins(env.CORS_ORIGINS ?? 'http://localhost:5173,http://127.0.0.1:5173');
   const allowMockProvider = readBool(env.ARIADNE_ALLOW_MOCK_PROVIDER, false);
-  const allowUnsafeProduction = readBool(env.ARIADNE_ALLOW_UNSAFE_PRODUCTION, false);
   const modelCatalog = loadModelCatalog(env.ARIADNE_MODEL_CATALOG_JSON);
   const actorModel = env.ARIADNE_ACTOR_MODEL ?? 'gemini-flash-lite-latest';
   const canonizerModel = env.ARIADNE_CANONIZER_MODEL ?? actorModel;
@@ -79,7 +71,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     liveSessionTtlSeconds: readInt(env.ARIADNE_LIVE_SESSION_TTL_SECONDS, 75, { min: 30, max: 600 })
   };
 
-  if (appEnv === 'production' && !allowUnsafeProduction) {
+  if (appEnv === 'production') {
     assertProductionSafe({ storage, corsOrigins, allowMockProvider, paidUsageEnabled, firebaseAuthRequired, geminiServerKeys });
   }
 
@@ -90,9 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     logLevel: env.LOG_LEVEL ?? 'info',
     corsOrigins,
     storage,
-    databaseUrl,
     allowMockProvider,
-    allowUnsafeProduction,
     defaultProvider: 'google-ai-studio',
     actorModel,
     canonizerModel,
@@ -129,7 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 }
 
 function assertProductionSafe(input: {
-  storage: 'memory' | 'postgres' | 'firestore';
+  storage: 'memory' | 'firestore';
   corsOrigins: string[] | true;
   allowMockProvider: boolean;
   paidUsageEnabled: boolean;
@@ -144,7 +134,7 @@ function assertProductionSafe(input: {
   if (!input.firebaseAuthRequired) errors.push('ARIADNE_FIREBASE_AUTH_REQUIRED=true is required in production');
   if (!input.geminiServerKeys.length) errors.push('GEMINI_API_KEYS is required in production');
   if (errors.length) {
-    throw new Error(`${errors.join('; ')}. Set ARIADNE_ALLOW_UNSAFE_PRODUCTION=true only for an isolated non-public smoke test.`);
+    throw new Error(errors.join('; '));
   }
 }
 
@@ -171,5 +161,9 @@ function readInt(value: string | undefined, fallback: number, bounds: { min?: nu
 }
 
 function readEnum<const T extends readonly string[]>(value: string | undefined, allowed: T, fallback: T[number]): T[number] {
-  return allowed.includes(value ?? '') ? (value as T[number]) : fallback;
+  if (!value) return fallback;
+  if (!allowed.includes(value)) {
+    throw new Error(`Invalid value "${value}". Expected one of: ${allowed.join(', ')}`);
+  }
+  return value as T[number];
 }

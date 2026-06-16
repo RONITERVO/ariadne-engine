@@ -8,7 +8,6 @@
 - [ ] Deploy `firebase.json`, `firestore.rules`, and `firestore.indexes.json`.
 - [ ] Set a strict `CORS_ORIGINS` allow-list.
 - [ ] Keep `ARIADNE_ALLOW_MOCK_PROVIDER=false`.
-- [ ] Keep `ARIADNE_ALLOW_UNSAFE_PRODUCTION=false` on any public deployment.
 - [ ] Set `ARIADNE_PAID_USAGE_ENABLED=true` and `ARIADNE_FIREBASE_AUTH_REQUIRED=true`.
 - [ ] Configure Firebase Auth for the hosted frontend.
 - [ ] Set `GEMINI_API_KEYS` and server-key rotation limits.
@@ -21,7 +20,7 @@
 - [ ] Add deletion/export workflows for user data.
 - [ ] Add abuse reporting and content moderation policy appropriate to your target audience.
 - [ ] Add observability: streaming latency, provider errors, canonizer schema failures, continuity warnings, branch-fork success rate.
-- [ ] Add migration/export tooling before changing Firestore document shapes after production launch.
+- [ ] Add export/backfill tooling before changing Firestore document shapes after production launch.
 
 ## Before beta
 
@@ -36,7 +35,6 @@
 ## Before 1.0
 
 - [ ] Publish a stable story archive/export format.
-- [ ] Add migration tooling for model/provider changes.
 - [ ] Add admin tools for stuck canonization jobs and continuity repair.
 - [ ] Add privacy review, security review, and legal review.
 - [ ] Provide public docs for self-hosting and key handling.

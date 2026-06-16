@@ -110,7 +110,6 @@ The server key pool rotates configured `GEMINI_API_KEYS` by stable user hash, li
 ### 9. Stores
 
 - `InMemoryStoryStore`: local development and tests.
-- `PostgresStoryStore`: durable storage using `db/schema.sql`.
 - `FirestoreStoryStore`: Firebase production storage.
 
 ## Persistence model

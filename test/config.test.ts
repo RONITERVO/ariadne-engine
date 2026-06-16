@@ -31,3 +31,13 @@ test('production config accepts firestore plus strict CORS and server keys', () 
   assert.equal(config.paidUsageEnabled, true);
   assert.equal(config.firebaseAuthRequired, true);
 });
+
+test('config rejects removed storage modes', () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        ARIADNE_STORAGE: 'postgres'
+      } as NodeJS.ProcessEnv),
+    /Invalid value "postgres".*memory, firestore/
+  );
+});

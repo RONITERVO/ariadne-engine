@@ -13,8 +13,8 @@ test('extracts provider key from custom header', () => {
   assert.equal(extractProviderKey({ 'x-ariadne-provider-key': 'mock-local-dev-key' }), 'mock-local-dev-key');
 });
 
-test('extracts provider key from bearer auth', () => {
-  assert.equal(extractProviderKey({ authorization: 'Bearer mock-local-dev-key' }), 'mock-local-dev-key');
+test('does not accept provider keys from bearer auth', () => {
+  assert.throws(() => extractProviderKey({ authorization: 'Bearer mock-local-dev-key' }), ProviderKeyError);
 });
 
 test('rejects missing provider key', () => {
@@ -23,7 +23,7 @@ test('rejects missing provider key', () => {
 
 test('rejects provider keys with whitespace', () => {
   assert.throws(() => extractProviderKey({ 'x-ariadne-provider-key': ' mock-local-dev-key' }), ProviderKeyError);
-  assert.throws(() => extractProviderKey({ authorization: 'Bearer mock-local-dev-key ' }), ProviderKeyError);
+  assert.throws(() => extractProviderKey({ 'x-ariadne-provider-key': 'mock-local-dev-key ' }), ProviderKeyError);
 });
 
 test('rejects provider secrets outside headers', () => {
@@ -35,5 +35,5 @@ test('rejects provider secrets outside headers', () => {
 test('fingerprint and redaction do not expose full key', () => {
   const key = 'mock-local-dev-key';
   assert.equal(keyFingerprint(key).length, 16);
-  assert.equal(redactKey(key), 'mock…-key');
+  assert.equal(redactKey(key), 'mock...-key');
 });

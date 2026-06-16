@@ -5,7 +5,6 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import websocket from '@fastify/websocket';
 import rawBody from 'fastify-raw-body';
 import { ZodError, type ZodSchema } from 'zod';
 import type { DecodedIdToken } from 'firebase-admin/auth';
@@ -19,7 +18,6 @@ import { BillingError, UsageBillingService, type UsageReservation } from '../bil
 import {
   extractOptionalProviderKey,
   extractProviderKey,
-  hasProviderKeyHeader,
   hasExplicitProviderKeyHeader,
   keyFingerprint,
   ProviderKeyError,
@@ -28,7 +26,6 @@ import {
 } from '../security/providerKeys.js';
 import { FirestoreStoryStore } from '../storage/firestoreStoryStore.js';
 import { InMemoryStoryStore } from '../storage/inMemoryStoryStore.js';
-import { createPostgresStoryStore } from '../storage/postgresStoryStore.js';
 import type { StoryStore } from '../storage/storyStore.js';
 import { StoreError } from '../storage/storyStore.js';
 import { StoryService, type ContinueStoryStreamEvent } from '../application/storyService.js';
@@ -95,11 +92,9 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     bodyLimit: config.bodyLimitBytes
   });
 
-  const store = deps.store ?? (config.storage === 'postgres'
-    ? await createPostgresStoryStore(config.databaseUrl!)
-    : config.storage === 'firestore'
-      ? new FirestoreStoryStore()
-      : new InMemoryStoryStore());
+  const store = deps.store ?? (config.storage === 'firestore'
+    ? new FirestoreStoryStore()
+    : new InMemoryStoryStore());
   const providers = deps.providers ?? new ProviderRegistry(config.allowMockProvider);
   const billing = deps.billing ?? new UsageBillingService(config.billing);
   const keyPool = deps.keyPool ?? new GeminiServerKeyPool(config.geminiServerKeys, config.geminiKeyPool);
@@ -125,8 +120,6 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     encoding: 'utf8',
     runFirst: true
   });
-  await app.register(websocket);
-
   app.addHook('preValidation', async request => {
     rejectProviderSecretsInQuery(request.query);
     rejectProviderSecretsInBody(request.body);
@@ -439,21 +432,6 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     }
   });
 
-  // Backwards-compatible aliases from the original handoff.
-  app.post('/repos', async (request, reply) => app.inject({ method: 'POST', url: '/v1/repos', payload: request.body as object }).then(r => reply.code(r.statusCode).headers(r.headers).send(r.body)));
-  app.post('/branches/fork', async (request, reply) => app.inject({ method: 'POST', url: '/v1/branches/fork', payload: request.body as object }).then(r => reply.code(r.statusCode).headers(r.headers).send(r.body)));
-  app.post('/sessions/realtime', async (_request, reply) => {
-    return reply.code(410).send({
-      error: 'route_replaced',
-      message: 'Use POST /v1/provider/gemini/live-token for Gemini Live ephemeral tokens.'
-    });
-  });
-
-  app.get('/ws', { websocket: true }, socket => {
-    socket.send(JSON.stringify({ type: 'hello', message: 'Ariadne websocket placeholder. Use Gemini Live token endpoint for production realtime voice.' }));
-    socket.close();
-  });
-
   return app;
 }
 
@@ -572,14 +550,7 @@ async function resolveProviderExecution(
 }
 
 function extractByokProviderKey(request: FastifyRequest): string | undefined {
-  const explicit = extractOptionalProviderKey(request.headers, { allowBearer: false });
-  if (explicit) return explicit;
-
-  const bearer = getBearerToken(request.headers.authorization);
-  if (bearer && !looksLikeJwt(bearer)) {
-    return extractOptionalProviderKey(request.headers, { allowBearer: true });
-  }
-  return undefined;
+  return extractOptionalProviderKey(request.headers);
 }
 
 async function settleUsageReservation(reservation: UsageReservation | null, charge: UsageCharge): Promise<void> {

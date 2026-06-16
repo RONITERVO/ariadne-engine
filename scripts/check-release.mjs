@@ -7,9 +7,7 @@ const required = [
   '.env.example',
   'package-lock.json',
   'Dockerfile',
-  'docker-compose.yml',
   'cloudbuild.api.yaml',
-  'db/schema.sql',
   'firebase.json',
   'firestore.rules',
   'firestore.indexes.json',
@@ -57,6 +55,40 @@ for (const phrase of ['ariadne-api', 'ARIADNE_STORAGE=firestore', 'GEMINI_API_KE
   if (!cloudbuild.includes(phrase)) {
     console.error(`Cloud Run deploy config is missing: ${phrase}`);
     process.exit(1);
+  }
+}
+
+const forbiddenFiles = [
+  'docker-compose.yml',
+  'db/schema.sql',
+  'src/storage/postgresStoryStore.ts',
+  'src/adapters/openaiRealtime.placeholder.ts',
+  'src/adapters/realtimeVoice.ts'
+];
+const presentForbiddenFiles = forbiddenFiles.filter(path => existsSync(path));
+if (presentForbiddenFiles.length) {
+  console.error(`Legacy files should not exist:\n${presentForbiddenFiles.map(path => `- ${path}`).join('\n')}`);
+  process.exit(1);
+}
+
+const packageJson = readFileSync('package.json', 'utf8');
+for (const phrase of ['@fastify/websocket', '"pg"', '@types/pg']) {
+  if (packageJson.includes(phrase)) {
+    console.error(`package.json still includes legacy dependency: ${phrase}`);
+    process.exit(1);
+  }
+}
+
+for (const [label, contents] of [
+  ['server app', app],
+  ['README', readme],
+  ['provider key helper', readFileSync('src/security/providerKeys.ts', 'utf8')]
+]) {
+  for (const phrase of ['sessions/realtime', 'Backwards-compatible', 'Authorization: Bearer <key>', 'ARIADNE_ALLOW_UNSAFE_PRODUCTION']) {
+    if (contents.includes(phrase)) {
+      console.error(`${label} still includes legacy phrase: ${phrase}`);
+      process.exit(1);
+    }
   }
 }
 

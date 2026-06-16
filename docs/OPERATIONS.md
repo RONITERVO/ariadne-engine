@@ -9,7 +9,6 @@ NODE_ENV=production
 ARIADNE_STORAGE=firestore
 CORS_ORIGINS=https://your-app.example
 ARIADNE_ALLOW_MOCK_PROVIDER=false
-ARIADNE_ALLOW_UNSAFE_PRODUCTION=false
 ARIADNE_PAID_USAGE_ENABLED=true
 ARIADNE_FIREBASE_AUTH_REQUIRED=true
 GEMINI_API_KEYS=...
@@ -18,7 +17,7 @@ STRIPE_WEBHOOK_SECRET=...
 APP_URL=https://your-app.example
 ```
 
-`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, and missing server Gemini keys. `ARIADNE_ALLOW_UNSAFE_PRODUCTION=true` exists only for isolated smoke tests and should not be used on public deployments.
+`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, and missing server Gemini keys.
 
 ## Firebase Release Shape
 
@@ -58,7 +57,7 @@ Client Firestore rules allow users to read only their own user, entitlement, and
 
 Paid users buy prepaid Ariadne credits through Stripe Checkout. Internally, usage is tracked in credit micros, where `1_000_000` credit micros equals one major unit of `BILLING_CURRENCY`.
 
-Gemini Live token issuance reserves and then settles one fixed session charge. The default Live catalog bills every token as a 30 second session and the entitlement document enforces at most one active paid Live session per Firebase user.
+Gemini Live token issuance reserves and then settles one fixed session charge. The default Live catalog bills every Live session as 30 seconds and the entitlement document enforces at most one active paid Live session per Firebase user.
 
 Normal Gemini model calls reserve credits before the call and settle from Gemini `usageMetadata` after completion. BYOK requests bypass Ariadne billing and use the caller's provider key. On hosted Firebase deployments, BYOK users still sign in so story repos are owned and private; BYOK means no Ariadne credits are consumed.
 
@@ -80,17 +79,9 @@ The frontend API base defaults to `http://localhost:3000` when Vite serves on po
 
 For a production-style single-process deployment, run `npm run build`; the Fastify API serves the built transcript shell from `/` and immutable Vite assets from `/assets/*`. The Docker image copies `web/dist` for this path.
 
-## Database
+## Persistence
 
-For Firebase production, use Firestore through Firebase Admin credentials or Cloud Run's service account.
-
-For local self-hosting, Postgres is still available:
-
-```bash
-psql "$DATABASE_URL" -f db/schema.sql
-```
-
-After launch, replace direct schema edits with ordered migrations.
+Production persistence is Firestore through Firebase Admin credentials or Cloud Run's service account. Local development and tests use the in-memory store.
 
 ## Logging
 
@@ -109,7 +100,7 @@ Recommended log events:
 
 Back up:
 
-- Firestore exports or Postgres database, depending on `ARIADNE_STORAGE`
+- Firestore exports
 - object storage bucket containing audio
 - deployment environment variables
 
