@@ -88,7 +88,7 @@ Continue a branch with realtime NDJSON model deltas:
 curl -N -X POST http://localhost:3000/v1/story/turn/stream \
   -H 'content-type: application/json' \
   -H 'x-ariadne-provider-key: YOUR_GOOGLE_AI_STUDIO_KEY' \
-  -d '{"repoId":"REPO_ID","branchId":"BRANCH_ID","userTranscript":"I open the silver door."}'
+  -d '{"repoId":"REPO_ID","branchId":"BRANCH_ID","expectedHeadTurnId":null,"userTranscript":"I open the silver door."}'
 ```
 
 Create a Gemini Live ephemeral token:

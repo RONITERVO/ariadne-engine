@@ -185,11 +185,13 @@ Request:
 {
   "repoId": "...",
   "branchId": "...",
+  "expectedHeadTurnId": null,
   "userTranscript": "I open the silver door."
 }
 ```
 
 Client-supplied `actorModel` and `canonizerModel` fields are ignored. The backend enforces configured catalog models.
+Use the current branch `headTurnId` as `expectedHeadTurnId`; use `null` only when the branch has no committed turns. If the branch moves before commit, the backend rejects the stale request.
 
 Response:
 
@@ -213,6 +215,7 @@ Request:
 {
   "repoId": "...",
   "branchId": "...",
+  "expectedHeadTurnId": null,
   "userTranscript": "I open the silver door."
 }
 ```

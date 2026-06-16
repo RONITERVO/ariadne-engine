@@ -73,7 +73,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   };
 
   if (appEnv === 'production') {
-    assertProductionSafe({ storage, corsOrigins, allowMockProvider, paidUsageEnabled, firebaseAuthRequired, geminiServerKeys });
+    assertProductionSafe({
+      storage,
+      corsOrigins,
+      allowMockProvider,
+      paidUsageEnabled,
+      firebaseAuthRequired,
+      geminiServerKeys,
+      appUrl: billing.appUrl,
+      stripeSecretKey: billing.stripeSecretKey,
+      stripeWebhookSecret: billing.stripeWebhookSecret
+    });
   }
 
   return {
@@ -95,7 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     webSpeechLanguage: env.ARIADNE_WEB_SPEECH_LANGUAGE,
     rateLimitMax: readInt(env.ARIADNE_RATE_LIMIT_MAX, 120, { min: 1, max: 10_000 }),
     rateLimitWindow: env.ARIADNE_RATE_LIMIT_WINDOW ?? '1 minute',
-    branchTurnLockTtlMs: readInt(env.ARIADNE_BRANCH_TURN_LOCK_TTL_SECONDS, 120, { min: 10, max: 900 }) * 1000,
+    branchTurnLockTtlMs: readInt(env.ARIADNE_BRANCH_TURN_LOCK_TTL_SECONDS, 300, { min: 10, max: 900 }) * 1000,
     maxTranscriptChars: readInt(env.ARIADNE_MAX_TRANSCRIPT_CHARS, 12_000, { min: 1, max: 200_000 }),
     bodyLimitBytes: readInt(env.ARIADNE_BODY_LIMIT_BYTES, 2 * 1024 * 1024, { min: 1024, max: 25 * 1024 * 1024 }),
     budget: {
@@ -127,6 +137,9 @@ function assertProductionSafe(input: {
   paidUsageEnabled: boolean;
   firebaseAuthRequired: boolean;
   geminiServerKeys: string[];
+  appUrl?: string;
+  stripeSecretKey?: string;
+  stripeWebhookSecret?: string;
 }): void {
   const errors: string[] = [];
   if (input.storage !== 'firestore') errors.push('ARIADNE_STORAGE=firestore is required in production');
@@ -135,6 +148,9 @@ function assertProductionSafe(input: {
   if (!input.paidUsageEnabled) errors.push('ARIADNE_PAID_USAGE_ENABLED=true is required in production');
   if (!input.firebaseAuthRequired) errors.push('ARIADNE_FIREBASE_AUTH_REQUIRED=true is required in production');
   if (!input.geminiServerKeys.length) errors.push('GEMINI_API_KEYS is required in production');
+  if (!input.appUrl) errors.push('APP_URL is required in production');
+  if (!input.stripeSecretKey) errors.push('STRIPE_SECRET_KEY is required in production');
+  if (!input.stripeWebhookSecret) errors.push('STRIPE_WEBHOOK_SECRET is required in production');
   if (errors.length) {
     throw new Error(errors.join('; '));
   }

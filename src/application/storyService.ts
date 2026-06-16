@@ -13,7 +13,7 @@ export interface ContinueStoryInput {
   providerKey: string;
   provider: StoryReasoningProvider;
   userTranscript: string;
-  expectedHeadTurnId?: string | null;
+  expectedHeadTurnId: string | null;
   actorModel?: string;
   canonizerModel?: string;
 }

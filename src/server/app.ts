@@ -351,6 +351,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       const result = await service.continueStory({
         repoId: body.repoId,
         branchId: body.branchId,
+        expectedHeadTurnId: body.expectedHeadTurnId,
         userTranscript: body.userTranscript,
         providerKey: access.providerKey,
         provider: access.provider
@@ -381,6 +382,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       service.continueStoryStream({
         repoId: body.repoId,
         branchId: body.branchId,
+        expectedHeadTurnId: body.expectedHeadTurnId,
         userTranscript: body.userTranscript,
         providerKey: access.providerKey,
         provider: access.provider

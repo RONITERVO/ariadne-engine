@@ -64,6 +64,7 @@ test('streaming story route emits realtime deltas and final canonized state', as
     payload: {
       repoId: repo.repo.id,
       branchId: repo.branch.id,
+      expectedHeadTurnId: null,
       userTranscript: 'I test the stream.'
     }
   });
@@ -79,4 +80,32 @@ test('streaming story route emits realtime deltas and final canonized state', as
   assert.ok(events.some(event => event.type === 'turn_committed'));
   assert.ok(events.some(event => event.type === 'canonized'));
   assert.ok(events.some(event => event.type === 'done' && event.assistantTranscript));
+});
+
+test('story turn routes require the prepared branch head', async t => {
+  const app = await buildApp(testConfig());
+  t.after(() => app.close());
+
+  const created = await app.inject({
+    method: 'POST',
+    url: '/v1/repos',
+    payload: { title: 'Expected Head Test' }
+  });
+  assert.equal(created.statusCode, 201);
+  const repo = created.json();
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/v1/story/turn',
+    headers: { 'x-ariadne-provider-key': 'mock-local-dev-key' },
+    payload: {
+      repoId: repo.repo.id,
+      branchId: repo.branch.id,
+      userTranscript: 'This should not run.'
+    }
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /validation_error/);
+  assert.match(response.body, /expectedHeadTurnId/);
 });

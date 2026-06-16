@@ -34,6 +34,7 @@ test('story service rejects overlapping turns before provider work', async () =>
   const first = service.continueStory({
     repoId: repo.id,
     branchId: branch.id,
+    expectedHeadTurnId: null,
     providerKey: 'mock-local-dev-key',
     provider,
     userTranscript: 'First turn.'
@@ -45,6 +46,7 @@ test('story service rejects overlapping turns before provider work', async () =>
       service.continueStory({
         repoId: repo.id,
         branchId: branch.id,
+        expectedHeadTurnId: null,
         providerKey: 'mock-local-dev-key',
         provider,
         userTranscript: 'Overlapping turn.'

@@ -12,6 +12,7 @@ test('in-memory store creates repos, commits turns, stores metadata, and forks f
   const turn = await store.commitTurn({
     repoId: repo.id,
     branchId: branch.id,
+    expectedHeadTurnId: null,
     userTranscript: 'I open the door.',
     assistantTranscript: 'The door opens.',
     modelMetadata: [

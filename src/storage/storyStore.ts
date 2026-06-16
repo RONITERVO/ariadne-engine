@@ -18,7 +18,7 @@ export interface CreateRepoResult {
 export interface CommitTurnInput {
   repoId: string;
   branchId: string;
-  expectedHeadTurnId?: string | null;
+  expectedHeadTurnId: string | null;
   userTranscript: string;
   assistantTranscript: string;
   userAudioAssetId?: string | null;

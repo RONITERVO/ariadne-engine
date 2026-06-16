@@ -72,6 +72,7 @@ export const CreateRepoBodySchema = z.object({
 export const StoryTurnBodySchema = z.object({
   repoId: z.string().min(1),
   branchId: z.string().min(1),
+  expectedHeadTurnId: z.string().min(1).nullable(),
   userTranscript: z.string().trim().min(1),
   actorModel: z.string().trim().min(1).max(120).optional(),
   canonizerModel: z.string().trim().min(1).max(120).optional()

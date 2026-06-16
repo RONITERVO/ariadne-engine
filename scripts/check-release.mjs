@@ -35,6 +35,7 @@ for (const phrase of ['BYOK', 'Google AI Studio', 'event ledger', 'transcript-on
 }
 
 const app = readFileSync('src/server/app.ts', 'utf8');
+const config = readFileSync('src/config.ts', 'utf8');
 for (const phrase of ['/v1/story/turn/stream', 'rejectProviderSecretsInBody', 'rejectProviderSecretsInQuery', "app.get('/',", "app.get('/assets/*',"]) {
   if (!app.includes(phrase)) {
     console.error(`Server app is missing release guardrail/route: ${phrase}`);
@@ -46,7 +47,7 @@ const storyService = readFileSync('src/application/storyService.ts', 'utf8');
 const storyStore = readFileSync('src/storage/firestoreStoryStore.ts', 'utf8') + readFileSync('src/storage/inMemoryStoryStore.ts', 'utf8');
 for (const [phrase, contents] of [
   ['acquireBranchMutationLease', storyService],
-  ['expectedHeadTurnId', storyService + storyStore],
+  ['expectedHeadTurnId', storyService + storyStore + readFileSync('src/domain/validation.ts', 'utf8') + readme],
   ['cannot canonize a turn that is no longer the branch head', storyStore],
   ['branchHeadTurnId', app + readFileSync('web/src/app.ts', 'utf8')]
 ]) {
@@ -65,9 +66,16 @@ for (const phrase of ['ariadne-api', '/v1/**', 'entitlements/{userId}', 'usage/{
 }
 
 const cloudbuild = readFileSync('cloudbuild.api.yaml', 'utf8');
-for (const phrase of ['ariadne-api', 'ARIADNE_STORAGE=firestore', 'GEMINI_API_KEYS=gemini-api-keys:latest']) {
+for (const phrase of ['ariadne-api', 'ARIADNE_STORAGE=firestore', 'ARIADNE_BRANCH_TURN_LOCK_TTL_SECONDS=300', 'GEMINI_API_KEYS=gemini-api-keys:latest', 'STRIPE_SECRET_KEY=stripe-secret-key:latest', 'STRIPE_WEBHOOK_SECRET=stripe-webhook-secret:latest']) {
   if (!cloudbuild.includes(phrase)) {
     console.error(`Cloud Run deploy config is missing: ${phrase}`);
+    process.exit(1);
+  }
+}
+
+for (const phrase of ['APP_URL is required in production', 'STRIPE_SECRET_KEY is required in production', 'STRIPE_WEBHOOK_SECRET is required in production']) {
+  if (!config.includes(phrase)) {
+    console.error(`Production config guard is missing: ${phrase}`);
     process.exit(1);
   }
 }
