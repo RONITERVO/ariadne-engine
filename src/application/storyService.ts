@@ -13,6 +13,7 @@ export interface ContinueStoryInput {
   providerKey: string;
   provider: StoryReasoningProvider;
   userTranscript: string;
+  expectedHeadTurnId?: string | null;
   actorModel?: string;
   canonizerModel?: string;
 }
@@ -25,6 +26,7 @@ export interface CommitLiveTurnInput {
   userTranscript: string;
   assistantTranscript: string;
   liveSessionId?: string;
+  expectedHeadTurnId: string | null;
   liveModel?: string;
   canonizerModel?: string;
 }
@@ -47,6 +49,7 @@ export type ContinueStoryStreamEvent =
 interface PreparedTurn {
   repo: StoryRepo;
   branch: BranchRef;
+  expectedHeadTurnId: string | null;
   state: WorldState;
   timeline: TurnCommit[];
   capsule: ContextCapsule;
@@ -66,39 +69,43 @@ export class StoryService {
   }
 
   async continueStory(input: ContinueStoryInput): Promise<ContinueStoryResult> {
-    const prepared = await this.prepareTurn(input);
-    const actor = await input.provider.generateActorTurn({
-      apiKey: input.providerKey,
-      model: input.actorModel ?? this.config.actorModel,
-      capsule: prepared.capsule,
-      userTranscript: input.userTranscript,
-      style: prepared.repo.defaultStyle
-    });
+    return this.withBranchMutationLease(input, async () => {
+      const prepared = await this.prepareTurn(input);
+      const actor = await input.provider.generateActorTurn({
+        apiKey: input.providerKey,
+        model: input.actorModel ?? this.config.actorModel,
+        capsule: prepared.capsule,
+        userTranscript: input.userTranscript,
+        style: prepared.repo.defaultStyle
+      });
 
-    const turn = await this.commitActorTurn(input, prepared, actor);
-    return this.canonizeCommittedTurn(input, prepared, actor, turn);
+      const turn = await this.commitActorTurn(input, prepared, actor);
+      return this.canonizeCommittedTurn(input, prepared, actor, turn);
+    });
   }
 
   async commitLiveTurn(input: CommitLiveTurnInput): Promise<ContinueStoryResult> {
-    const prepared = await this.prepareTurn(input);
-    const now = new Date().toISOString();
-    const actor: ActorTurnResult = {
-      text: input.assistantTranscript,
-      metadata: {
-        provider: input.provider.name,
-        model: input.liveModel ?? this.config.liveModel,
-        purpose: 'live-token',
-        usage: {
-          liveSessionId: input.liveSessionId ?? null,
-          transcriptSource: 'gemini-live'
-        },
-        startedAt: now,
-        completedAt: now
-      }
-    };
+    return this.withBranchMutationLease(input, async () => {
+      const prepared = await this.prepareTurn(input);
+      const now = new Date().toISOString();
+      const actor: ActorTurnResult = {
+        text: input.assistantTranscript,
+        metadata: {
+          provider: input.provider.name,
+          model: input.liveModel ?? this.config.liveModel,
+          purpose: 'live-token',
+          usage: {
+            liveSessionId: input.liveSessionId ?? null,
+            transcriptSource: 'gemini-live'
+          },
+          startedAt: now,
+          completedAt: now
+        }
+      };
 
-    const turn = await this.commitActorTurn(input, prepared, actor);
-    return this.canonizeCommittedTurn(input, prepared, actor, turn);
+      const turn = await this.commitActorTurn(input, prepared, actor);
+      return this.canonizeCommittedTurn(input, prepared, actor, turn);
+    });
   }
 
   async buildLiveSystemInstruction(input: { repoId: string; branchId: string }): Promise<string> {
@@ -117,46 +124,55 @@ export class StoryService {
   }
 
   async *continueStoryStream(input: ContinueStoryInput): AsyncIterable<ContinueStoryStreamEvent> {
-    const prepared = await this.prepareTurn(input);
-    let actor: ActorTurnResult | null = null;
+    const lease = await this.store.acquireBranchMutationLease({
+      repoId: input.repoId,
+      branchId: input.branchId,
+      ttlMs: this.config.branchTurnLockTtlMs
+    });
+    try {
+      const prepared = await this.prepareTurn(input);
+      let actor: ActorTurnResult | null = null;
 
-    if (input.provider.generateActorTurnStream) {
-      const stream = input.provider.generateActorTurnStream({
-        apiKey: input.providerKey,
-        model: input.actorModel ?? this.config.actorModel,
-        capsule: prepared.capsule,
-        userTranscript: input.userTranscript,
-        style: prepared.repo.defaultStyle
-      });
+      if (input.provider.generateActorTurnStream) {
+        const stream = input.provider.generateActorTurnStream({
+          apiKey: input.providerKey,
+          model: input.actorModel ?? this.config.actorModel,
+          capsule: prepared.capsule,
+          userTranscript: input.userTranscript,
+          style: prepared.repo.defaultStyle
+        });
 
-      for await (const event of stream) {
-        if (event.type === 'delta') {
-          yield { type: 'assistant_delta', text: event.text };
-        } else {
-          actor = event.result;
+        for await (const event of stream) {
+          if (event.type === 'delta') {
+            yield { type: 'assistant_delta', text: event.text };
+          } else {
+            actor = event.result;
+          }
         }
+      } else {
+        actor = await input.provider.generateActorTurn({
+          apiKey: input.providerKey,
+          model: input.actorModel ?? this.config.actorModel,
+          capsule: prepared.capsule,
+          userTranscript: input.userTranscript,
+          style: prepared.repo.defaultStyle
+        });
+        yield { type: 'assistant_delta', text: actor.text };
       }
-    } else {
-      actor = await input.provider.generateActorTurn({
-        apiKey: input.providerKey,
-        model: input.actorModel ?? this.config.actorModel,
-        capsule: prepared.capsule,
-        userTranscript: input.userTranscript,
-        style: prepared.repo.defaultStyle
-      });
-      yield { type: 'assistant_delta', text: actor.text };
+
+      if (!actor || !actor.text.trim()) {
+        throw new StoreError('provider returned no assistant transcript', 'unavailable');
+      }
+
+      const turn = await this.commitActorTurn(input, prepared, actor);
+      yield { type: 'turn_committed', turn };
+
+      const final = await this.canonizeCommittedTurn(input, prepared, actor, turn);
+      yield { type: 'canonized', patch: final.patch, state: final.state, continuityWarnings: final.continuityWarnings };
+      yield { type: 'done', assistantTranscript: final.assistantTranscript, modelMetadata: final.modelMetadata };
+    } finally {
+      await this.store.releaseBranchMutationLease(lease);
     }
-
-    if (!actor || !actor.text.trim()) {
-      throw new StoreError('provider returned no assistant transcript', 'unavailable');
-    }
-
-    const turn = await this.commitActorTurn(input, prepared, actor);
-    yield { type: 'turn_committed', turn };
-
-    const final = await this.canonizeCommittedTurn(input, prepared, actor, turn);
-    yield { type: 'canonized', patch: final.patch, state: final.state, continuityWarnings: final.continuityWarnings };
-    yield { type: 'done', assistantTranscript: final.assistantTranscript, modelMetadata: final.modelMetadata };
   }
 
   private async prepareTurn(input: ContinueStoryInput): Promise<PreparedTurn> {
@@ -169,6 +185,10 @@ export class StoryService {
     const branch = await this.store.getBranch(input.branchId);
     if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
     if (branch.repoId !== repo.id) throw new StoreError('branch does not belong to repo', 'invalid');
+    const branchHeadTurnId = branch.headTurnId ?? null;
+    if (input.expectedHeadTurnId !== undefined && input.expectedHeadTurnId !== branchHeadTurnId) {
+      throw new StoreError('branch head moved since this turn started', 'conflict');
+    }
 
     const state = await this.store.getState(input.branchId);
     if (!state) throw new StoreError(`branch state not found: ${input.branchId}`, 'not_found');
@@ -182,7 +202,7 @@ export class StoryService {
     state.contextBudget = decideContextBudget(estimateTokensRoughly(projected), this.config.budget);
     const capsule = buildContextCapsule(state, timeline);
 
-    return { repo, branch, state, timeline, capsule };
+    return { repo, branch, expectedHeadTurnId: branchHeadTurnId, state, timeline, capsule };
   }
 
   private async prepareLiveContext(input: { repoId: string; branchId: string }): Promise<PreparedTurn> {
@@ -198,7 +218,7 @@ export class StoryService {
     const timeline = await this.store.getTimeline(input.branchId);
     state.contextBudget = decideContextBudget(estimateTokensRoughly({ state, recentTurns: timeline.slice(-8) }), this.config.budget);
     const capsule = buildContextCapsule(state, timeline);
-    return { repo, branch, state, timeline, capsule };
+    return { repo, branch, expectedHeadTurnId: branch.headTurnId ?? null, state, timeline, capsule };
   }
 
   private async commitActorTurn(
@@ -209,6 +229,7 @@ export class StoryService {
     return this.store.commitTurn({
       repoId: prepared.repo.id,
       branchId: prepared.branch.id,
+      expectedHeadTurnId: prepared.expectedHeadTurnId,
       userTranscript: input.userTranscript,
       assistantTranscript: actor.text,
       modelMetadata: [actor.metadata]
@@ -254,5 +275,21 @@ export class StoryService {
       continuityWarnings: reduced.warnings,
       modelMetadata: [actor.metadata, canonized.metadata]
     };
+  }
+
+  private async withBranchMutationLease<T>(
+    input: { repoId: string; branchId: string },
+    run: () => Promise<T>
+  ): Promise<T> {
+    const lease = await this.store.acquireBranchMutationLease({
+      repoId: input.repoId,
+      branchId: input.branchId,
+      ttlMs: this.config.branchTurnLockTtlMs
+    });
+    try {
+      return await run();
+    } finally {
+      await this.store.releaseBranchMutationLease(lease);
+    }
   }
 }

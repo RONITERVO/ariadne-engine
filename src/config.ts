@@ -25,6 +25,7 @@ export interface AppConfig {
   webSpeechLanguage?: string;
   rateLimitMax: number;
   rateLimitWindow: string;
+  branchTurnLockTtlMs: number;
   maxTranscriptChars: number;
   bodyLimitBytes: number;
   budget: ModelBudgetConfig;
@@ -94,6 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     webSpeechLanguage: env.ARIADNE_WEB_SPEECH_LANGUAGE,
     rateLimitMax: readInt(env.ARIADNE_RATE_LIMIT_MAX, 120, { min: 1, max: 10_000 }),
     rateLimitWindow: env.ARIADNE_RATE_LIMIT_WINDOW ?? '1 minute',
+    branchTurnLockTtlMs: readInt(env.ARIADNE_BRANCH_TURN_LOCK_TTL_SECONDS, 120, { min: 10, max: 900 }) * 1000,
     maxTranscriptChars: readInt(env.ARIADNE_MAX_TRANSCRIPT_CHARS, 12_000, { min: 1, max: 200_000 }),
     bodyLimitBytes: readInt(env.ARIADNE_BODY_LIMIT_BYTES, 2 * 1024 * 1024, { min: 1024, max: 25 * 1024 * 1024 }),
     budget: {

@@ -48,3 +48,72 @@ test('in-memory store creates repos, commits turns, stores metadata, and forks f
   assert.equal(fork.branch.forkedFromTurnId, turn.id);
   assert.equal(fork.state.headTurnId, turn.id);
 });
+
+test('in-memory store serializes branch mutations', async () => {
+  const store = new InMemoryStoryStore();
+  const { repo, branch, state } = await store.createRepo({ title: 'Locks' });
+
+  const lease = await store.acquireBranchMutationLease({
+    repoId: repo.id,
+    branchId: branch.id,
+    ttlMs: 30_000
+  });
+  await assert.rejects(
+    () =>
+      store.acquireBranchMutationLease({
+        repoId: repo.id,
+        branchId: branch.id,
+        ttlMs: 30_000
+      }),
+    /story turn in progress/
+  );
+  await store.releaseBranchMutationLease(lease);
+
+  const first = await store.commitTurn({
+    repoId: repo.id,
+    branchId: branch.id,
+    expectedHeadTurnId: null,
+    userTranscript: 'First.',
+    assistantTranscript: 'First response.'
+  });
+
+  await assert.rejects(
+    () =>
+      store.commitTurn({
+        repoId: repo.id,
+        branchId: branch.id,
+        expectedHeadTurnId: null,
+        userTranscript: 'Stale.',
+        assistantTranscript: 'Stale response.'
+      }),
+    /branch head moved/
+  );
+
+  const second = await store.commitTurn({
+    repoId: repo.id,
+    branchId: branch.id,
+    expectedHeadTurnId: first.id,
+    userTranscript: 'Second.',
+    assistantTranscript: 'Second response.'
+  });
+
+  await assert.rejects(
+    () =>
+      store.applyCanonPatch({
+        repoId: repo.id,
+        branchId: branch.id,
+        turnId: first.id,
+        patch: { turnId: first.id, events: [], facts: [], threads: [], warnings: [] },
+        state: { ...state, headTurnId: first.id }
+      }),
+    /no longer the branch head/
+  );
+
+  await store.applyCanonPatch({
+    repoId: repo.id,
+    branchId: branch.id,
+    turnId: second.id,
+    patch: { turnId: second.id, events: [], facts: [], threads: [], warnings: [] },
+    state: { ...state, headTurnId: second.id }
+  });
+});

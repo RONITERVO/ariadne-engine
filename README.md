@@ -13,6 +13,7 @@ The hosted release supports Firebase sign-in with prepaid Ariadne credits and st
 - Firebase Auth verification, Firestore story store, Firebase Hosting rewrites, and secure Firestore rules.
 - Paid usage ledger for prepaid credits, normal model token usage, and fixed 30-second Gemini Live sessions with one active paid Live session per user.
 - Server-side Gemini key rotation with per-key concurrency, minute/day limits, and cooldowns.
+- Per-branch mutation leases and expected-head checks so overlapping turns cannot corrupt branch history.
 - Transcript-only Gemini Live browser loop. Browser STT only detects speech start; Gemini Live supplies user/model transcripts and model audio.
 - Server-side provider-key guardrails. BYOK keys are accepted only in `x-ariadne-provider-key`, rejected from query/body fields, redacted from logs, and never saved.
 - Production config safety checks. `NODE_ENV=production` requires Firestore, Firebase auth, paid usage, strict CORS, server Gemini keys, and no mock provider.
@@ -105,7 +106,7 @@ Commit a Gemini Live turn after the browser receives Gemini Live transcripts:
 curl -X POST http://localhost:3000/v1/story/live-turn \
   -H 'content-type: application/json' \
   -H 'x-ariadne-provider-key: YOUR_GOOGLE_AI_STUDIO_KEY' \
-  -d '{"repoId":"REPO_ID","branchId":"BRANCH_ID","userTranscript":"I open the silver door.","assistantTranscript":"The silver door exhales moonlit dust."}'
+  -d '{"repoId":"REPO_ID","branchId":"BRANCH_ID","expectedHeadTurnId":null,"userTranscript":"I open the silver door.","assistantTranscript":"The silver door exhales moonlit dust."}'
 ```
 
 ## Production posture
@@ -153,6 +154,7 @@ Ariadne API
 Firestore + object storage
   |-- event ledger is source of truth
   |-- branch heads are mutable refs
+  |-- branch mutation locks reject overlapping turns
   |-- snapshots are caches
   `-- audio metadata is attached to turns
 ```

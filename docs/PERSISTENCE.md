@@ -31,6 +31,7 @@ branchStates/{branchId}
 branchSnapshots/{turnId}
 eventPatches/{patchId}
 continuityWarnings/{warningId}
+branchMutationLocks/{branchId}
 users/{uid}
 entitlements/{uid}
 usage/{uid}/storyTurns/{usageId}
@@ -39,6 +40,8 @@ billingEvents/{eventId}
 ```
 
 `branchStates/{branchId}` is a cache of the current reduced world state. The branch timeline remains recoverable by following `branches/{branchId}.headTurnId` through each turn's `parentTurnId`, so older turns remain reachable like a time machine after new turns move the branch head.
+
+`branchMutationLocks/{branchId}` is a short-lived server-only lease. It prevents two requests from generating and applying turns to the same branch at the same time. The lock is not the source of truth; it is a concurrency guard around the immutable turn chain and branch head update.
 
 ## Branching
 
@@ -51,6 +54,8 @@ darker-ending:       D -- E
 ```
 
 Forking from B creates a new branch ref whose head is B. The next committed turn creates D.
+
+Commits are accepted only when the branch head still equals the head used to prepare the context capsule. Canon patches are accepted only for the current branch head. Those two checks keep stale model output from overwriting newer branch state.
 
 ## Why Event Sourcing
 

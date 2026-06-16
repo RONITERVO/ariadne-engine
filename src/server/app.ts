@@ -209,6 +209,9 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     const body = parseBody(LiveTokenBodySchema, request.body);
     const access = await resolveProviderExecution(request, config, providers, keyPool);
     await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
+    const branch = await store.getBranch(body.branchId);
+    if (!branch) throw new StoreError(`branch not found: ${body.branchId}`, 'not_found');
+    const branchHeadTurnId = branch.headTurnId ?? null;
     const charge = calculateLiveSessionCharge(config.modelCatalog, config.liveModel);
     const liveReservation = access.firebaseUser && config.paidUsageEnabled
       ? await billing.reserveLiveSession(access.firebaseUser.uid, {
@@ -231,6 +234,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       return reply.send({
         ...result,
         model: config.liveModel,
+        branchHeadTurnId,
         sessionId: liveReservation?.id ?? result.sessionId ?? null,
         billingMode: access.mode,
         billing: liveReservation
@@ -418,6 +422,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
         userTranscript: body.userTranscript,
         assistantTranscript: body.assistantTranscript,
         liveSessionId: body.liveSessionId,
+        expectedHeadTurnId: body.expectedHeadTurnId,
         providerKey: access.providerKey,
         provider: access.provider
       });

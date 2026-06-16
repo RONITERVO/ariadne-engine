@@ -81,6 +81,7 @@ export const LiveTurnBodySchema = z.object({
   repoId: z.string().min(1),
   branchId: z.string().min(1),
   liveSessionId: z.string().trim().min(1).max(160).optional(),
+  expectedHeadTurnId: z.string().min(1).nullable(),
   userTranscript: z.string().trim().min(1),
   assistantTranscript: z.string().trim().min(1)
 });

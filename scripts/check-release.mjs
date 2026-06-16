@@ -42,6 +42,20 @@ for (const phrase of ['/v1/story/turn/stream', 'rejectProviderSecretsInBody', 'r
   }
 }
 
+const storyService = readFileSync('src/application/storyService.ts', 'utf8');
+const storyStore = readFileSync('src/storage/firestoreStoryStore.ts', 'utf8') + readFileSync('src/storage/inMemoryStoryStore.ts', 'utf8');
+for (const [phrase, contents] of [
+  ['acquireBranchMutationLease', storyService],
+  ['expectedHeadTurnId', storyService + storyStore],
+  ['cannot canonize a turn that is no longer the branch head', storyStore],
+  ['branchHeadTurnId', app + readFileSync('web/src/app.ts', 'utf8')]
+]) {
+  if (!contents.includes(phrase)) {
+    console.error(`Server app/story service is missing branch mutation guard: ${phrase}`);
+    process.exit(1);
+  }
+}
+
 const firebase = readFileSync('firebase.json', 'utf8') + readFileSync('firestore.rules', 'utf8');
 for (const phrase of ['ariadne-api', '/v1/**', 'entitlements/{userId}', 'usage/{userId}']) {
   if (!firebase.includes(phrase)) {

@@ -73,14 +73,15 @@ The included adapters are:
 
 The `StoryService` coordinates each story turn:
 
-1. Load repo, branch, current state, and recent timeline.
-2. Estimate context budget and apply closure mode if needed.
-3. Build a compact context capsule.
-4. Ask the actor model for narration or stream actor deltas.
-5. Commit the immutable turn.
-6. Ask the canonizer model for structured changes.
-7. Apply the deterministic reducer.
-8. Save current state, warnings, and actor/canonizer invocation metadata.
+1. Acquire a branch mutation lease so only one turn can mutate the branch at a time.
+2. Load repo, branch, current state, and recent timeline.
+3. Estimate context budget and apply closure mode if needed.
+4. Build a compact context capsule.
+5. Ask the actor model for narration or stream actor deltas.
+6. Commit the immutable turn only if the branch head is still the prepared head.
+7. Ask the canonizer model for structured changes.
+8. Apply the deterministic reducer only while the committed turn is still the branch head.
+9. Save current state, warnings, and actor/canonizer invocation metadata.
 
 ### 5. Actor model
 

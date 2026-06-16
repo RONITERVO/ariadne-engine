@@ -13,6 +13,8 @@
 - [ ] Set `GEMINI_API_KEYS` and server-key rotation limits.
 - [ ] Configure Stripe Checkout and `STRIPE_WEBHOOK_SECRET`.
 - [ ] Confirm `/v1/webhooks/stripe` grants credits idempotently.
+- [ ] Confirm overlapping turn requests on the same branch return conflict instead of creating competing heads.
+- [ ] Confirm Live turns include `expectedHeadTurnId` and stale Live commits are rejected.
 - [ ] Add a user-facing cost warning for BYOK Gemini usage if you expose anything beyond the transcript-only developer surface.
 - [ ] Disable request-body logging and third-party analytics on provider-key flows.
 - [ ] Add backup/restore for Firestore exports and object storage.

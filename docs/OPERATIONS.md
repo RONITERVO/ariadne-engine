@@ -45,6 +45,7 @@ Create these Secret Manager secrets before deploying `cloudbuild.api.yaml`:
 Firestore stores durable state:
 
 - `storyRepos`, `branches`, `turns`, `branchStates`, `branchSnapshots`, `eventPatches`, `continuityWarnings`
+- `branchMutationLocks`
 - `users/{uid}`
 - `entitlements/{uid}`
 - `usage/{uid}/storyTurns/{id}`
@@ -82,6 +83,8 @@ For a production-style single-process deployment, run `npm run build`; the Fasti
 ## Persistence
 
 Production persistence is Firestore through Firebase Admin credentials or Cloud Run's service account. Local development and tests use the in-memory store.
+
+Each story turn holds a per-branch mutation lease for up to `ARIADNE_BRANCH_TURN_LOCK_TTL_SECONDS`. If a branch already has a turn in progress, the API returns a conflict instead of letting two model calls produce competing branch heads. Commits also check the prepared branch head, and canonization is rejected if the committed turn is no longer the branch head.
 
 ## Logging
 

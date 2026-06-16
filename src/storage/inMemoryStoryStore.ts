@@ -2,7 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { createInitialWorldState } from '../domain/initialState.js';
 import { sha256Json } from '../domain/stateHash.js';
 import type { BranchRef, CreateRepoInput, ForkBranchInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
-import type { ApplyCanonPatchInput, CommitTurnInput, CreateRepoResult, StoryStore } from './storyStore.js';
+import type {
+  ApplyCanonPatchInput,
+  BranchMutationLease,
+  BranchMutationLeaseInput,
+  CommitTurnInput,
+  CreateRepoResult,
+  StoryStore
+} from './storyStore.js';
 import { StoreError } from './storyStore.js';
 
 export class InMemoryStoryStore implements StoryStore {
@@ -12,6 +19,7 @@ export class InMemoryStoryStore implements StoryStore {
   private readonly states = new Map<string, WorldState>();
   private readonly snapshotsByTurn = new Map<string, WorldState>();
   private readonly patchesByTurn = new Map<string, unknown>();
+  private readonly branchMutationLeases = new Map<string, BranchMutationLease>();
 
   async createRepo(input: CreateRepoInput): Promise<CreateRepoResult> {
     const now = new Date().toISOString();
@@ -116,6 +124,36 @@ export class InMemoryStoryStore implements StoryStore {
     return { branch: structuredClone(branch), state: structuredClone(state) };
   }
 
+  async acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease> {
+    const repo = this.repos.get(input.repoId);
+    if (!repo) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+    const branch = this.branches.get(input.branchId);
+    if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+    if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+
+    const nowMs = Date.now();
+    const existing = this.branchMutationLeases.get(input.branchId);
+    if (existing && Date.parse(existing.expiresAt) > nowMs) {
+      throw new StoreError('branch already has a story turn in progress', 'conflict');
+    }
+
+    const lease: BranchMutationLease = {
+      leaseId: randomUUID(),
+      repoId: input.repoId,
+      branchId: input.branchId,
+      expiresAt: new Date(nowMs + input.ttlMs).toISOString()
+    };
+    this.branchMutationLeases.set(input.branchId, lease);
+    return structuredClone(lease);
+  }
+
+  async releaseBranchMutationLease(lease: BranchMutationLease): Promise<void> {
+    const existing = this.branchMutationLeases.get(lease.branchId);
+    if (existing?.leaseId === lease.leaseId) {
+      this.branchMutationLeases.delete(lease.branchId);
+    }
+  }
+
   async commitTurn(input: CommitTurnInput): Promise<TurnCommit> {
     const repo = this.repos.get(input.repoId);
     if (!repo) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
@@ -124,6 +162,9 @@ export class InMemoryStoryStore implements StoryStore {
     if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
 
     const parentTurnId = branch.headTurnId ?? null;
+    if (input.expectedHeadTurnId !== undefined && input.expectedHeadTurnId !== parentTurnId) {
+      throw new StoreError('branch head moved before the turn could be committed', 'conflict');
+    }
     const parent = parentTurnId ? this.turns.get(parentTurnId) : undefined;
     const now = new Date().toISOString();
     const turn: TurnCommit = {
@@ -179,6 +220,11 @@ export class InMemoryStoryStore implements StoryStore {
     const turn = this.turns.get(input.turnId);
     if (!turn) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
     if (turn.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+    const branch = this.branches.get(input.branchId);
+    if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+    if ((branch.headTurnId ?? null) !== input.turnId) {
+      throw new StoreError('cannot canonize a turn that is no longer the branch head', 'conflict');
+    }
 
     turn.stateStatus = input.patch.warnings.some(w => w.severity === 'high') ? 'needs_review' : 'canonized';
     if (input.modelMetadata?.length) {
