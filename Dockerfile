@@ -18,6 +18,5 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/web/dist ./web/dist
-COPY db ./db
 EXPOSE 3000
 CMD ["node", "dist/server/index.js"]

@@ -9,7 +9,6 @@ NODE_ENV=production
 ARIADNE_STORAGE=firestore
 CORS_ORIGINS=https://your-app.example
 ARIADNE_ALLOW_MOCK_PROVIDER=false
-ARIADNE_ALLOW_UNSAFE_PRODUCTION=false
 ARIADNE_PAID_USAGE_ENABLED=true
 ARIADNE_FIREBASE_AUTH_REQUIRED=true
 GEMINI_API_KEYS=...
@@ -18,11 +17,15 @@ STRIPE_WEBHOOK_SECRET=...
 APP_URL=https://your-app.example
 ```
 
-`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, and missing server Gemini keys. `ARIADNE_ALLOW_UNSAFE_PRODUCTION=true` exists only for isolated smoke tests and should not be used on public deployments.
+`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, and missing server Gemini keys.
 
 ## Firebase Release Shape
 
 Firebase Hosting serves `web/dist`. Same-origin `/health` and `/v1/**` requests are rewritten to the Cloud Run service `ariadne-api` in `europe-west1` by `firebase.json`.
+
+The public deployment currently uses Firebase project `ariadne-engine-rt` and Hosting URL `https://ariadne-engine-rt.web.app`. The hosted frontend uses Firebase Google sign-in. Anonymous Firebase Auth must stay disabled for production.
+
+For beginner-admin links and console-only commands, use `docs/ADMIN_RUNBOOK.md`.
 
 Deploy the API to Cloud Run through Cloud Build:
 
@@ -31,7 +34,7 @@ gcloud builds submit --config cloudbuild.api.yaml \
   --substitutions=_APP_URL=https://your-app.web.app,_CORS_ORIGINS=https://your-app.web.app
 ```
 
-Deploy Hosting and Firestore rules:
+Deploy Hosting and Firestore rules. This command fetches the Firebase Web App config and builds `web/dist` with the required `VITE_FIREBASE_*` values before deploying:
 
 ```bash
 npm run deploy:firebase
@@ -46,6 +49,7 @@ Create these Secret Manager secrets before deploying `cloudbuild.api.yaml`:
 Firestore stores durable state:
 
 - `storyRepos`, `branches`, `turns`, `branchStates`, `branchSnapshots`, `eventPatches`, `continuityWarnings`
+- `branchMutationLocks`
 - `users/{uid}`
 - `entitlements/{uid}`
 - `usage/{uid}/storyTurns/{id}`
@@ -58,7 +62,7 @@ Client Firestore rules allow users to read only their own user, entitlement, and
 
 Paid users buy prepaid Ariadne credits through Stripe Checkout. Internally, usage is tracked in credit micros, where `1_000_000` credit micros equals one major unit of `BILLING_CURRENCY`.
 
-Gemini Live token issuance reserves and then settles one fixed session charge. The default Live catalog bills every token as a 30 second session and the entitlement document enforces at most one active paid Live session per Firebase user.
+Gemini Live token issuance reserves and then settles one fixed session charge. The default Live catalog bills every Live session as 30 seconds and the entitlement document enforces at most one active paid Live session per Firebase user.
 
 Normal Gemini model calls reserve credits before the call and settle from Gemini `usageMetadata` after completion. BYOK requests bypass Ariadne billing and use the caller's provider key. On hosted Firebase deployments, BYOK users still sign in so story repos are owned and private; BYOK means no Ariadne credits are consumed.
 
@@ -80,17 +84,11 @@ The frontend API base defaults to `http://localhost:3000` when Vite serves on po
 
 For a production-style single-process deployment, run `npm run build`; the Fastify API serves the built transcript shell from `/` and immutable Vite assets from `/assets/*`. The Docker image copies `web/dist` for this path.
 
-## Database
+## Persistence
 
-For Firebase production, use Firestore through Firebase Admin credentials or Cloud Run's service account.
+Production persistence is Firestore through Firebase Admin credentials or Cloud Run's service account. Local development and tests use the in-memory store.
 
-For local self-hosting, Postgres is still available:
-
-```bash
-psql "$DATABASE_URL" -f db/schema.sql
-```
-
-After launch, replace direct schema edits with ordered migrations.
+Each story turn holds a per-branch mutation lease for up to `ARIADNE_BRANCH_TURN_LOCK_TTL_SECONDS`. Keep this at least as high as the Cloud Run request timeout so a slow model turn cannot let another paid turn start on the same branch. If a branch already has a turn in progress, the API returns a conflict instead of letting two model calls produce competing branch heads. Commits also check the prepared branch head, and canonization is rejected if the committed turn is no longer the branch head.
 
 ## Logging
 
@@ -109,7 +107,7 @@ Recommended log events:
 
 Back up:
 
-- Firestore exports or Postgres database, depending on `ARIADNE_STORAGE`
+- Firestore exports
 - object storage bucket containing audio
 - deployment environment variables
 

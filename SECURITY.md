@@ -26,9 +26,9 @@ Implemented controls:
 - provider key headers are accepted only on provider/story routes
 - provider-key-shaped fields in request bodies and query strings are rejected before route validation
 - provider key headers and known secret-like fields are redacted from logs
-- production config rejects memory storage, wildcard CORS, and mock provider unless explicitly overridden
+- production config rejects memory storage, wildcard CORS, disabled Firebase auth/billing, missing server Gemini keys, and mock provider
 - tests cover header extraction, secret-field rejection, and route-level provider-key rejection
 
 ## Deployment requirements
 
-Public deployments must add authentication and a strict CORS allow-list before accepting real users. The default posture is strongest for developer-oriented, self-hosted BYOK use.
+Public deployments must use Firebase authentication, Firestore persistence, paid usage accounting, server Gemini keys, HTTPS, and a strict CORS allow-list before accepting real users.

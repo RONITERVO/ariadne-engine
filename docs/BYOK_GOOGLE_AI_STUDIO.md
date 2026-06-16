@@ -10,7 +10,7 @@ Ariadne supports BYOK alongside hosted paid usage: the user can supply their own
 4. The backend rejects provider-key-shaped fields in query strings and JSON request bodies.
 5. The backend rejects provider key headers on non-provider routes such as repo creation.
 6. The backend uses the key for that request only.
-7. The backend does not store the key in Firestore, Postgres, Redis, object storage, analytics, telemetry, or logs.
+7. The backend does not store the key in Firestore, object storage, analytics, telemetry, or logs.
 8. The logger redacts provider key headers and key-like body fields.
 9. The frontend stores the key only in browser `sessionStorage` for local convenience. A production app should offer an explicit "remember on this device" choice and explain the risk.
 10. Production deployments must require HTTPS and a strict CORS allow-list.

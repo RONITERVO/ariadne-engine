@@ -4,7 +4,14 @@ import { createInitialWorldState } from '../domain/initialState.js';
 import { sha256Json } from '../domain/stateHash.js';
 import type { BranchRef, CreateRepoInput, ForkBranchInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
 import { getFirebaseAdminDb } from '../firebase/admin.js';
-import type { ApplyCanonPatchInput, CommitTurnInput, CreateRepoResult, StoryStore } from './storyStore.js';
+import type {
+  ApplyCanonPatchInput,
+  BranchMutationLease,
+  BranchMutationLeaseInput,
+  CommitTurnInput,
+  CreateRepoResult,
+  StoryStore
+} from './storyStore.js';
 import { StoreError } from './storyStore.js';
 
 const COLLECTIONS = {
@@ -14,7 +21,8 @@ const COLLECTIONS = {
   states: 'branchStates',
   snapshots: 'branchSnapshots',
   patches: 'eventPatches',
-  warnings: 'continuityWarnings'
+  warnings: 'continuityWarnings',
+  branchLocks: 'branchMutationLocks'
 } as const;
 
 export class FirestoreStoryStore implements StoryStore {
@@ -156,6 +164,49 @@ export class FirestoreStoryStore implements StoryStore {
     });
   }
 
+  async acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease> {
+    return this.db.runTransaction(async tx => {
+      const repoSnapshot = await tx.get(this.repoRef(input.repoId));
+      if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const branchSnapshot = await tx.get(this.branchRef(input.branchId));
+      if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+      const branch = branchSnapshot.data() as BranchRef;
+      if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+
+      const nowMs = Date.now();
+      const lockRef = this.branchLockRef(input.branchId);
+      const lockSnapshot = await tx.get(lockRef);
+      const lock = lockSnapshot.data() as { leaseId?: string; expiresAtMillis?: number } | undefined;
+      if (lockSnapshot.exists && (lock?.expiresAtMillis ?? 0) > nowMs) {
+        throw new StoreError('branch already has a story turn in progress', 'conflict');
+      }
+
+      const lease: BranchMutationLease = {
+        leaseId: randomUUID(),
+        repoId: input.repoId,
+        branchId: input.branchId,
+        expiresAt: new Date(nowMs + input.ttlMs).toISOString()
+      };
+      tx.set(lockRef, {
+        ...lease,
+        expiresAtMillis: nowMs + input.ttlMs,
+        acquiredAt: new Date(nowMs).toISOString()
+      });
+      return lease;
+    });
+  }
+
+  async releaseBranchMutationLease(lease: BranchMutationLease): Promise<void> {
+    await this.db.runTransaction(async tx => {
+      const lockRef = this.branchLockRef(lease.branchId);
+      const lockSnapshot = await tx.get(lockRef);
+      const lock = lockSnapshot.data() as { leaseId?: string } | undefined;
+      if (lockSnapshot.exists && lock?.leaseId === lease.leaseId) {
+        tx.delete(lockRef);
+      }
+    });
+  }
+
   async commitTurn(input: CommitTurnInput): Promise<TurnCommit> {
     return this.db.runTransaction(async tx => {
       const repoSnapshot = await tx.get(this.repoRef(input.repoId));
@@ -166,6 +217,9 @@ export class FirestoreStoryStore implements StoryStore {
       if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
 
       const parentTurnId = branch.headTurnId ?? null;
+      if (input.expectedHeadTurnId !== undefined && input.expectedHeadTurnId !== parentTurnId) {
+        throw new StoreError('branch head moved before the turn could be committed', 'conflict');
+      }
       const parent = parentTurnId ? await this.getTurnInTransaction(tx, parentTurnId) : null;
       const now = new Date().toISOString();
       const turn: TurnCommit = {
@@ -222,6 +276,14 @@ export class FirestoreStoryStore implements StoryStore {
       if (!turnSnapshot.exists) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
       const turn = turnSnapshot.data() as TurnCommit;
       if (turn.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+      if (turn.repoId !== input.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
+      const branchSnapshot = await tx.get(this.branchRef(input.branchId));
+      if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+      const branch = branchSnapshot.data() as BranchRef;
+      if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+      if ((branch.headTurnId ?? null) !== input.turnId) {
+        throw new StoreError('cannot canonize a turn that is no longer the branch head', 'conflict');
+      }
 
       const now = new Date().toISOString();
       const stateHash = sha256Json(input.state);
@@ -295,6 +357,10 @@ export class FirestoreStoryStore implements StoryStore {
 
   private snapshotRef(turnId: string) {
     return this.db.collection(COLLECTIONS.snapshots).doc(turnId);
+  }
+
+  private branchLockRef(branchId: string) {
+    return this.db.collection(COLLECTIONS.branchLocks).doc(branchId);
   }
 
   private async getTurnInTransaction(tx: Transaction, turnId: string): Promise<TurnCommit | null> {

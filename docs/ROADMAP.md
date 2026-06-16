@@ -1,6 +1,6 @@
 # Roadmap
 
-## MVP: developer/self-hosted release candidate
+## MVP: Firebase product base
 
 - [x] BYOK Google AI Studio / Gemini key flow
 - [x] provider-key redaction
@@ -12,7 +12,7 @@
 - [x] deterministic reducer skeleton
 - [x] context capsule and closure-mode budget governor
 - [x] in-memory store for local development
-- [x] PostgreSQL schema and store baseline
+- [x] Firestore production store
 - [x] transcript-only browser voice loop after sign-in/key setup
 - [x] production config guardrails
 - [x] Firebase Auth support for paid hosted usage
@@ -50,7 +50,7 @@
 - [ ] Live branching during play
 - [ ] Audible branch recaps
 - [ ] Canon debugger
-- [ ] Model migration tool
+- [ ] Model catalog update tools
 - [ ] Deterministic replay of saved branches
 - [ ] Plugin system for worlds, rulesets, voices, and canon reducers
 - [ ] Offline archive format

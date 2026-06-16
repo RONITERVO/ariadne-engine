@@ -24,35 +24,25 @@ export class ProviderKeyError extends Error {
 }
 
 export function extractProviderKey(headers: IncomingHttpHeaders): string {
-  const key = extractOptionalProviderKey(headers, { allowBearer: true });
+  const key = extractOptionalProviderKey(headers);
   if (!key) {
     throw new ProviderKeyError(
-      `Missing provider API key. Send it in the ${PROVIDER_KEY_HEADER} header or Authorization: Bearer <key>.`,
+      `Missing provider API key. Send it in the ${PROVIDER_KEY_HEADER} header.`,
       'missing'
     );
   }
   return key;
 }
 
-export function hasProviderKeyHeader(headers: IncomingHttpHeaders): boolean {
-  return Boolean(extractOptionalProviderKey(headers, { allowBearer: true, validate: false }));
-}
-
 export function hasExplicitProviderKeyHeader(headers: IncomingHttpHeaders): boolean {
   return Boolean(firstHeader(headers[PROVIDER_KEY_HEADER]));
 }
 
-export function extractOptionalProviderKey(
-  headers: IncomingHttpHeaders,
-  options: { allowBearer?: boolean; validate?: boolean } = {}
-): string | undefined {
+export function extractOptionalProviderKey(headers: IncomingHttpHeaders): string | undefined {
   const headerValue = firstHeader(headers[PROVIDER_KEY_HEADER]);
-  const authorization = options.allowBearer ? firstHeader(headers.authorization) : undefined;
-  const bearer = authorization ? parseBearer(authorization) : undefined;
-  const key = headerValue ?? bearer;
-  if (!key) return undefined;
-  if (options.validate !== false) assertProviderKeyShape(key);
-  return key;
+  if (!headerValue) return undefined;
+  assertProviderKeyShape(headerValue);
+  return headerValue;
 }
 
 export function assertProviderKeyShape(key: string): void {
@@ -89,8 +79,8 @@ export function keyFingerprint(key: string): string {
 }
 
 export function redactKey(key: string): string {
-  if (key.length <= 8) return '***';
-  return `${key.slice(0, 4)}…${key.slice(-4)}`;
+  if (key.length <= 16) return '***';
+  return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 
 function findForbiddenSecretField(value: unknown, path: string, forbiddenNames: Set<string>): string | null {
@@ -118,10 +108,4 @@ function normalizeFieldName(key: string): string {
 function firstHeader(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
-}
-
-function parseBearer(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const match = value.match(/^Bearer\s+(.+)$/i);
-  return match?.[1];
 }

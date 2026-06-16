@@ -96,6 +96,7 @@ Response:
   "token": "auth-token-name",
   "model": "gemini-3.1-flash-live-preview",
   "responseModalities": ["AUDIO"],
+  "branchHeadTurnId": null,
   "sessionId": "...",
   "billingMode": "paid",
   "expiresAt": "2026-06-15T12:30:00.000Z",
@@ -184,11 +185,13 @@ Request:
 {
   "repoId": "...",
   "branchId": "...",
+  "expectedHeadTurnId": null,
   "userTranscript": "I open the silver door."
 }
 ```
 
 Client-supplied `actorModel` and `canonizerModel` fields are ignored. The backend enforces configured catalog models.
+Use the current branch `headTurnId` as `expectedHeadTurnId`; use `null` only when the branch has no committed turns. If the branch moves before commit, the backend rejects the stale request.
 
 Response:
 
@@ -212,6 +215,7 @@ Request:
 {
   "repoId": "...",
   "branchId": "...",
+  "expectedHeadTurnId": null,
   "userTranscript": "I open the silver door."
 }
 ```
@@ -247,10 +251,13 @@ Commits a Gemini Live turn after the browser receives Gemini Live user and model
   "repoId": "...",
   "branchId": "...",
   "liveSessionId": "...",
+  "expectedHeadTurnId": null,
   "userTranscript": "I open the silver door.",
   "assistantTranscript": "The silver door exhales moonlit dust."
 }
 ```
+
+Use the `branchHeadTurnId` returned by `/v1/provider/gemini/live-token` as `expectedHeadTurnId`. If the branch moves before the Live turn commits, the backend rejects the stale commit.
 
 ## Branching
 

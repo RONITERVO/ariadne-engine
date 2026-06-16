@@ -45,6 +45,7 @@ type RepoState = {
 type LiveTokenResponse = {
   token: string;
   model: string;
+  branchHeadTurnId: string | null;
   sessionId?: string | null;
   expiresAt?: string;
   billingMode?: 'byok' | 'paid';
@@ -94,6 +95,7 @@ type LiveTurn = {
   sentThroughMs: number;
   tailTimer: number | null;
   closeTimer: number | null;
+  expectedHeadTurnId: string | null;
   userTranscript: string;
   assistantTranscript: string;
   userLine: HTMLElement | null;
@@ -374,6 +376,7 @@ async function startLiveTurn(): Promise<void> {
       sentThroughMs: preRollFromMs,
       tailTimer: null,
       closeTimer: null,
+      expectedHeadTurnId: token.branchHeadTurnId,
       userTranscript: '',
       assistantTranscript: '',
       userLine: null,
@@ -472,6 +475,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
         repoId: state.repoId,
         branchId: state.branchId,
         liveSessionId: turn.sessionId ?? undefined,
+        expectedHeadTurnId: turn.expectedHeadTurnId,
         userTranscript,
         assistantTranscript
       }
