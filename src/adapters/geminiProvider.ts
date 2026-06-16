@@ -4,6 +4,7 @@ import {
   CANONIZER_PROMPT_VERSION,
   CANONIZER_SYSTEM_PROMPT
 } from '../prompts.js';
+import { estimateTokensRoughly } from '../domain/contextBudget.js';
 import { StoryEventPatchSchema } from '../domain/validation.js';
 import { canonicalJson, sha256Text } from '../domain/stateHash.js';
 import type { ModelInvocationMetadata, StoryEventPatch } from '../domain/types.js';
@@ -72,7 +73,7 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
       if (!text) throw new ProviderError('Gemini returned an empty actor response.', 'bad_response');
       return {
         text,
-        metadata: actorMetadata({ input, prompt, contextHash, startedAt, usage: readUsage(response) })
+        metadata: actorMetadata({ input, prompt, contextHash, startedAt, usage: readUsageOrEstimate(response, prompt, text) })
       };
     } catch (error) {
       if (error instanceof ProviderError) throw error;
@@ -109,7 +110,7 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
         type: 'complete',
         result: {
           text: trimmed,
-          metadata: actorMetadata({ input, prompt, contextHash, startedAt, usage })
+          metadata: actorMetadata({ input, prompt, contextHash, startedAt, usage: usageWithEstimate(usage, prompt, trimmed) })
         }
       };
     } catch (error) {
@@ -122,6 +123,7 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
     const startedAt = new Date().toISOString();
     const prompt = buildCanonizerPrompt(input);
     const contextHash = sha256Text(canonicalJson(input.priorState));
+    let usage: Record<string, unknown> | null = null;
 
     const metadata = (usage: Record<string, unknown> | null = null): ModelInvocationMetadata => ({
       provider: this.name,
@@ -147,7 +149,9 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
           maxOutputTokens: 2200
         }
       });
-      const json = parseJsonObject(readText(response));
+      const responseText = readText(response);
+      usage = readUsageOrEstimate(response, prompt, responseText);
+      const json = parseJsonObject(responseText);
       const parsed = StoryEventPatchSchema.safeParse({ ...json, turnId: input.turnId });
       if (!parsed.success) {
         return {
@@ -159,10 +163,10 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
               repairStrategy: 'retry_canonizer_or_review_turn'
             }
           ]),
-          metadata: metadata(readUsage(response))
+          metadata: metadata(usage)
         };
       }
-      return { patch: parsed.data as StoryEventPatch, metadata: metadata(readUsage(response)) };
+      return { patch: parsed.data as StoryEventPatch, metadata: metadata(usage) };
     } catch (error) {
       if (error instanceof ProviderError) {
         return {
@@ -174,7 +178,7 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
               repairStrategy: 'retry_canonizer_or_review_turn'
             }
           ]),
-          metadata: metadata()
+          metadata: metadata(usage)
         };
       }
       return {
@@ -203,7 +207,6 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
         automaticActivityDetection: { disabled: true },
         turnCoverage: 'TURN_INCLUDES_ALL_INPUT'
       },
-      explicitVadSignal: true,
       temperature: 0.75
     };
     if (input.systemInstruction) liveConfig.systemInstruction = input.systemInstruction;
@@ -338,6 +341,30 @@ function readUsage(response: unknown): Record<string, unknown> | null {
   if (!response || typeof response !== 'object') return null;
   const usage = (response as { usageMetadata?: unknown }).usageMetadata;
   return usage && typeof usage === 'object' ? (usage as Record<string, unknown>) : null;
+}
+
+function readUsageOrEstimate(response: unknown, prompt: string, output: string): Record<string, unknown> {
+  return usageWithEstimate(readUsage(response), prompt, output);
+}
+
+function usageWithEstimate(usage: Record<string, unknown> | null, prompt: string, output: string): Record<string, unknown> {
+  if (usageHasTokenCounts(usage)) return usage;
+  const promptTokenCount = Math.max(1, estimateTokensRoughly(prompt));
+  const candidatesTokenCount = Math.max(1, estimateTokensRoughly(output));
+  return {
+    ...(usage ?? {}),
+    promptTokenCount,
+    candidatesTokenCount,
+    totalTokenCount: promptTokenCount + candidatesTokenCount,
+    estimated: true,
+    estimateReason: 'missing_provider_usage_metadata'
+  };
+}
+
+function usageHasTokenCounts(usage: Record<string, unknown> | null): usage is Record<string, unknown> {
+  if (!usage) return false;
+  return ['promptTokenCount', 'inputTokenCount', 'candidatesTokenCount', 'outputTokenCount', 'totalTokenCount']
+    .some(key => Number.isFinite(Number(usage[key])) && Number(usage[key]) > 0);
 }
 
 function parseJsonObject(text: string): Record<string, unknown> {
