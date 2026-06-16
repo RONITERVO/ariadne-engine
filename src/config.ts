@@ -64,9 +64,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const billing: BillingConfig = {
     enabled: paidUsageEnabled,
     currency: (env.BILLING_CURRENCY ?? 'usd').toLowerCase(),
-    appUrl: env.APP_URL,
-    stripeSecretKey: env.STRIPE_SECRET_KEY,
-    stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET,
+    appUrl: readOptionalTrimmed(env.APP_URL),
+    stripeSecretKey: readOptionalTrimmed(env.STRIPE_SECRET_KEY),
+    stripeWebhookSecret: readOptionalTrimmed(env.STRIPE_WEBHOOK_SECRET),
     minCheckoutAmountCents: readInt(env.ARIADNE_MIN_CHECKOUT_AMOUNT_CENTS, 500, { min: 50, max: 1_000_000 }),
     defaultCheckoutAmountCents: readInt(env.ARIADNE_DEFAULT_CHECKOUT_AMOUNT_CENTS, 1_000, { min: 50, max: 1_000_000 }),
     liveSessionTtlSeconds: readInt(env.ARIADNE_LIVE_SESSION_TTL_SECONDS, 75, { min: 30, max: 600 })
@@ -176,6 +176,11 @@ function readInt(value: string | undefined, fallback: number, bounds: { min?: nu
   if (bounds.min !== undefined && parsed < bounds.min) return fallback;
   if (bounds.max !== undefined && parsed > bounds.max) return fallback;
   return parsed;
+}
+
+function readOptionalTrimmed(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function readEnum<const T extends readonly string[]>(value: string | undefined, allowed: T, fallback: T[number]): T[number] {

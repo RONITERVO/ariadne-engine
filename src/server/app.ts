@@ -208,20 +208,21 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   app.post('/v1/provider/gemini/live-token', async (request, reply) => {
     const body = parseBody(LiveTokenBodySchema, request.body);
     const access = await resolveProviderExecution(request, config, providers, keyPool);
-    await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-    const branch = await store.getBranch(body.branchId);
-    if (!branch) throw new StoreError(`branch not found: ${body.branchId}`, 'not_found');
-    const branchHeadTurnId = branch.headTurnId ?? null;
-    const charge = calculateLiveSessionCharge(config.modelCatalog, config.liveModel);
-    const liveReservation = access.firebaseUser && config.paidUsageEnabled
-      ? await billing.reserveLiveSession(access.firebaseUser.uid, {
-          ...charge,
-          creditMicros: access.mode === 'paid' ? charge.creditMicros : 0
-        })
-      : null;
+    let liveReservation: Awaited<ReturnType<UsageBillingService['reserveLiveSession']>> | null = null;
     let failure: unknown;
 
     try {
+      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
+      const branch = await store.getBranch(body.branchId);
+      if (!branch) throw new StoreError(`branch not found: ${body.branchId}`, 'not_found');
+      const branchHeadTurnId = branch.headTurnId ?? null;
+      const charge = calculateLiveSessionCharge(config.modelCatalog, config.liveModel);
+      liveReservation = access.firebaseUser && config.paidUsageEnabled
+        ? await billing.reserveLiveSession(access.firebaseUser.uid, {
+            ...charge,
+            creditMicros: access.mode === 'paid' ? charge.creditMicros : 0
+          })
+        : null;
       const result = await access.provider.createLiveToken({
         apiKey: access.providerKey,
         model: config.liveModel,
@@ -337,17 +338,18 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   app.post('/v1/story/turn', async (request, reply) => {
     const body = parseBody(StoryTurnBodySchema, request.body);
     const access = await resolveProviderExecution(request, config, providers, keyPool);
-    await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-    const reservation = access.mode === 'paid'
-      ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
-          route: '/v1/story/turn',
-          actorModel: config.actorModel,
-          canonizerModel: config.canonizerModel
-        })
-      : null;
+    let reservation: UsageReservation | null = null;
     let failure: unknown;
 
     try {
+      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
+      reservation = access.mode === 'paid'
+        ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
+            route: '/v1/story/turn',
+            actorModel: config.actorModel,
+            canonizerModel: config.canonizerModel
+          })
+        : null;
       const result = await service.continueStory({
         repoId: body.repoId,
         branchId: body.branchId,
@@ -370,54 +372,66 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   app.post('/v1/story/turn/stream', async (request, reply) => {
     const body = parseBody(StoryTurnBodySchema, request.body);
     const access = await resolveProviderExecution(request, config, providers, keyPool);
-    await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-    const reservation = access.mode === 'paid'
-      ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
-          route: '/v1/story/turn/stream',
-          actorModel: config.actorModel,
-          canonizerModel: config.canonizerModel
-        })
-      : null;
-    const events = billStoryStream(
-      service.continueStoryStream({
-        repoId: body.repoId,
-        branchId: body.branchId,
-        expectedHeadTurnId: body.expectedHeadTurnId,
-        userTranscript: body.userTranscript,
-        providerKey: access.providerKey,
-        provider: access.provider
-      }),
-      {
-        reservation,
-        access,
-        config,
-        logError: (error, message) => request.log.error({ err: error }, message)
-      }
-    );
+    let reservation: UsageReservation | null = null;
+    let failure: unknown;
 
-    return reply
-      .code(200)
-      .header('cache-control', 'no-cache, no-transform')
-      .header('x-accel-buffering', 'no')
-      .type('application/x-ndjson; charset=utf-8')
-      .send(Readable.from(toNdjson(events)));
+    try {
+      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
+      reservation = access.mode === 'paid'
+        ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
+            route: '/v1/story/turn/stream',
+            actorModel: config.actorModel,
+            canonizerModel: config.canonizerModel
+          })
+        : null;
+      const events = billStoryStream(
+        service.continueStoryStream({
+          repoId: body.repoId,
+          branchId: body.branchId,
+          expectedHeadTurnId: body.expectedHeadTurnId,
+          userTranscript: body.userTranscript,
+          providerKey: access.providerKey,
+          provider: access.provider
+        }),
+        {
+          reservation,
+          access,
+          config,
+          logError: (error, message) => request.log.error({ err: error }, message)
+        }
+      );
+
+      return reply
+        .code(200)
+        .header('cache-control', 'no-cache, no-transform')
+        .header('x-accel-buffering', 'no')
+        .type('application/x-ndjson; charset=utf-8')
+        .send(Readable.from(toNdjson(events)));
+    } catch (error) {
+      failure = error;
+      await reservation?.release('failed').catch(releaseError => request.log.error({ err: releaseError }, 'stream reservation release failed'));
+      throw error;
+    } finally {
+      if (failure) access.lease?.release(failure);
+    }
   });
 
   app.post('/v1/story/live-turn', async (request, reply) => {
     const body = parseBody(LiveTurnBodySchema, request.body);
     const access = await resolveProviderExecution(request, config, providers, keyPool);
-    await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-    const reservation = access.mode === 'paid'
-      ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
-          route: '/v1/story/live-turn',
-          liveModel: config.liveModel,
-          canonizerModel: config.canonizerModel,
-          liveSessionId: body.liveSessionId ?? null
-        })
-      : null;
+    let reservation: UsageReservation | null = null;
     let failure: unknown;
 
     try {
+      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
+      reservation = access.mode === 'paid'
+        ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
+            route: '/v1/story/live-turn',
+            liveModel: config.liveModel,
+            canonizerModel: config.canonizerModel,
+            liveSessionId: body.liveSessionId ?? null
+          })
+        : null;
       const result = await service.commitLiveTurn({
         repoId: body.repoId,
         branchId: body.branchId,

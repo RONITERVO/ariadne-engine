@@ -79,7 +79,7 @@ export function keyFingerprint(key: string): string {
 }
 
 export function redactKey(key: string): string {
-  if (key.length <= 8) return '***';
+  if (key.length <= 16) return '***';
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
 }
 

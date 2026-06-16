@@ -35,6 +35,22 @@ test('production config accepts firestore plus strict CORS, server keys, and Str
   assert.equal(config.firebaseAuthRequired, true);
 });
 
+test('production config rejects whitespace-only required secrets and URLs', () => {
+  assert.throws(
+    () =>
+      loadConfig({
+        NODE_ENV: 'production',
+        ARIADNE_STORAGE: 'firestore',
+        CORS_ORIGINS: 'https://app.example',
+        GEMINI_API_KEYS: 'server-key-one',
+        APP_URL: ' ',
+        STRIPE_SECRET_KEY: '\t',
+        STRIPE_WEBHOOK_SECRET: '  '
+      } as NodeJS.ProcessEnv),
+    /APP_URL.*STRIPE_SECRET_KEY.*STRIPE_WEBHOOK_SECRET/
+  );
+});
+
 test('config rejects removed storage modes', () => {
   assert.throws(
     () =>

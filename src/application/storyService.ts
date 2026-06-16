@@ -165,13 +165,12 @@ export class StoryService {
       }
 
       const turn = await this.commitActorTurn(input, prepared, actor);
-      yield { type: 'turn_committed', turn };
-
       const final = await this.canonizeCommittedTurn(input, prepared, actor, turn);
+      yield { type: 'turn_committed', turn: final.turn };
       yield { type: 'canonized', patch: final.patch, state: final.state, continuityWarnings: final.continuityWarnings };
       yield { type: 'done', assistantTranscript: final.assistantTranscript, modelMetadata: final.modelMetadata };
     } finally {
-      await this.store.releaseBranchMutationLease(lease);
+      await this.releaseBranchMutationLeaseBestEffort(lease);
     }
   }
 
@@ -289,7 +288,13 @@ export class StoryService {
     try {
       return await run();
     } finally {
-      await this.store.releaseBranchMutationLease(lease);
+      await this.releaseBranchMutationLeaseBestEffort(lease);
     }
+  }
+
+  private async releaseBranchMutationLeaseBestEffort(
+    lease: Awaited<ReturnType<StoryStore['acquireBranchMutationLease']>>
+  ): Promise<void> {
+    await this.store.releaseBranchMutationLease(lease).catch(() => {});
   }
 }

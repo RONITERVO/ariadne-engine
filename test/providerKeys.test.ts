@@ -36,4 +36,5 @@ test('fingerprint and redaction do not expose full key', () => {
   const key = 'mock-local-dev-key';
   assert.equal(keyFingerprint(key).length, 16);
   assert.equal(redactKey(key), 'mock...-key');
+  assert.equal(redactKey('123456789'), '***');
 });

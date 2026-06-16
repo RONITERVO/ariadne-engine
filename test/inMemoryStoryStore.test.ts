@@ -118,3 +118,28 @@ test('in-memory store serializes branch mutations', async () => {
     state: { ...state, headTurnId: second.id }
   });
 });
+
+test('in-memory store rejects canon patches with mismatched repo ids', async () => {
+  const store = new InMemoryStoryStore();
+  const first = await store.createRepo({ title: 'First' });
+  const second = await store.createRepo({ title: 'Second' });
+  const turn = await store.commitTurn({
+    repoId: first.repo.id,
+    branchId: first.branch.id,
+    expectedHeadTurnId: null,
+    userTranscript: 'First.',
+    assistantTranscript: 'First response.'
+  });
+
+  await assert.rejects(
+    () =>
+      store.applyCanonPatch({
+        repoId: second.repo.id,
+        branchId: first.branch.id,
+        turnId: turn.id,
+        patch: { turnId: turn.id, events: [], facts: [], threads: [], warnings: [] },
+        state: { ...first.state, headTurnId: turn.id }
+      }),
+    /turn does not belong to repo/
+  );
+});

@@ -220,8 +220,10 @@ export class InMemoryStoryStore implements StoryStore {
     const turn = this.turns.get(input.turnId);
     if (!turn) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
     if (turn.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+    if (turn.repoId !== input.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
     const branch = this.branches.get(input.branchId);
     if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+    if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
     if ((branch.headTurnId ?? null) !== input.turnId) {
       throw new StoreError('cannot canonize a turn that is no longer the branch head', 'conflict');
     }

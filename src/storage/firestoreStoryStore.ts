@@ -276,9 +276,11 @@ export class FirestoreStoryStore implements StoryStore {
       if (!turnSnapshot.exists) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
       const turn = turnSnapshot.data() as TurnCommit;
       if (turn.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+      if (turn.repoId !== input.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
       const branchSnapshot = await tx.get(this.branchRef(input.branchId));
       if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
       const branch = branchSnapshot.data() as BranchRef;
+      if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
       if ((branch.headTurnId ?? null) !== input.turnId) {
         throw new StoreError('cannot canonize a turn that is no longer the branch head', 'conflict');
       }
