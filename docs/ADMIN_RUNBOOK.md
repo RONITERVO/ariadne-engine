@@ -10,7 +10,7 @@ cd D:\Projects\Games\ariadne-engine\ariadne-engine
 
 ## Current Public Targets
 
-- App: https://ariadne-engine-rt.web.app
+- App: https://ariadne-engine-rt.firebaseapp.com
 - Firebase project: `ariadne-engine-rt`
 - Firebase Web App ID: `1:234362703129:web:8955fcac6bea60ee050988`
 - Cloud Run service: `ariadne-api`
@@ -206,7 +206,7 @@ npm run deploy:firebase
 Health/config:
 
 ```powershell
-$base = 'https://ariadne-engine-rt.web.app'
+$base = 'https://ariadne-engine-rt.firebaseapp.com'
 Invoke-RestMethod "$base/health"
 Invoke-RestMethod "$base/v1/config"
 ```
@@ -229,7 +229,7 @@ try {
 
 Browser smoke:
 
-1. Open https://ariadne-engine-rt.web.app.
+1. Open https://ariadne-engine-rt.firebaseapp.com.
 2. Click `Sign in`.
 3. Choose a Google account.
 4. Confirm the app requests microphone permission only after sign-in and setup.
@@ -264,7 +264,7 @@ Never print secret values into terminal logs, GitHub issues, PRs, screenshots, o
 Stripe webhook URL:
 
 ```text
-https://ariadne-engine-rt.web.app/v1/webhooks/stripe
+https://ariadne-engine-rt.firebaseapp.com/v1/webhooks/stripe
 ```
 
 Use Stripe Dashboard to manage webhook endpoints, payment method domains, payments, customers, and Checkout sessions. The backend reads `STRIPE_WEBHOOK_SECRET` from Secret Manager; if the endpoint secret changes in Stripe, add a new Secret Manager version and redeploy the API.

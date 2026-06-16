@@ -10,13 +10,14 @@ const sdkConfig = JSON.parse(sdkConfigOutput).result?.sdkConfig;
 if (!sdkConfig?.apiKey || !sdkConfig?.authDomain || !sdkConfig?.projectId || !sdkConfig?.appId) {
   throw new Error(`Firebase web app config is incomplete for project ${project}.`);
 }
+const hostingAuthDomain = process.env.FIREBASE_AUTH_DOMAIN || sdkConfig.authDomain;
 
 console.log(`Building Firebase Hosting bundle for ${project}.`);
 run('npm', ['run', 'build:web'], {
   env: {
     ...process.env,
     VITE_FIREBASE_API_KEY: sdkConfig.apiKey,
-    VITE_FIREBASE_AUTH_DOMAIN: sdkConfig.authDomain,
+    VITE_FIREBASE_AUTH_DOMAIN: hostingAuthDomain,
     VITE_FIREBASE_PROJECT_ID: sdkConfig.projectId,
     VITE_FIREBASE_APP_ID: sdkConfig.appId,
     VITE_FIREBASE_STORAGE_BUCKET: sdkConfig.storageBucket || '',

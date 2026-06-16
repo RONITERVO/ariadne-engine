@@ -24,7 +24,7 @@ APP_URL=https://your-app.example
 
 Firebase Hosting serves `web/dist`. Same-origin `/health` and `/v1/**` requests are rewritten to the Cloud Run service `ariadne-api` in `europe-west1` by `firebase.json`.
 
-The public deployment currently uses Firebase project `ariadne-engine-rt` and Hosting URL `https://ariadne-engine-rt.web.app`. The hosted frontend uses Firebase Google sign-in. Anonymous Firebase Auth must stay disabled for production.
+The public deployment currently uses Firebase project `ariadne-engine-rt` and launch URL `https://ariadne-engine-rt.firebaseapp.com`. The paired `https://ariadne-engine-rt.web.app` host serves the same Firebase Hosting site, but Google sign-in redirects are registered for the Firebase Auth domain. Anonymous Firebase Auth must stay disabled for production.
 
 For beginner-admin links and console-only commands, use `docs/ADMIN_RUNBOOK.md`.
 
