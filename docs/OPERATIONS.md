@@ -23,7 +23,9 @@ APP_URL=https://your-app.example
 
 Firebase Hosting serves `web/dist`. Same-origin `/health` and `/v1/**` requests are rewritten to the Cloud Run service `ariadne-api` in `europe-west1` by `firebase.json`.
 
-The public deployment currently uses Firebase project `ariadne-engine-rt` and Hosting URL `https://ariadne-engine-rt.web.app`. Anonymous Firebase Auth is enabled for the hosted frontend so first-time users can start, buy credits, and receive Firebase ID tokens without a separate OAuth provider setup. If you later enable Google Auth in Firebase Console, switch the frontend sign-in helper back to a Google provider or add it as a second sign-in option.
+The public deployment currently uses Firebase project `ariadne-engine-rt` and Hosting URL `https://ariadne-engine-rt.web.app`. The hosted frontend uses Firebase Google sign-in. Anonymous Firebase Auth must stay disabled for production.
+
+For beginner-admin links and console-only commands, use `docs/ADMIN_RUNBOOK.md`.
 
 Deploy the API to Cloud Run through Cloud Build:
 
@@ -32,7 +34,7 @@ gcloud builds submit --config cloudbuild.api.yaml \
   --substitutions=_APP_URL=https://your-app.web.app,_CORS_ORIGINS=https://your-app.web.app
 ```
 
-Deploy Hosting and Firestore rules:
+Deploy Hosting and Firestore rules. This command fetches the Firebase Web App config and builds `web/dist` with the required `VITE_FIREBASE_*` values before deploying:
 
 ```bash
 npm run deploy:firebase

@@ -4,6 +4,7 @@ const required = [
   'README.md',
   'SECURITY.md',
   'PRIVACY.md',
+  'CONTRIBUTING.md',
   '.env.example',
   'package-lock.json',
   'Dockerfile',
@@ -12,6 +13,7 @@ const required = [
   'firestore.rules',
   'firestore.indexes.json',
   'docs/BYOK_GOOGLE_AI_STUDIO.md',
+  'docs/ADMIN_RUNBOOK.md',
   'docs/RELEASE_CHECKLIST.md',
   'docs/THREAT_MODEL.md',
   'web/index.html',
@@ -101,6 +103,13 @@ for (const phrase of ['@fastify/websocket', '"pg"', '@types/pg']) {
   }
 }
 
+for (const phrase of ['"build:web:firebase"', 'scripts/build-firebase-web.mjs', 'npm run build:web:firebase && firebase deploy --project ariadne-engine-rt --only hosting,firestore']) {
+  if (!packageJson.includes(phrase)) {
+    console.error(`package.json is missing Firebase Hosting deploy guard: ${phrase}`);
+    process.exit(1);
+  }
+}
+
 for (const [label, contents] of [
   ['server app', app],
   ['README', readme],
@@ -111,6 +120,28 @@ for (const [label, contents] of [
       console.error(`${label} still includes legacy phrase: ${phrase}`);
       process.exit(1);
     }
+  }
+}
+
+const webFirebase = readFileSync('web/src/firebase.ts', 'utf8');
+for (const phrase of ['signInAnonymously', 'anonymous Firebase Auth is enabled']) {
+  if ((webFirebase + readFileSync('docs/OPERATIONS.md', 'utf8') + readFileSync('docs/RELEASE_CHECKLIST.md', 'utf8')).includes(phrase)) {
+    console.error(`Anonymous hosted auth must not be reintroduced: ${phrase}`);
+    process.exit(1);
+  }
+}
+for (const phrase of ['GoogleAuthProvider', 'signInWithPopup', 'signInWithGoogle']) {
+  if (!webFirebase.includes(phrase)) {
+    console.error(`Firebase web auth is missing Google sign-in guard: ${phrase}`);
+    process.exit(1);
+  }
+}
+
+const adminRunbook = readFileSync('docs/ADMIN_RUNBOOK.md', 'utf8');
+for (const phrase of ['https://console.firebase.google.com/project/ariadne-engine-rt/authentication/providers', 'https://console.cloud.google.com/run/detail/europe-west1/ariadne-api/metrics?project=ariadne-engine-rt', 'https://dashboard.stripe.com/webhooks', 'Anonymous Firebase Auth must stay disabled']) {
+  if (!adminRunbook.includes(phrase)) {
+    console.error(`Admin runbook is missing public operations guidance: ${phrase}`);
+    process.exit(1);
   }
 }
 

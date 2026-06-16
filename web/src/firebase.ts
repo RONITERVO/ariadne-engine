@@ -1,8 +1,9 @@
 import { initializeApp, getApps } from 'firebase/app';
 import {
+  GoogleAuthProvider,
   getAuth,
   onAuthStateChanged,
-  signInAnonymously,
+  signInWithPopup,
   signOut,
   type User
 } from 'firebase/auth';
@@ -42,10 +43,12 @@ export function onFirebaseAuthStateChanged(callback: (user: FirebaseUser | null)
   return onAuthStateChanged(auth, callback);
 }
 
-export async function signInFirebase(): Promise<void> {
+export async function signInWithGoogle(): Promise<void> {
   const auth = getFirebaseAuth();
   if (!auth) throw new Error('Firebase auth is not configured.');
-  await signInAnonymously(auth);
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  await signInWithPopup(auth, provider);
 }
 
 export async function signOutFirebase(): Promise<void> {

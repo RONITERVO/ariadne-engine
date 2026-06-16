@@ -4,7 +4,7 @@
 
 > A story is a repo. A timeline is a branch. A spoken turn is a commit. The AI performs; the event ledger remembers.
 
-The hosted release supports Firebase sign-in with prepaid Ariadne credits and still accepts user-supplied Gemini keys for people who do not want to pay Ariadne. BYOK users still sign in so their story repos stay private, but their Gemini calls use their own key and do not consume Ariadne credits. BYOK keys are not persisted.
+The hosted release supports Firebase Google sign-in with prepaid Ariadne credits and still accepts user-supplied Gemini keys for people who do not want to pay Ariadne. BYOK users still sign in so their story repos stay private, but their Gemini calls use their own key and do not consume Ariadne credits. BYOK keys are not persisted.
 
 ## What is included
 
@@ -40,7 +40,7 @@ In another terminal:
 npm run dev:web
 ```
 
-Open the Vite URL, paste a Google AI Studio / Gemini API key or sign in with Firebase, allow microphone access when the browser asks, and speak. The app auto-creates a repo and branch. After setup, the browser shows only transcript lines.
+Open the Vite URL, paste a Google AI Studio / Gemini API key or sign in with Firebase Google Auth, allow microphone access when the browser asks, and speak. The app auto-creates a repo and branch. After setup, the browser shows only transcript lines.
 
 For local provider-free testing, set this in `.env`:
 
@@ -130,6 +130,8 @@ Deploy helpers:
 npm run deploy:api
 npm run deploy:firebase
 ```
+
+For public project administration, service links, and console-only commands, see `docs/ADMIN_RUNBOOK.md`. For contribution guardrails, see `CONTRIBUTING.md`.
 
 ## Runtime shape
 

@@ -17,10 +17,11 @@
     "check": "npm run typecheck && npm test && npm run build && node scripts/check-release.mjs",
     "build:api": "tsc -p tsconfig.json",
     "build:web": "vite build web",
+    "build:web:firebase": "node scripts/build-firebase-web.mjs",
     "typecheck:api": "tsc --noEmit",
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
     "deploy:api": "gcloud builds submit --config cloudbuild.api.yaml",
-    "deploy:firebase": "npm run build:web && firebase deploy --only hosting,firestore"
+    "deploy:firebase": "npm run build:web:firebase && firebase deploy --project ariadne-engine-rt --only hosting,firestore"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",
