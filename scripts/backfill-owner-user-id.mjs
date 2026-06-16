@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 const project = process.argv[2] || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || 'ariadne-engine-rt';
 const database = process.env.FIRESTORE_DATABASE || '(default)';
-const token = execFileSync('gcloud', ['auth', 'print-access-token'], { encoding: 'utf8' }).trim();
+const token = getGcloudAccessToken();
 const apiBase = `https://firestore.googleapis.com/v1/projects/${project}/databases/${encodeURIComponent(database)}`;
 
 const collectionsWithRepoOwner = [
@@ -120,4 +120,13 @@ function encodeValue(value) {
 
 function stringFrom(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function getGcloudAccessToken() {
+  try {
+    return execFileSync('gcloud', ['auth', 'print-access-token'], { encoding: 'utf8' }).trim();
+  } catch (error) {
+    if (process.platform !== 'win32') throw error;
+    return execFileSync('cmd.exe', ['/d', '/s', '/c', 'gcloud auth print-access-token'], { encoding: 'utf8' }).trim();
+  }
 }
