@@ -67,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     appUrl: readOptionalTrimmed(env.APP_URL),
     stripeSecretKey: readOptionalTrimmed(env.STRIPE_SECRET_KEY),
     stripeWebhookSecret: readOptionalTrimmed(env.STRIPE_WEBHOOK_SECRET),
+    stripeProductId: readOptionalTrimmed(env.STRIPE_PRODUCT_ID),
     minCheckoutAmountCents: readInt(env.ARIADNE_MIN_CHECKOUT_AMOUNT_CENTS, 500, { min: 50, max: 1_000_000 }),
     defaultCheckoutAmountCents: readInt(env.ARIADNE_DEFAULT_CHECKOUT_AMOUNT_CENTS, 1_000, { min: 50, max: 1_000_000 }),
     liveSessionTtlSeconds: readInt(env.ARIADNE_LIVE_SESSION_TTL_SECONDS, 75, { min: 30, max: 600 })
@@ -82,7 +83,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       geminiServerKeys,
       appUrl: billing.appUrl,
       stripeSecretKey: billing.stripeSecretKey,
-      stripeWebhookSecret: billing.stripeWebhookSecret
+      stripeWebhookSecret: billing.stripeWebhookSecret,
+      stripeProductId: billing.stripeProductId
     });
   }
 
@@ -140,6 +142,7 @@ function assertProductionSafe(input: {
   appUrl?: string;
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
+  stripeProductId?: string;
 }): void {
   const errors: string[] = [];
   if (input.storage !== 'firestore') errors.push('ARIADNE_STORAGE=firestore is required in production');
@@ -151,6 +154,7 @@ function assertProductionSafe(input: {
   if (!input.appUrl) errors.push('APP_URL is required in production');
   if (!input.stripeSecretKey) errors.push('STRIPE_SECRET_KEY is required in production');
   if (!input.stripeWebhookSecret) errors.push('STRIPE_WEBHOOK_SECRET is required in production');
+  if (!input.stripeProductId) errors.push('STRIPE_PRODUCT_ID is required in production');
   if (errors.length) {
     throw new Error(errors.join('; '));
   }

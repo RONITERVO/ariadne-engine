@@ -11,6 +11,7 @@ export interface BillingConfig {
   appUrl?: string;
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
+  stripeProductId?: string;
   minCheckoutAmountCents: number;
   defaultCheckoutAmountCents: number;
   liveSessionTtlSeconds: number;
@@ -183,10 +184,7 @@ export class UsageBillingService {
         price_data: {
           currency: this.config.currency,
           unit_amount: amount,
-          product_data: {
-            name: 'Ariadne usage credits',
-            metadata: { product: 'ariadne_usage_credits' }
-          }
+          ...this.checkoutProductData()
         }
       }],
       payment_intent_data: {
@@ -398,6 +396,16 @@ export class UsageBillingService {
   private requireStripe(): Stripe {
     if (!this.config.stripeSecretKey) throw new BillingError('Stripe is not configured.', 500, 'stripe_not_configured');
     return new Stripe(this.config.stripeSecretKey);
+  }
+
+  private checkoutProductData(): { product: string } | { product_data: { name: string; metadata: { product: string } } } {
+    if (this.config.stripeProductId) return { product: this.config.stripeProductId };
+    return {
+      product_data: {
+        name: 'Ariadne usage credits',
+        metadata: { product: 'ariadne_usage_credits' }
+      }
+    };
   }
 
   private entitlementRef(uid: string) {

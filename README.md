@@ -118,7 +118,7 @@ For any public deployment:
 3. Set `ARIADNE_STORAGE=firestore` and deploy with Firebase Admin credentials or the Cloud Run service account.
 4. Set a strict `CORS_ORIGINS` allow-list. Do not use `*` for production BYOK.
 5. Keep `ARIADNE_ALLOW_MOCK_PROVIDER=false`.
-6. Set `ARIADNE_PAID_USAGE_ENABLED=true`, `ARIADNE_FIREBASE_AUTH_REQUIRED=true`, `GEMINI_API_KEYS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `APP_URL`.
+6. Set `ARIADNE_PAID_USAGE_ENABLED=true`, `ARIADNE_FIREBASE_AUTH_REQUIRED=true`, `GEMINI_API_KEYS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRODUCT_ID`, and `APP_URL`.
 7. Do not log request bodies containing transcripts unless users have explicitly opted in.
 8. Store audio in encrypted object storage and save only object metadata in Firestore.
 9. Keep provider keys in `x-ariadne-provider-key`; `Authorization: Bearer` is reserved for Firebase ID tokens.

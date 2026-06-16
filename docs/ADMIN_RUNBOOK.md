@@ -37,6 +37,7 @@ cd D:\Projects\Games\ariadne-engine\ariadne-engine
 - Enabled APIs: https://console.cloud.google.com/apis/dashboard?project=ariadne-engine-rt
 - Billing project link: https://console.cloud.google.com/billing/projects?project=ariadne-engine-rt
 - Stripe Checkout sessions: https://dashboard.stripe.com/checkout/sessions
+- Stripe Ariadne product: https://dashboard.stripe.com/products/prod_UiToQK6ecDGBRj
 - Stripe webhooks: https://dashboard.stripe.com/webhooks
 - Stripe customers: https://dashboard.stripe.com/customers
 - Stripe payment method domains: https://dashboard.stripe.com/settings/payment_method_domains
@@ -267,6 +268,14 @@ https://ariadne-engine-rt.web.app/v1/webhooks/stripe
 ```
 
 Use Stripe Dashboard to manage webhook endpoints, payment method domains, payments, customers, and Checkout sessions. The backend reads `STRIPE_WEBHOOK_SECRET` from Secret Manager; if the endpoint secret changes in Stripe, add a new Secret Manager version and redeploy the API.
+
+Dashboard-managed Stripe product:
+
+```text
+prod_UiToQK6ecDGBRj
+```
+
+Cloud Run receives this as `STRIPE_PRODUCT_ID`. Checkout still creates per-session dynamic prices so users can buy different prepaid credit amounts, but every line item now belongs to the dashboard-managed Ariadne usage credits product instead of creating auto-generated products.
 
 ## Firestore
 
