@@ -40,6 +40,7 @@ export class InMemoryStoryStore implements StoryStore {
     const branch: BranchRef = {
       id: branchId,
       repoId,
+      ownerUserId: repo.ownerUserId,
       name: 'main',
       headTurnId: null,
       forkedFromTurnId: null,
@@ -107,6 +108,7 @@ export class InMemoryStoryStore implements StoryStore {
     const branch: BranchRef = {
       id: branchId,
       repoId: input.repoId,
+      ownerUserId: repo.ownerUserId ?? null,
       name: input.name,
       headTurnId: input.sourceTurnId ?? null,
       forkedFromTurnId: input.sourceTurnId ?? null,
@@ -141,6 +143,7 @@ export class InMemoryStoryStore implements StoryStore {
       leaseId: randomUUID(),
       repoId: input.repoId,
       branchId: input.branchId,
+      ownerUserId: repo.ownerUserId ?? branch.ownerUserId ?? null,
       expiresAt: new Date(nowMs + input.ttlMs).toISOString()
     };
     this.branchMutationLeases.set(input.branchId, lease);
@@ -171,6 +174,7 @@ export class InMemoryStoryStore implements StoryStore {
       id: randomUUID(),
       repoId: input.repoId,
       branchId: input.branchId,
+      ownerUserId: repo.ownerUserId ?? branch.ownerUserId ?? null,
       parentTurnId,
       turnIndex: parent ? parent.turnIndex + 1 : 1,
       userAudioAssetId: input.userAudioAssetId ?? null,

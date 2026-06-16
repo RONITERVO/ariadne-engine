@@ -29,6 +29,47 @@ type PublicConfig = {
   liveBillableSeconds: number;
 };
 
+type AdminDocument = {
+  id: string;
+  path: string;
+  data: Record<string, unknown>;
+};
+
+type AdminUsageSummary = {
+  count: number;
+  usedCreditMicros: number;
+  reservedCreditMicros: number;
+  statuses: Record<string, number>;
+  recent: AdminDocument[];
+};
+
+type AdminUserSummary = {
+  uid: string;
+  email: string;
+  name: string;
+  picture: string;
+  stripeCustomerId: string;
+  lastSeenAt: unknown;
+  updatedAt: unknown;
+  entitlement: Record<string, unknown>;
+  usage: {
+    liveSessions: AdminUsageSummary;
+    storyTurns: AdminUsageSummary;
+  };
+  story: {
+    repos: number;
+  };
+};
+
+type AdminUsersResponse = {
+  users: AdminUserSummary[];
+};
+
+type AdminUserDetailResponse = {
+  user: AdminUserSummary;
+  documents: Record<string, AdminDocument[]>;
+};
+
 type RepoState = {
   repoId: string | null;
   branchId: string | null;
@@ -130,6 +171,7 @@ const state: RepoState = {
   recognitionActive: false,
   usingByok: false
 };
+const ADMIN_PATH = window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/');
 
 const els = {
   gate: byId<HTMLElement>('key-gate'),
@@ -151,25 +193,333 @@ let activeTurn: LiveTurn | null = null;
 let liveStarting: Promise<void> | null = null;
 let audioPlayhead = 0;
 
-els.apiKey.value = state.key;
-els.apiKey.addEventListener('input', () => {
-  state.key = els.apiKey.value.trim();
-  state.usingByok = Boolean(state.key);
-  sessionStorage.setItem(STORAGE.key, state.key);
-  scheduleBoot();
-});
-els.apiKey.addEventListener('paste', () => window.setTimeout(scheduleBoot, 0));
-els.signIn.addEventListener('click', () => void signInWithGoogle().catch(error => setGateStatus(messageFrom(error))));
-els.signOut.addEventListener('click', () => void signOutFirebase().catch(error => setGateStatus(messageFrom(error))));
-els.buyCredits.addEventListener('click', () => void buyCredits());
+if (ADMIN_PATH) {
+  startAdminDashboard();
+} else {
+  startTranscriptApp();
+}
 
-onFirebaseAuthStateChanged(user => {
-  state.firebaseUser = user;
-  updateGateActions();
-  if (user && !state.started) scheduleBoot();
-});
+function startTranscriptApp(): void {
+  els.apiKey.value = state.key;
+  els.apiKey.addEventListener('input', () => {
+    state.key = els.apiKey.value.trim();
+    state.usingByok = Boolean(state.key);
+    sessionStorage.setItem(STORAGE.key, state.key);
+    scheduleBoot();
+  });
+  els.apiKey.addEventListener('paste', () => window.setTimeout(scheduleBoot, 0));
+  els.signIn.addEventListener('click', () => void signInWithGoogle().catch(error => setGateStatus(messageFrom(error))));
+  els.signOut.addEventListener('click', () => void signOutFirebase().catch(error => setGateStatus(messageFrom(error))));
+  els.buyCredits.addEventListener('click', () => void buyCredits());
 
-if (state.key || !isFirebaseConfigured()) scheduleBoot();
+  onFirebaseAuthStateChanged(user => {
+    state.firebaseUser = user;
+    updateGateActions();
+    if (user && !state.started) scheduleBoot();
+  });
+
+  if (state.key || !isFirebaseConfigured()) scheduleBoot();
+}
+
+function startAdminDashboard(): void {
+  document.title = 'Ariadne Admin';
+  document.body.innerHTML = `
+    <main class="admin-shell" aria-label="Ariadne admin">
+      <header class="admin-header">
+        <div>
+          <p class="eyebrow">Ariadne Engine</p>
+          <h1>Admin</h1>
+        </div>
+        <div class="admin-actions">
+          <button id="admin-sign-in" type="button">Sign in</button>
+          <button id="admin-refresh" type="button" hidden>Refresh</button>
+          <button id="admin-sign-out" type="button" hidden>Sign out</button>
+        </div>
+      </header>
+      <p id="admin-status" class="status" role="status"></p>
+      <section class="admin-layout">
+        <section class="admin-panel" aria-labelledby="admin-users-title">
+          <h2 id="admin-users-title">Users</h2>
+          <div id="admin-users" class="admin-table-wrap"></div>
+        </section>
+        <section class="admin-panel admin-detail" aria-labelledby="admin-detail-title">
+          <h2 id="admin-detail-title">Detail</h2>
+          <div id="admin-detail"></div>
+        </section>
+      </section>
+    </main>
+  `;
+
+  const adminEls = {
+    signIn: byId<HTMLButtonElement>('admin-sign-in'),
+    signOut: byId<HTMLButtonElement>('admin-sign-out'),
+    refresh: byId<HTMLButtonElement>('admin-refresh'),
+    status: byId<HTMLElement>('admin-status'),
+    users: byId<HTMLElement>('admin-users'),
+    detail: byId<HTMLElement>('admin-detail')
+  };
+  let selectedUid = '';
+
+  adminEls.signIn.addEventListener('click', () => void signInWithGoogle().catch(error => setAdminStatus(adminEls, messageFrom(error))));
+  adminEls.signOut.addEventListener('click', () => void signOutFirebase().catch(error => setAdminStatus(adminEls, messageFrom(error))));
+  adminEls.refresh.addEventListener('click', () => void refreshAdminUsers(adminEls, selectedUid).then(uid => {
+    selectedUid = uid;
+  }));
+
+  onFirebaseAuthStateChanged(user => {
+    state.firebaseUser = user;
+    adminEls.signIn.hidden = !isFirebaseConfigured() || Boolean(user);
+    adminEls.signOut.hidden = !isFirebaseConfigured() || !user;
+    adminEls.refresh.hidden = !isFirebaseConfigured() || !user;
+    if (!isFirebaseConfigured()) {
+      setAdminStatus(adminEls, 'Firebase auth is not configured.');
+      return;
+    }
+    if (!user) {
+      setAdminStatus(adminEls, 'Sign in with an admin account.');
+      adminEls.users.replaceChildren();
+      adminEls.detail.replaceChildren();
+      return;
+    }
+    void refreshAdminUsers(adminEls, selectedUid).then(uid => {
+      selectedUid = uid;
+    });
+  });
+}
+
+async function refreshAdminUsers(
+  adminEls: { status: HTMLElement; users: HTMLElement; detail: HTMLElement },
+  selectedUid: string
+): Promise<string> {
+  setAdminStatus(adminEls, 'Loading users...');
+  const payload = await authorizedFetch<AdminUsersResponse>('/v1/admin/users', { method: 'GET' });
+  renderAdminUsers(adminEls, payload.users, selectedUid);
+  const nextUid = selectedUid || payload.users[0]?.uid || '';
+  if (nextUid) await loadAdminUser(adminEls, nextUid);
+  setAdminStatus(adminEls, `${payload.users.length} user${payload.users.length === 1 ? '' : 's'}.`);
+  return nextUid;
+}
+
+function renderAdminUsers(
+  adminEls: { users: HTMLElement; detail: HTMLElement; status: HTMLElement },
+  users: AdminUserSummary[],
+  selectedUid: string
+): void {
+  const table = document.createElement('table');
+  table.className = 'admin-table';
+  table.append(adminHeaderRow(['User', 'Credits', 'Live', 'Turns', 'Repos', 'Stripe']));
+  const body = document.createElement('tbody');
+  for (const user of users) {
+    const row = document.createElement('tr');
+    row.classList.toggle('is-selected', user.uid === selectedUid);
+
+    const userCell = document.createElement('td');
+    const open = document.createElement('button');
+    open.className = 'admin-link-button';
+    open.type = 'button';
+    open.textContent = user.email || user.name || shortId(user.uid);
+    open.addEventListener('click', () => void loadAdminUser(adminEls, user.uid));
+    userCell.append(open, smallText(user.uid));
+    row.append(userCell);
+
+    appendCell(row, formatCredits(numberFrom(user.entitlement.remainingCreditMicros)));
+    appendCell(row, `${user.usage.liveSessions.count}`);
+    appendCell(row, `${user.usage.storyTurns.count}`);
+    appendCell(row, `${user.story.repos}`);
+    appendCell(row, user.stripeCustomerId || '-');
+    body.append(row);
+  }
+  table.append(body);
+  adminEls.users.replaceChildren(table);
+}
+
+async function loadAdminUser(
+  adminEls: { status: HTMLElement; detail: HTMLElement },
+  uid: string
+): Promise<void> {
+  setAdminStatus(adminEls, `Loading ${shortId(uid)}...`);
+  const payload = await authorizedFetch<AdminUserDetailResponse>(`/v1/admin/users/${encodeURIComponent(uid)}`, { method: 'GET' });
+  renderAdminDetail(adminEls.detail, payload);
+  setAdminStatus(adminEls, `Loaded ${payload.user.email || shortId(uid)}.`);
+}
+
+function renderAdminDetail(container: HTMLElement, payload: AdminUserDetailResponse): void {
+  const user = payload.user;
+  const root = document.createDocumentFragment();
+  const identity = document.createElement('section');
+  identity.className = 'admin-summary';
+  identity.append(
+    metric('Email', user.email || '-'),
+    metric('UID', user.uid),
+    metric('Name', user.name || '-'),
+    metric('Stripe customer', user.stripeCustomerId || '-'),
+    metric('Remaining credits', formatCredits(numberFrom(user.entitlement.remainingCreditMicros))),
+    metric('Used credits', formatCredits(numberFrom(user.entitlement.usedCreditMicros))),
+    metric('Reserved credits', formatCredits(numberFrom(user.entitlement.reservedCreditMicros))),
+    metric('Last seen', formatDate(user.lastSeenAt))
+  );
+  root.append(identity);
+
+  root.append(
+    usagePanel('Live sessions', user.usage.liveSessions),
+    usagePanel('Story turns', user.usage.storyTurns)
+  );
+
+  const order = [
+    'repos',
+    'branches',
+    'turns',
+    'branchStates',
+    'branchSnapshots',
+    'eventPatches',
+    'continuityWarnings',
+    'branchMutationLocks',
+    'billingEvents'
+  ];
+  for (const key of order) {
+    root.append(documentSection(key, payload.documents[key] ?? []));
+  }
+  container.replaceChildren(root);
+}
+
+function usagePanel(title: string, usage: AdminUsageSummary): HTMLElement {
+  const section = document.createElement('section');
+  section.className = 'admin-doc-section';
+  const heading = document.createElement('h3');
+  heading.textContent = title;
+  const summary = document.createElement('p');
+  summary.className = 'admin-muted';
+  summary.textContent = `${usage.count} total, ${formatCredits(usage.usedCreditMicros)} used, statuses: ${statusesText(usage.statuses)}`;
+  section.append(heading, summary);
+  if (usage.recent.length) section.append(documentTable(usage.recent));
+  return section;
+}
+
+function documentSection(title: string, docs: AdminDocument[]): HTMLElement {
+  const section = document.createElement('section');
+  section.className = 'admin-doc-section';
+  const heading = document.createElement('h3');
+  heading.textContent = `${title} (${docs.length})`;
+  section.append(heading);
+  section.append(docs.length ? documentTable(docs) : smallText('No documents.'));
+  return section;
+}
+
+function documentTable(docs: AdminDocument[]): HTMLTableElement {
+  const table = document.createElement('table');
+  table.className = 'admin-table admin-doc-table';
+  table.append(adminHeaderRow(['Path', 'Time', 'Status', 'Refs', 'Raw']));
+  const body = document.createElement('tbody');
+  for (const doc of docs) {
+    const row = document.createElement('tr');
+    appendCell(row, doc.path);
+    appendCell(row, formatDate(primaryDate(doc.data)));
+    appendCell(row, stringFrom(doc.data.status) || stringFrom(doc.data.severity) || '-');
+    appendCell(row, refsText(doc.data));
+    const rawCell = document.createElement('td');
+    const details = document.createElement('details');
+    const summary = document.createElement('summary');
+    summary.textContent = doc.id;
+    const raw = document.createElement('pre');
+    raw.textContent = JSON.stringify(doc.data, null, 2);
+    details.append(summary, raw);
+    rawCell.append(details);
+    row.append(rawCell);
+    body.append(row);
+  }
+  table.append(body);
+  return table;
+}
+
+function adminHeaderRow(labels: string[]): HTMLTableSectionElement {
+  const row = document.createElement('tr');
+  for (const label of labels) {
+    const cell = document.createElement('th');
+    cell.scope = 'col';
+    cell.textContent = label;
+    row.append(cell);
+  }
+  const head = document.createElement('thead');
+  head.append(row);
+  return head;
+}
+
+function metric(label: string, value: string): HTMLElement {
+  const item = document.createElement('div');
+  item.className = 'admin-metric';
+  const name = document.createElement('span');
+  name.textContent = label;
+  const text = document.createElement('strong');
+  text.textContent = value;
+  item.append(name, text);
+  return item;
+}
+
+function appendCell(row: HTMLTableRowElement, text: string): void {
+  const cell = document.createElement('td');
+  cell.textContent = text;
+  row.append(cell);
+}
+
+function smallText(text: string): HTMLElement {
+  const node = document.createElement('small');
+  node.textContent = text;
+  return node;
+}
+
+function setAdminStatus(adminEls: { status: HTMLElement }, text: string): void {
+  adminEls.status.textContent = text;
+}
+
+function primaryDate(data: Record<string, unknown>): unknown {
+  return data.updatedAt ?? data.lastSeenAt ?? data.createdAt ?? data.settledAt ?? data.endedAt ?? data.appliedAt ?? null;
+}
+
+function refsText(data: Record<string, unknown>): string {
+  const refs = [
+    ['repo', data.repoId],
+    ['branch', data.branchId],
+    ['turn', data.turnId],
+    ['uid', data.ownerUserId ?? data.uid]
+  ]
+    .map(([label, value]) => {
+      const text = stringFrom(value);
+      return text ? `${label}:${shortId(text)}` : '';
+    })
+    .filter(Boolean);
+  return refs.length ? refs.join(' ') : '-';
+}
+
+function statusesText(statuses: Record<string, number>): string {
+  const entries = Object.entries(statuses);
+  return entries.length ? entries.map(([status, count]) => `${status} ${count}`).join(', ') : '-';
+}
+
+function shortId(value: string): string {
+  return value.length > 14 ? `${value.slice(0, 8)}...${value.slice(-4)}` : value;
+}
+
+function stringFrom(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function numberFrom(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function formatCredits(micros: number): string {
+  return `$${(Math.max(0, micros) / 1_000_000).toFixed(4)}`;
+}
+
+function formatDate(value: unknown): string {
+  if (!value) return '-';
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
+  }
+  return String(value);
+}
 
 function scheduleBoot(): void {
   window.clearTimeout(bootDebounce);

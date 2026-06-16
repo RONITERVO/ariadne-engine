@@ -33,6 +33,7 @@ export interface StoryRepo {
 export interface BranchRef {
   id: ID;
   repoId: ID;
+  ownerUserId?: ID | null;
   name: string;
   headTurnId?: ID | null;
   forkedFromTurnId?: ID | null;
@@ -58,6 +59,7 @@ export interface TurnCommit {
   id: ID;
   repoId: ID;
   branchId: ID;
+  ownerUserId?: ID | null;
   parentTurnId?: ID | null;
   turnIndex: number;
   userAudioAssetId?: ID | null;

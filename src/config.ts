@@ -36,6 +36,7 @@ export interface AppConfig {
   geminiKeyPool: GeminiKeyPoolConfig;
   turnReservationCreditMicros: number;
   billing: BillingConfig;
+  adminEmails: string[];
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -72,6 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     defaultCheckoutAmountCents: readInt(env.ARIADNE_DEFAULT_CHECKOUT_AMOUNT_CENTS, 1_000, { min: 50, max: 1_000_000 }),
     liveSessionTtlSeconds: readInt(env.ARIADNE_LIVE_SESSION_TTL_SECONDS, 75, { min: 30, max: 600 })
   };
+  const adminEmails = parseStringList(env.ARIADNE_ADMIN_EMAILS).map(email => email.toLowerCase());
 
   if (appEnv === 'production') {
     assertProductionSafe({
@@ -128,7 +130,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       authCooldownMs: readInt(env.GEMINI_KEY_AUTH_COOLDOWN_SECONDS, 1800, { min: 60, max: 86_400 }) * 1000
     },
     turnReservationCreditMicros,
-    billing
+    billing,
+    adminEmails
   };
 }
 
@@ -162,6 +165,11 @@ function assertProductionSafe(input: {
 
 function parseCorsOrigins(value: string): string[] | true {
   if (value.trim() === '*') return true;
+  return parseStringList(value);
+}
+
+function parseStringList(value: string | undefined): string[] {
+  if (!value) return [];
   return value
     .split(',')
     .map(origin => origin.trim())

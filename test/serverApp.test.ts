@@ -45,6 +45,19 @@ test('server rejects provider secrets in request bodies and query strings', asyn
   assert.match(queryResponse.json().message, /forbidden query secret field/);
 });
 
+test('admin users route is not public', async t => {
+  const app = await buildApp(testConfig());
+  t.after(() => app.close());
+
+  const response = await app.inject({
+    method: 'GET',
+    url: '/v1/admin/users'
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.json().error, 'firebase_auth_required');
+});
+
 test('streaming story route emits realtime deltas and final canonized state', async t => {
   const app = await buildApp(testConfig());
   t.after(() => app.close());

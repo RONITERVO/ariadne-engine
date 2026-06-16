@@ -39,6 +39,7 @@ import {
 import type { StoryRepo } from '../domain/types.js';
 import { getBearerToken, looksLikeJwt, requireFirebaseUser } from './firebaseAuth.js';
 import { HttpError } from './httpErrors.js';
+import { registerAdminRoutes } from './adminRoutes.js';
 
 export interface AppDeps {
   store?: StoryStore;
@@ -196,6 +197,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     minCheckoutAmountCents: config.billing.minCheckoutAmountCents,
     liveBillableSeconds: calculateLiveSessionCharge(config.modelCatalog, config.liveModel).billableSeconds
   }));
+  registerAdminRoutes(app, config);
 
   app.post('/v1/provider/gemini/validate-key', async (request, reply) => {
     const providerKey = extractProviderKey(request.headers);

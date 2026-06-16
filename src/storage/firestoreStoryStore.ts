@@ -45,6 +45,7 @@ export class FirestoreStoryStore implements StoryStore {
     const branch: BranchRef = {
       id: branchId,
       repoId,
+      ownerUserId: repo.ownerUserId,
       name: 'main',
       headTurnId: null,
       forkedFromTurnId: null,
@@ -59,6 +60,7 @@ export class FirestoreStoryStore implements StoryStore {
       tx.set(this.stateRef(branchId), {
         repoId,
         branchId,
+        ownerUserId: repo.ownerUserId,
         headTurnId: null,
         state,
         stateHash: sha256Json(state),
@@ -141,6 +143,7 @@ export class FirestoreStoryStore implements StoryStore {
       const branch: BranchRef = {
         id: branchId,
         repoId: input.repoId,
+        ownerUserId: repo.ownerUserId ?? null,
         name: input.name,
         headTurnId: input.sourceTurnId ?? null,
         forkedFromTurnId: input.sourceTurnId ?? null,
@@ -155,6 +158,7 @@ export class FirestoreStoryStore implements StoryStore {
       tx.set(this.stateRef(branchId), {
         repoId: input.repoId,
         branchId,
+        ownerUserId: repo.ownerUserId ?? null,
         headTurnId: input.sourceTurnId ?? null,
         state,
         stateHash: sha256Json(state),
@@ -168,6 +172,7 @@ export class FirestoreStoryStore implements StoryStore {
     return this.db.runTransaction(async tx => {
       const repoSnapshot = await tx.get(this.repoRef(input.repoId));
       if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repo = repoSnapshot.data() as StoryRepo;
       const branchSnapshot = await tx.get(this.branchRef(input.branchId));
       if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
       const branch = branchSnapshot.data() as BranchRef;
@@ -185,6 +190,7 @@ export class FirestoreStoryStore implements StoryStore {
         leaseId: randomUUID(),
         repoId: input.repoId,
         branchId: input.branchId,
+        ownerUserId: repo.ownerUserId ?? branch.ownerUserId ?? null,
         expiresAt: new Date(nowMs + input.ttlMs).toISOString()
       };
       tx.set(lockRef, {
@@ -211,6 +217,7 @@ export class FirestoreStoryStore implements StoryStore {
     return this.db.runTransaction(async tx => {
       const repoSnapshot = await tx.get(this.repoRef(input.repoId));
       if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repo = repoSnapshot.data() as StoryRepo;
       const branchSnapshot = await tx.get(this.branchRef(input.branchId));
       if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
       const branch = branchSnapshot.data() as BranchRef;
@@ -226,6 +233,7 @@ export class FirestoreStoryStore implements StoryStore {
         id: randomUUID(),
         repoId: input.repoId,
         branchId: input.branchId,
+        ownerUserId: repo.ownerUserId ?? branch.ownerUserId ?? null,
         parentTurnId,
         turnIndex: parent ? parent.turnIndex + 1 : 1,
         userAudioAssetId: input.userAudioAssetId ?? null,
@@ -284,17 +292,23 @@ export class FirestoreStoryStore implements StoryStore {
       if ((branch.headTurnId ?? null) !== input.turnId) {
         throw new StoreError('cannot canonize a turn that is no longer the branch head', 'conflict');
       }
+      const repoSnapshot = await tx.get(this.repoRef(input.repoId));
+      if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repo = repoSnapshot.data() as StoryRepo;
 
       const now = new Date().toISOString();
       const stateHash = sha256Json(input.state);
       const status = input.patch.warnings.some(w => w.severity === 'high') ? 'needs_review' : 'canonized';
       const modelMetadata = [...(turn.modelMetadata ?? []), ...(input.modelMetadata ?? [])];
+      const ownerUserId = repo.ownerUserId ?? turn.ownerUserId ?? branch.ownerUserId ?? null;
 
-      tx.set(this.db.collection(COLLECTIONS.patches).doc(randomUUID()), {
-        id: randomUUID(),
+      const patchId = randomUUID();
+      tx.set(this.db.collection(COLLECTIONS.patches).doc(patchId), {
+        id: patchId,
         repoId: input.repoId,
         branchId: input.branchId,
         turnId: input.turnId,
+        ownerUserId,
         patch: input.patch,
         status: 'applied',
         createdAt: now,
@@ -304,6 +318,7 @@ export class FirestoreStoryStore implements StoryStore {
         repoId: input.repoId,
         branchId: input.branchId,
         turnId: input.turnId,
+        ownerUserId,
         state: input.state,
         stateHash,
         createdAt: now
@@ -312,6 +327,7 @@ export class FirestoreStoryStore implements StoryStore {
         repoId: input.repoId,
         branchId: input.branchId,
         headTurnId: input.turnId,
+        ownerUserId,
         state: input.state,
         stateHash,
         updatedAt: now
@@ -320,10 +336,13 @@ export class FirestoreStoryStore implements StoryStore {
       tx.update(this.repoRef(input.repoId), { updatedAt: now });
 
       for (const warning of input.patch.warnings) {
-        tx.set(this.db.collection(COLLECTIONS.warnings).doc(randomUUID()), {
+        const warningId = randomUUID();
+        tx.set(this.db.collection(COLLECTIONS.warnings).doc(warningId), {
+          id: warningId,
           repoId: input.repoId,
           branchId: input.branchId,
           turnId: input.turnId,
+          ownerUserId,
           severity: warning.severity,
           warningType: warning.type,
           message: warning.message,

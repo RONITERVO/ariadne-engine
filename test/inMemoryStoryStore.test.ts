@@ -4,9 +4,10 @@ import { InMemoryStoryStore } from '../src/storage/inMemoryStoryStore.js';
 
 test('in-memory store creates repos, commits turns, stores metadata, and forks from snapshots', async () => {
   const store = new InMemoryStoryStore();
-  const { repo, branch, state } = await store.createRepo({ title: 'Test', defaultStyle: 'mythic' });
+  const { repo, branch, state } = await store.createRepo({ title: 'Test', defaultStyle: 'mythic', ownerUserId: 'user-123' });
   assert.equal(repo.title, 'Test');
   assert.equal(branch.name, 'main');
+  assert.equal(branch.ownerUserId, 'user-123');
   assert.equal(state.branchId, branch.id);
 
   const turn = await store.commitTurn({
@@ -24,6 +25,7 @@ test('in-memory store creates repos, commits turns, stores metadata, and forks f
       }
     ]
   });
+  assert.equal(turn.ownerUserId, 'user-123');
 
   await store.applyCanonPatch({
     repoId: repo.id,
@@ -47,6 +49,7 @@ test('in-memory store creates repos, commits turns, stores metadata, and forks f
 
   const fork = await store.forkBranch({ repoId: repo.id, sourceTurnId: turn.id, name: 'darker-ending' });
   assert.equal(fork.branch.forkedFromTurnId, turn.id);
+  assert.equal(fork.branch.ownerUserId, 'user-123');
   assert.equal(fork.state.headTurnId, turn.id);
 });
 
