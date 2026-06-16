@@ -11,7 +11,7 @@
 - [ ] Set `ARIADNE_PAID_USAGE_ENABLED=true` and `ARIADNE_FIREBASE_AUTH_REQUIRED=true`.
 - [ ] Configure Firebase Google Auth for the hosted frontend and confirm anonymous Auth is disabled.
 - [ ] Set `GEMINI_API_KEYS` and server-key rotation limits.
-- [ ] Configure Stripe Checkout and `STRIPE_WEBHOOK_SECRET`.
+- [ ] Configure Stripe Checkout, `STRIPE_WEBHOOK_SECRET`, and dashboard-managed `STRIPE_PRODUCT_ID`.
 - [ ] Confirm `/v1/webhooks/stripe` grants credits idempotently.
 - [ ] Confirm overlapping turn requests on the same branch return conflict instead of creating competing heads.
 - [ ] Confirm Live turns include `expectedHeadTurnId` and stale Live commits are rejected.

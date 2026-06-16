@@ -14,6 +14,7 @@ ARIADNE_FIREBASE_AUTH_REQUIRED=true
 GEMINI_API_KEYS=...
 STRIPE_SECRET_KEY=...
 STRIPE_WEBHOOK_SECRET=...
+STRIPE_PRODUCT_ID=prod_...
 APP_URL=https://your-app.example
 ```
 
@@ -60,7 +61,7 @@ Client Firestore rules allow users to read only their own user, entitlement, and
 
 ## Billing
 
-Paid users buy prepaid Ariadne credits through Stripe Checkout. Internally, usage is tracked in credit micros, where `1_000_000` credit micros equals one major unit of `BILLING_CURRENCY`.
+Paid users buy prepaid Ariadne credits through Stripe Checkout. `STRIPE_PRODUCT_ID` points Checkout at the dashboard-managed Stripe product for Ariadne credits. Internally, usage is tracked in credit micros, where `1_000_000` credit micros equals one major unit of `BILLING_CURRENCY`.
 
 Gemini Live token issuance reserves and then settles one fixed session charge. The default Live catalog bills every Live session as 30 seconds and the entitlement document enforces at most one active paid Live session per Firebase user.
 
