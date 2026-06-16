@@ -130,7 +130,7 @@ for (const phrase of ['signInAnonymously', 'anonymous Firebase Auth is enabled']
     process.exit(1);
   }
 }
-for (const phrase of ['GoogleAuthProvider', 'signInWithPopup', 'signInWithGoogle']) {
+for (const phrase of ['GoogleAuthProvider', 'signInWithRedirect', 'getRedirectResult', 'signInWithGoogle']) {
   if (!webFirebase.includes(phrase)) {
     console.error(`Firebase web auth is missing Google sign-in guard: ${phrase}`);
     process.exit(1);

@@ -2,8 +2,9 @@ import { initializeApp, getApps } from 'firebase/app';
 import {
   GoogleAuthProvider,
   getAuth,
+  getRedirectResult,
   onAuthStateChanged,
-  signInWithPopup,
+  signInWithRedirect,
   signOut,
   type User
 } from 'firebase/auth';
@@ -24,6 +25,8 @@ export function isFirebaseConfigured(): boolean {
   return Boolean(firebaseConfig.apiKey && firebaseConfig.authDomain && firebaseConfig.projectId && firebaseConfig.appId);
 }
 
+let redirectResultPromise: Promise<void> | null = null;
+
 function getFirebaseApp() {
   if (!isFirebaseConfigured()) return null;
   return getApps()[0] || initializeApp(firebaseConfig);
@@ -40,6 +43,8 @@ export function onFirebaseAuthStateChanged(callback: (user: FirebaseUser | null)
     callback(null);
     return () => {};
   }
+  redirectResultPromise ??= getRedirectResult(auth).then(() => undefined);
+  void redirectResultPromise.catch(error => console.error('Firebase redirect sign-in failed', error));
   return onAuthStateChanged(auth, callback);
 }
 
@@ -48,7 +53,7 @@ export async function signInWithGoogle(): Promise<void> {
   if (!auth) throw new Error('Firebase auth is not configured.');
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account' });
-  await signInWithPopup(auth, provider);
+  await signInWithRedirect(auth, provider);
 }
 
 export async function signOutFirebase(): Promise<void> {
