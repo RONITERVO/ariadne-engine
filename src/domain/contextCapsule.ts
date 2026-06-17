@@ -1,4 +1,4 @@
-import { normalizeContextBudgetMode, type ContextBudgetMode } from './contextBudget.js';
+import { CONTEXT_BUDGET_MODE, type ContextBudgetMode } from './contextBudget.js';
 import type { WorldState, TurnCommit } from './types.js';
 
 export interface ContextCapsule {
@@ -29,7 +29,7 @@ export function buildContextCapsule(state: WorldState, recentTurns: TurnCommit[]
       userTranscript: t.userTranscript,
       assistantTranscript: t.assistantTranscript
     })),
-    contextBudgetMode: normalizeContextBudgetMode(state.contextBudget),
+    contextBudgetMode: state.contextBudget?.mode ?? CONTEXT_BUDGET_MODE.STABLE,
     remainingTurnBudget: state.contextBudget?.remainingTurnBudget ?? 12
   };
 }

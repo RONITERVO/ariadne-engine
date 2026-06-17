@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CONTEXT_BUDGET_MODE, decideContextBudget, normalizeContextBudgetMode } from '../src/domain/contextBudget.js';
+import { CONTEXT_BUDGET_MODE, decideContextBudget } from '../src/domain/contextBudget.js';
 
 const config = {
   contextWindowTokens: 1000,
@@ -25,10 +25,4 @@ test('context budget enters closure before hard stop', () => {
 test('context budget detects hard stop', () => {
   const decision = decideContextBudget(760, config);
   assert.equal(decision.mode, CONTEXT_BUDGET_MODE.HARD_STOP);
-});
-
-test('context budget normalizes legacy boolean state', () => {
-  assert.equal(normalizeContextBudgetMode({ closureMode: true }), CONTEXT_BUDGET_MODE.CLOSURE);
-  assert.equal(normalizeContextBudgetMode({ closureMode: true, hardStop: true }), CONTEXT_BUDGET_MODE.HARD_STOP);
-  assert.equal(normalizeContextBudgetMode({ mode: CONTEXT_BUDGET_MODE.STABLE, hardStop: true }), CONTEXT_BUDGET_MODE.STABLE);
 });

@@ -821,7 +821,6 @@ function buildWorldStateMapNode(stateDoc: AdminDocument): AdminMapNode {
   ];
 
   if (contextBudget) {
-    const budgetMode = contextBudgetModeFromRecord(contextBudget);
     children.push({
       id: `state:${branchId}:budget`,
       kicker: 'Runtime budget',
@@ -831,7 +830,7 @@ function buildWorldStateMapNode(stateDoc: AdminDocument): AdminMapNode {
         `remaining ${numberFrom(contextBudget.remainingTurnBudget)} turns`
       ]).join(' · '),
       badges: compactStrings([
-        budgetMode ? `mode ${budgetMode}` : ''
+        stringFrom(contextBudget.mode) ? `mode ${stringFrom(contextBudget.mode)}` : ''
       ]),
       raw: contextBudget,
       tone: 'state'
@@ -1305,18 +1304,6 @@ function arrayFrom(value: unknown): unknown[] {
 
 function recordFrom(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function truthy(value: unknown): boolean {
-  return value === true || value === 'true' || value === 1 || value === '1';
-}
-
-function contextBudgetModeFromRecord(record: Record<string, unknown>): string {
-  const mode = stringFrom(record.mode);
-  if (mode) return mode;
-  if (truthy(record.hardStop)) return 'hard-stop';
-  if (truthy(record.closureMode)) return 'closure';
-  return 'stable';
 }
 
 function statusBadges(items: unknown[]): string[] {

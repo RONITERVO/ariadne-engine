@@ -71,25 +71,12 @@ export function contextBudgetModeFromRatio(ratio: number, config: ModelBudgetCon
   return CONTEXT_BUDGET_MODE.STABLE;
 }
 
-export function isContextBudgetMode(value: unknown): value is ContextBudgetMode {
-  return typeof value === 'string' && Object.values(CONTEXT_BUDGET_MODE).includes(value as ContextBudgetMode);
-}
-
 export function isContextBudgetClosureMode(mode: ContextBudgetMode): boolean {
   return mode === CONTEXT_BUDGET_MODE.CLOSURE || mode === CONTEXT_BUDGET_MODE.HARD_STOP;
 }
 
 export function isContextBudgetHardStop(mode: ContextBudgetMode): boolean {
   return mode === CONTEXT_BUDGET_MODE.HARD_STOP;
-}
-
-export function normalizeContextBudgetMode(input: unknown): ContextBudgetMode {
-  if (!input || typeof input !== 'object') return CONTEXT_BUDGET_MODE.STABLE;
-  const value = input as { mode?: unknown; hardStop?: unknown; closureMode?: unknown };
-  if (isContextBudgetMode(value.mode)) return value.mode;
-  if (value.hardStop === true) return CONTEXT_BUDGET_MODE.HARD_STOP;
-  if (value.closureMode === true) return CONTEXT_BUDGET_MODE.CLOSURE;
-  return CONTEXT_BUDGET_MODE.STABLE;
 }
 
 export function estimateTokensRoughly(input: unknown): number {
