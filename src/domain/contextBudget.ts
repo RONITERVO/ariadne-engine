@@ -6,11 +6,18 @@ export interface ModelBudgetConfig {
   targetEndingTurns: number;
 }
 
+export const CONTEXT_BUDGET_MODE = {
+  STABLE: 'stable',
+  CLOSURE: 'closure',
+  HARD_STOP: 'hard-stop'
+} as const;
+
+export type ContextBudgetMode = typeof CONTEXT_BUDGET_MODE[keyof typeof CONTEXT_BUDGET_MODE];
+
 export interface BudgetDecision {
   estimatedTokens: number;
   safeBudgetTokens: number;
-  closureMode: boolean;
-  hardStop: boolean;
+  mode: ContextBudgetMode;
   remainingTurnBudget: number;
 }
 
@@ -37,11 +44,10 @@ export function decideContextBudget(
   }
 
   const ratio = estimatedTokens / config.safeInputBudgetTokens;
-  const closureMode = ratio >= config.closureTriggerRatio;
-  const hardStop = ratio >= config.hardStopRatio;
+  const mode = contextBudgetModeFromRatio(ratio, config);
 
   const remainingRatio = Math.max(0, 1 - ratio);
-  const remainingTurnBudget = closureMode
+  const remainingTurnBudget = isContextBudgetClosureMode(mode)
     ? Math.max(
         2,
         Math.ceil(
@@ -54,10 +60,36 @@ export function decideContextBudget(
   return {
     estimatedTokens: Math.ceil(estimatedTokens),
     safeBudgetTokens: config.safeInputBudgetTokens,
-    closureMode,
-    hardStop,
+    mode,
     remainingTurnBudget
   };
+}
+
+export function contextBudgetModeFromRatio(ratio: number, config: ModelBudgetConfig = DEFAULT_MODEL_BUDGET): ContextBudgetMode {
+  if (ratio >= config.hardStopRatio) return CONTEXT_BUDGET_MODE.HARD_STOP;
+  if (ratio >= config.closureTriggerRatio) return CONTEXT_BUDGET_MODE.CLOSURE;
+  return CONTEXT_BUDGET_MODE.STABLE;
+}
+
+export function isContextBudgetMode(value: unknown): value is ContextBudgetMode {
+  return typeof value === 'string' && Object.values(CONTEXT_BUDGET_MODE).includes(value as ContextBudgetMode);
+}
+
+export function isContextBudgetClosureMode(mode: ContextBudgetMode): boolean {
+  return mode === CONTEXT_BUDGET_MODE.CLOSURE || mode === CONTEXT_BUDGET_MODE.HARD_STOP;
+}
+
+export function isContextBudgetHardStop(mode: ContextBudgetMode): boolean {
+  return mode === CONTEXT_BUDGET_MODE.HARD_STOP;
+}
+
+export function normalizeContextBudgetMode(input: unknown): ContextBudgetMode {
+  if (!input || typeof input !== 'object') return CONTEXT_BUDGET_MODE.STABLE;
+  const value = input as { mode?: unknown; hardStop?: unknown; closureMode?: unknown };
+  if (isContextBudgetMode(value.mode)) return value.mode;
+  if (value.hardStop === true) return CONTEXT_BUDGET_MODE.HARD_STOP;
+  if (value.closureMode === true) return CONTEXT_BUDGET_MODE.CLOSURE;
+  return CONTEXT_BUDGET_MODE.STABLE;
 }
 
 export function estimateTokensRoughly(input: unknown): number {

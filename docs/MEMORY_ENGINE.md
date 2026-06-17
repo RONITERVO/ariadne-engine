@@ -74,11 +74,11 @@ closureTriggerRatio: number; // e.g. 0.78
 hardStopRatio: number;       // e.g. 0.90
 ```
 
-When projected context crosses the closure trigger, the branch enters convergence mode.
+When projected context crosses a threshold, the branch records a context budget mode: `stable`, `closure`, or `hard-stop`.
 
-## Convergence mode
+## Closure and hard-stop modes
 
-The actor receives these constraints:
+When the mode is `closure` or `hard-stop`, the actor receives these constraints:
 
 - do not introduce major new factions, villains, prophecies, or locations
 - resolve one unresolved thread per turn when possible

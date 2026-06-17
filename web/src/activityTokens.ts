@@ -1,10 +1,17 @@
 export const CLIENT_TOKEN = {
+  APP_TRANSCRIPT_STARTED: 'app:transcript-started',
+  PROVIDER_BYOK_KEY: 'provider:byok-key',
   UI_GATE_OPEN: 'ui:gate-open',
   UI_BOOTING: 'ui:booting',
   MEDIA_MICROPHONE_BUFFER: 'media:microphone-buffer',
   STT_LISTENING: 'stt:listening',
+  STT_PAUSED_FOR_LIVE_TURN: 'stt:paused-for-live-turn',
   LIVE_TURN_STARTING: 'live:turn-starting',
   LIVE_TURN_ACTIVE: 'live:turn-active',
+  LIVE_INPUT_OPEN: 'live:input-open',
+  LIVE_INPUT_CLOSED: 'live:input-closed',
+  LIVE_SESSION_OPEN: 'live:session-open',
+  LIVE_SESSION_CLOSED: 'live:session-closed',
   LIVE_TURN_COMMITTING: 'live:turn-committing'
 } as const;
 
@@ -30,6 +37,20 @@ export type TokenSnapshot = {
 };
 
 const CLIENT_TOKEN_DISPLAY: Record<ClientToken, Omit<TokenDisplay, 'token' | 'source'>> = {
+  [CLIENT_TOKEN.APP_TRANSCRIPT_STARTED]: {
+    category: 'app',
+    label: 'Transcript live',
+    description: 'The setup gate is complete and the realtime transcript session is running.',
+    tone: 'ready',
+    priority: 95
+  },
+  [CLIENT_TOKEN.PROVIDER_BYOK_KEY]: {
+    category: 'provider',
+    label: 'BYOK provider',
+    description: 'Requests will use the local Gemini provider key from this browser session.',
+    tone: 'ready',
+    priority: 45
+  },
   [CLIENT_TOKEN.UI_GATE_OPEN]: {
     category: 'ui',
     label: 'Setup gate',
@@ -58,6 +79,13 @@ const CLIENT_TOKEN_DISPLAY: Record<ClientToken, Omit<TokenDisplay, 'token' | 'so
     tone: 'ready',
     priority: 20
   },
+  [CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN]: {
+    category: 'stt',
+    label: 'STT paused',
+    description: 'Browser speech recognition is paused while Gemini Live owns the turn input.',
+    tone: 'state',
+    priority: 21
+  },
   [CLIENT_TOKEN.LIVE_TURN_STARTING]: {
     category: 'live',
     label: 'Starting Live',
@@ -71,6 +99,34 @@ const CLIENT_TOKEN_DISPLAY: Record<ClientToken, Omit<TokenDisplay, 'token' | 'so
     description: 'Streaming turn audio and transcript through Gemini Live.',
     tone: 'work',
     priority: 11
+  },
+  [CLIENT_TOKEN.LIVE_INPUT_OPEN]: {
+    category: 'live',
+    label: 'Input open',
+    description: 'The current Gemini Live turn is still accepting microphone audio.',
+    tone: 'work',
+    priority: 13
+  },
+  [CLIENT_TOKEN.LIVE_INPUT_CLOSED]: {
+    category: 'live',
+    label: 'Input closed',
+    description: 'The current Gemini Live turn has stopped accepting microphone audio.',
+    tone: 'state',
+    priority: 14
+  },
+  [CLIENT_TOKEN.LIVE_SESSION_OPEN]: {
+    category: 'live',
+    label: 'Session open',
+    description: 'The Gemini Live transport session is open.',
+    tone: 'work',
+    priority: 15
+  },
+  [CLIENT_TOKEN.LIVE_SESSION_CLOSED]: {
+    category: 'live',
+    label: 'Session closed',
+    description: 'The Gemini Live transport session has closed.',
+    tone: 'state',
+    priority: 16
   },
   [CLIENT_TOKEN.LIVE_TURN_COMMITTING]: {
     category: 'live',

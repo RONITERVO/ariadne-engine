@@ -101,10 +101,6 @@ type RepoState = {
   key: string;
   config: PublicConfig | null;
   firebaseUser: FirebaseUser | null;
-  started: boolean;
-  booting: boolean;
-  recognitionActive: boolean;
-  usingByok: boolean;
 };
 
 type LiveTokenResponse = {
@@ -158,7 +154,7 @@ type LiveTurn = {
   sessionId: string | null;
   startedAtMs: number;
   sentThroughMs: number;
-  inputClosed: boolean;
+  tokens: Set<ClientToken>;
   tailTimer: number | null;
   closeTimer: number | null;
   emptyTurnTimer: number | null;
@@ -167,7 +163,6 @@ type LiveTurn = {
   assistantTranscript: string;
   userLine: HTMLElement | null;
   assistantLine: HTMLElement | null;
-  closed: boolean;
 };
 
 const STORAGE = {
@@ -190,11 +185,7 @@ const state: RepoState = {
   apiBase: resolveApiBase(),
   key: sessionStorage.getItem(STORAGE.key) ?? '',
   config: null,
-  firebaseUser: null,
-  started: false,
-  booting: false,
-  recognitionActive: false,
-  usingByok: false
+  firebaseUser: null
 };
 const ADMIN_PATH = window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/');
 
@@ -217,7 +208,6 @@ let pcmChunks: PcmChunk[] = [];
 let activeTurn: LiveTurn | null = null;
 let liveStarting: Promise<void> | null = null;
 let audioPlayhead = 0;
-let recognitionPausedForLiveTurn = false;
 let tokenFlagOpen = false;
 let latestBackendTokens: TokenSnapshot | null = null;
 const localActivityTokens = new Set<ClientToken>();
@@ -238,9 +228,10 @@ function startTranscriptApp(): void {
   mountTokenFlag();
   addLocalToken(CLIENT_TOKEN.UI_GATE_OPEN);
   els.apiKey.value = state.key;
+  updateProviderTokenFromKey();
   els.apiKey.addEventListener('input', () => {
     state.key = els.apiKey.value.trim();
-    state.usingByok = Boolean(state.key);
+    updateProviderTokenFromKey();
     sessionStorage.setItem(STORAGE.key, state.key);
     scheduleBoot();
   });
@@ -252,7 +243,7 @@ function startTranscriptApp(): void {
   onFirebaseAuthStateChanged(user => {
     state.firebaseUser = user;
     updateGateActions();
-    if (user && !state.started) scheduleBoot();
+    if (user && !hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) scheduleBoot();
   });
 
   if (state.key || !isFirebaseConfigured()) scheduleBoot();
@@ -830,6 +821,7 @@ function buildWorldStateMapNode(stateDoc: AdminDocument): AdminMapNode {
   ];
 
   if (contextBudget) {
+    const budgetMode = contextBudgetModeFromRecord(contextBudget);
     children.push({
       id: `state:${branchId}:budget`,
       kicker: 'Runtime budget',
@@ -839,8 +831,7 @@ function buildWorldStateMapNode(stateDoc: AdminDocument): AdminMapNode {
         `remaining ${numberFrom(contextBudget.remainingTurnBudget)} turns`
       ]).join(' · '),
       badges: compactStrings([
-        truthy(contextBudget.closureMode) ? 'closure mode' : '',
-        truthy(contextBudget.hardStop) ? 'hard stop' : ''
+        budgetMode ? `mode ${budgetMode}` : ''
       ]),
       raw: contextBudget,
       tone: 'state'
@@ -1320,6 +1311,14 @@ function truthy(value: unknown): boolean {
   return value === true || value === 'true' || value === 1 || value === '1';
 }
 
+function contextBudgetModeFromRecord(record: Record<string, unknown>): string {
+  const mode = stringFrom(record.mode);
+  if (mode) return mode;
+  if (truthy(record.hardStop)) return 'hard-stop';
+  if (truthy(record.closureMode)) return 'closure';
+  return 'stable';
+}
+
 function statusBadges(items: unknown[]): string[] {
   return countedBadges(items, 'status');
 }
@@ -1522,20 +1521,19 @@ function scheduleBoot(): void {
 }
 
 async function boot(): Promise<void> {
-  if (state.booting || state.started) return;
-  state.booting = true;
+  if (hasLocalToken(CLIENT_TOKEN.UI_BOOTING) || hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) return;
   addLocalToken(CLIENT_TOKEN.UI_BOOTING);
   state.key = els.apiKey.value.trim();
-  state.usingByok = Boolean(state.key);
+  updateProviderTokenFromKey();
   setGateStatus('Connecting...');
 
   try {
     state.config = await publicFetch<PublicConfig>('/v1/config', { method: 'GET' });
     if (state.config.firebaseAuthRequired && !state.firebaseUser) {
-      setGateStatus(state.usingByok ? 'Sign in to save your story with this key.' : 'Sign in or paste a Gemini key.');
+      setGateStatus(hasLocalToken(CLIENT_TOKEN.PROVIDER_BYOK_KEY) ? 'Sign in to save your story with this key.' : 'Sign in or paste a Gemini key.');
       return;
     }
-    if (state.usingByok) {
+    if (hasLocalToken(CLIENT_TOKEN.PROVIDER_BYOK_KEY)) {
       await providerFetch('/v1/provider/gemini/validate-key', { method: 'POST', body: {} });
     }
 
@@ -1546,7 +1544,6 @@ async function boot(): Promise<void> {
   } catch (error) {
     setGateStatus(messageFrom(error));
   } finally {
-    state.booting = false;
     removeLocalToken(CLIENT_TOKEN.UI_BOOTING);
   }
 }
@@ -1589,7 +1586,7 @@ async function ensureRepo(): Promise<void> {
 }
 
 function startTranscriptOnlyMode(): void {
-  state.started = true;
+  addLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED);
   removeLocalToken(CLIENT_TOKEN.UI_GATE_OPEN);
   els.gate.classList.add('is-hidden');
   els.transcript.classList.add('is-live');
@@ -1652,15 +1649,16 @@ function startRecognitionLoop(): void {
     addLine('system', event.message ? `${label} ${event.message}` : label);
   };
   recognition.onend = () => {
-    state.recognitionActive = false;
     removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
-    if (state.started && !recognitionPausedForLiveTurn) restartRecognitionSoon();
+    if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED) && !hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN)) {
+      restartRecognitionSoon();
+    }
   };
   restartRecognitionSoon();
 }
 
 function onSpeechResult(event: SpeechRecognitionEventLike): void {
-  if (activeTurn?.inputClosed) return;
+  if (activeTurn && turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)) return;
   let heardText = '';
   let finalText = '';
 
@@ -1677,7 +1675,7 @@ function onSpeechResult(event: SpeechRecognitionEventLike): void {
   if (!shouldStartLiveTurn(triggerText, Boolean(finalText))) return;
 
   void ensureLiveTurnStarted().then(() => {
-    if (!activeTurn?.inputClosed) scheduleTurnTail();
+    if (activeTurn && !turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)) scheduleTurnTail();
   });
 }
 
@@ -1704,7 +1702,7 @@ async function startLiveTurn(): Promise<void> {
         branchId: state.branchId,
         responseModalities: ['AUDIO']
       },
-      providerKey: state.usingByok ? state.key : undefined
+      providerKey: providerKeyForRequests()
     });
 
     const ai = new GoogleGenAI({ apiKey: token.token, apiVersion: 'v1alpha' });
@@ -1725,14 +1723,14 @@ async function startLiveTurn(): Promise<void> {
           onmessage: message => onLiveMessage(message),
           onerror: event => addLine('system', messageFrom(event.error ?? event)),
           onclose: () => {
-            if (activeTurn === turn) activeTurn.closed = true;
+            closeLiveSession(turn);
           }
         }
       }),
       sessionId: token.sessionId ?? null,
       startedAtMs,
       sentThroughMs: preRollFromMs,
-      inputClosed: false,
+      tokens: new Set<ClientToken>([CLIENT_TOKEN.LIVE_INPUT_OPEN, CLIENT_TOKEN.LIVE_SESSION_OPEN]),
       tailTimer: null,
       closeTimer: null,
       emptyTurnTimer: null,
@@ -1740,13 +1738,13 @@ async function startLiveTurn(): Promise<void> {
       userTranscript: '',
       assistantTranscript: '',
       userLine: null,
-      assistantLine: null,
-      closed: false
+      assistantLine: null
     };
 
     activeTurn = turn;
     removeLocalToken(CLIENT_TOKEN.LIVE_TURN_STARTING);
     addLocalToken(CLIENT_TOKEN.LIVE_TURN_ACTIVE);
+    mirrorTurnTokens(turn);
     turn.session.sendRealtimeInput({ activityStart: {} });
     sendLiveChunksThrough(Date.now());
   } catch (error) {
@@ -1766,7 +1764,7 @@ function scheduleTurnTail(): void {
     turn.closeTimer = window.setTimeout(() => {
       if (activeTurn !== turn) return;
       sendLiveChunksThrough(Date.now());
-      turn.inputClosed = true;
+      closeLiveInput(turn);
       pauseRecognitionForLiveTurn();
       turn.session.sendRealtimeInput({ activityEnd: {} });
       turn.session.sendRealtimeInput({ audioStreamEnd: true });
@@ -1780,7 +1778,13 @@ function scheduleTurnTail(): void {
 }
 
 function sendLiveChunksThrough(endMs: number): void {
-  if (!activeTurn || activeTurn.closed || activeTurn.inputClosed) return;
+  if (
+    !activeTurn ||
+    turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_SESSION_CLOSED) ||
+    turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)
+  ) {
+    return;
+  }
   const chunks = pcmChunks.filter(chunk => chunk.endMs > activeTurn!.sentThroughMs && chunk.startMs <= endMs);
   for (const chunk of chunks) {
     activeTurn.session.sendRealtimeInput({ audio: { data: chunk.data, mimeType: chunk.mimeType } });
@@ -1820,6 +1824,7 @@ function onLiveMessage(message: LiveServerMessage): void {
 async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   if (activeTurn !== turn) return;
   activeTurn = null;
+  closeLiveInput(turn);
   removeLocalToken(CLIENT_TOKEN.LIVE_TURN_ACTIVE);
   addLocalToken(CLIENT_TOKEN.LIVE_TURN_COMMITTING);
   if (turn.tailTimer) window.clearTimeout(turn.tailTimer);
@@ -1828,8 +1833,10 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
 
   try {
     turn.session.close();
+    closeLiveSession(turn);
   } catch {
-    // Already closed.
+    // Session close can race with provider callbacks.
+    closeLiveSession(turn);
   }
 
   const userTranscript = turn.userTranscript.trim();
@@ -1845,7 +1852,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
 
     const result = await authorizedFetch<{ turn?: { id?: string } }>('/v1/story/live-turn', {
       method: 'POST',
-      providerKey: state.usingByok ? state.key : undefined,
+      providerKey: providerKeyForRequests(),
       body: {
         repoId: state.repoId,
         branchId: state.branchId,
@@ -1862,6 +1869,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
     addLine('system', messageFrom(error));
   } finally {
     removeLocalToken(CLIENT_TOKEN.LIVE_TURN_COMMITTING);
+    clearTurnTokens(turn);
     resumeRecognitionAfterLiveTurn();
   }
 }
@@ -1949,10 +1957,16 @@ async function authorizedFetch<T>(
 
 function restartRecognitionSoon(): void {
   window.setTimeout(() => {
-    if (!recognition || state.recognitionActive || recognitionPausedForLiveTurn || activeTurn?.inputClosed) return;
+    if (
+      !recognition ||
+      hasLocalToken(CLIENT_TOKEN.STT_LISTENING) ||
+      hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN) ||
+      (activeTurn ? turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED) : false)
+    ) {
+      return;
+    }
     try {
       recognition.start();
-      state.recognitionActive = true;
       addLocalToken(CLIENT_TOKEN.STT_LISTENING);
     } catch {
       // start() throws if the browser still considers the previous recognition session active.
@@ -1961,20 +1975,19 @@ function restartRecognitionSoon(): void {
 }
 
 function pauseRecognitionForLiveTurn(): void {
-  recognitionPausedForLiveTurn = true;
+  addLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN);
   if (!recognition) return;
   try {
     recognition.abort();
   } catch {
     // Some browsers throw if recognition has already stopped.
   }
-  state.recognitionActive = false;
   removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
 }
 
 function resumeRecognitionAfterLiveTurn(): void {
-  recognitionPausedForLiveTurn = false;
-  if (state.started) restartRecognitionSoon();
+  removeLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN);
+  if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) restartRecognitionSoon();
 }
 
 function prunePcmChunks(now: number): void {
@@ -2029,6 +2042,57 @@ function updateGateActions(): void {
 
 function setGateStatus(text: string): void {
   els.status.textContent = text;
+}
+
+function hasLocalToken(token: ClientToken): boolean {
+  return localActivityTokens.has(token);
+}
+
+function updateProviderTokenFromKey(): void {
+  if (state.key.trim()) {
+    addLocalToken(CLIENT_TOKEN.PROVIDER_BYOK_KEY);
+  } else {
+    removeLocalToken(CLIENT_TOKEN.PROVIDER_BYOK_KEY);
+  }
+}
+
+function providerKeyForRequests(): string | undefined {
+  return hasLocalToken(CLIENT_TOKEN.PROVIDER_BYOK_KEY) ? state.key : undefined;
+}
+
+function turnHasToken(turn: LiveTurn, token: ClientToken): boolean {
+  return turn.tokens.has(token);
+}
+
+function addTurnToken(turn: LiveTurn, token: ClientToken): void {
+  if (turn.tokens.has(token)) return;
+  turn.tokens.add(token);
+  addLocalToken(token);
+}
+
+function removeTurnToken(turn: LiveTurn, token: ClientToken): void {
+  if (!turn.tokens.delete(token)) return;
+  removeLocalToken(token);
+}
+
+function mirrorTurnTokens(turn: LiveTurn): void {
+  for (const token of turn.tokens) addLocalToken(token);
+}
+
+function closeLiveInput(turn: LiveTurn): void {
+  if (!turnHasToken(turn, CLIENT_TOKEN.LIVE_INPUT_OPEN) && !turnHasToken(turn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)) return;
+  removeTurnToken(turn, CLIENT_TOKEN.LIVE_INPUT_OPEN);
+  addTurnToken(turn, CLIENT_TOKEN.LIVE_INPUT_CLOSED);
+}
+
+function closeLiveSession(turn: LiveTurn): void {
+  if (!turnHasToken(turn, CLIENT_TOKEN.LIVE_SESSION_OPEN) && !turnHasToken(turn, CLIENT_TOKEN.LIVE_SESSION_CLOSED)) return;
+  removeTurnToken(turn, CLIENT_TOKEN.LIVE_SESSION_OPEN);
+  addTurnToken(turn, CLIENT_TOKEN.LIVE_SESSION_CLOSED);
+}
+
+function clearTurnTokens(turn: LiveTurn): void {
+  for (const token of [...turn.tokens]) removeTurnToken(turn, token);
 }
 
 function mountTokenFlag(): void {

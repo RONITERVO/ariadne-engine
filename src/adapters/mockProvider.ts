@@ -1,4 +1,5 @@
 import { ACTOR_PROMPT_VERSION, CANONIZER_PROMPT_VERSION } from '../prompts.js';
+import { isContextBudgetClosureMode } from '../domain/contextBudget.js';
 import { canonicalJson, sha256Text } from '../domain/stateHash.js';
 import type { StoryEventPatch } from '../domain/types.js';
 import type {
@@ -27,7 +28,7 @@ export class MockStoryProvider implements StoryReasoningProvider {
 
   async generateActorTurn(input: ActorTurnInput): Promise<ActorTurnResult> {
     const startedAt = new Date().toISOString();
-    const closure = input.capsule.closureMode
+    const closure = isContextBudgetClosureMode(input.capsule.contextBudgetMode)
       ? ' The loose threads begin drawing inward, as if the branch itself wants an ending.'
       : '';
     return {

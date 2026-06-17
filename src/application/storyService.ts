@@ -8,7 +8,7 @@ import {
   createActionTokenSet
 } from '../domain/actionTokens.js';
 import { buildContextCapsule, type ContextCapsule } from '../domain/contextCapsule.js';
-import { decideContextBudget, estimateTokensRoughly } from '../domain/contextBudget.js';
+import { CONTEXT_BUDGET_MODE, decideContextBudget, estimateTokensRoughly } from '../domain/contextBudget.js';
 import { reducePatch } from '../domain/reducer.js';
 import type { BranchRef, ModelInvocationMetadata, StoryEventPatch, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
 import type { ActorTurnResult, StoryReasoningProvider } from '../adapters/storyProvider.js';
@@ -364,11 +364,15 @@ function turnTokens(input: { tokens?: ActionTokenSet }): ActionTokenSet {
 
 function addContextBudgetTokens(tokens: ActionTokenSet, budget: WorldState['contextBudget']): void {
   if (!budget) return;
-  if (budget.hardStop) {
-    tokens.block(ACTION_TOKEN.CONTEXT_BUDGET_HARD_STOP);
-  } else if (budget.closureMode) {
-    tokens.add(ACTION_TOKEN.CONTEXT_BUDGET_CLOSURE);
-  } else {
-    tokens.add(ACTION_TOKEN.CONTEXT_BUDGET_STABLE);
+  switch (budget.mode) {
+    case CONTEXT_BUDGET_MODE.HARD_STOP:
+      tokens.block(ACTION_TOKEN.CONTEXT_BUDGET_HARD_STOP);
+      return;
+    case CONTEXT_BUDGET_MODE.CLOSURE:
+      tokens.add(ACTION_TOKEN.CONTEXT_BUDGET_CLOSURE);
+      return;
+    case CONTEXT_BUDGET_MODE.STABLE:
+      tokens.add(ACTION_TOKEN.CONTEXT_BUDGET_STABLE);
+      return;
   }
 }

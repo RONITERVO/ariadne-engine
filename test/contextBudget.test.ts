@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { decideContextBudget } from '../src/domain/contextBudget.js';
+import { CONTEXT_BUDGET_MODE, decideContextBudget, normalizeContextBudgetMode } from '../src/domain/contextBudget.js';
 
 const config = {
   contextWindowTokens: 1000,
@@ -12,20 +12,23 @@ const config = {
 
 test('context budget stays normal below closure trigger', () => {
   const decision = decideContextBudget(400, config);
-  assert.equal(decision.closureMode, false);
-  assert.equal(decision.hardStop, false);
+  assert.equal(decision.mode, CONTEXT_BUDGET_MODE.STABLE);
   assert.equal(decision.remainingTurnBudget, 12);
 });
 
 test('context budget enters closure before hard stop', () => {
   const decision = decideContextBudget(640, config);
-  assert.equal(decision.closureMode, true);
-  assert.equal(decision.hardStop, false);
+  assert.equal(decision.mode, CONTEXT_BUDGET_MODE.CLOSURE);
   assert.ok(decision.remainingTurnBudget < 12);
 });
 
 test('context budget detects hard stop', () => {
   const decision = decideContextBudget(760, config);
-  assert.equal(decision.closureMode, true);
-  assert.equal(decision.hardStop, true);
+  assert.equal(decision.mode, CONTEXT_BUDGET_MODE.HARD_STOP);
+});
+
+test('context budget normalizes legacy boolean state', () => {
+  assert.equal(normalizeContextBudgetMode({ closureMode: true }), CONTEXT_BUDGET_MODE.CLOSURE);
+  assert.equal(normalizeContextBudgetMode({ closureMode: true, hardStop: true }), CONTEXT_BUDGET_MODE.HARD_STOP);
+  assert.equal(normalizeContextBudgetMode({ mode: CONTEXT_BUDGET_MODE.STABLE, hardStop: true }), CONTEXT_BUDGET_MODE.STABLE);
 });
