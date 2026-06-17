@@ -149,6 +149,7 @@ type LiveTurn = {
   sessionId: string | null;
   startedAtMs: number;
   sentThroughMs: number;
+  inputClosed: boolean;
   tailTimer: number | null;
   closeTimer: number | null;
   emptyTurnTimer: number | null;
@@ -207,6 +208,7 @@ let pcmChunks: PcmChunk[] = [];
 let activeTurn: LiveTurn | null = null;
 let liveStarting: Promise<void> | null = null;
 let audioPlayhead = 0;
+let recognitionPausedForLiveTurn = false;
 
 if (ADMIN_PATH) {
   startAdminDashboard();
@@ -1622,12 +1624,13 @@ function startRecognitionLoop(): void {
   };
   recognition.onend = () => {
     state.recognitionActive = false;
-    if (state.started) restartRecognitionSoon();
+    if (state.started && !recognitionPausedForLiveTurn) restartRecognitionSoon();
   };
   restartRecognitionSoon();
 }
 
 function onSpeechResult(event: SpeechRecognitionEventLike): void {
+  if (activeTurn?.inputClosed) return;
   let heardText = '';
   let finalText = '';
 
@@ -1644,7 +1647,7 @@ function onSpeechResult(event: SpeechRecognitionEventLike): void {
   if (!shouldStartLiveTurn(triggerText, Boolean(finalText))) return;
 
   void ensureLiveTurnStarted().then(() => {
-    scheduleTurnTail();
+    if (!activeTurn?.inputClosed) scheduleTurnTail();
   });
 }
 
@@ -1683,7 +1686,7 @@ async function startLiveTurn(): Promise<void> {
           outputAudioTranscription: {},
           realtimeInputConfig: {
             automaticActivityDetection: { disabled: true },
-            activityHandling: ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+            activityHandling: ActivityHandling.NO_INTERRUPTION,
             turnCoverage: TurnCoverage.TURN_INCLUDES_ALL_INPUT
           }
         },
@@ -1698,6 +1701,7 @@ async function startLiveTurn(): Promise<void> {
       sessionId: token.sessionId ?? null,
       startedAtMs,
       sentThroughMs: preRollFromMs,
+      inputClosed: false,
       tailTimer: null,
       closeTimer: null,
       emptyTurnTimer: null,
@@ -1727,6 +1731,8 @@ function scheduleTurnTail(): void {
     turn.closeTimer = window.setTimeout(() => {
       if (activeTurn !== turn) return;
       sendLiveChunksThrough(Date.now());
+      turn.inputClosed = true;
+      pauseRecognitionForLiveTurn();
       turn.session.sendRealtimeInput({ activityEnd: {} });
       turn.session.sendRealtimeInput({ audioStreamEnd: true });
       turn.emptyTurnTimer = window.setTimeout(() => {
@@ -1739,7 +1745,7 @@ function scheduleTurnTail(): void {
 }
 
 function sendLiveChunksThrough(endMs: number): void {
-  if (!activeTurn || activeTurn.closed) return;
+  if (!activeTurn || activeTurn.closed || activeTurn.inputClosed) return;
   const chunks = pcmChunks.filter(chunk => chunk.endMs > activeTurn!.sentThroughMs && chunk.startMs <= endMs);
   for (const chunk of chunks) {
     activeTurn.session.sendRealtimeInput({ audio: { data: chunk.data, mimeType: chunk.mimeType } });
@@ -1797,9 +1803,9 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
       body: { sessionId: turn.sessionId }
     }).catch(() => {});
   }
-  if (!state.repoId || !state.branchId || !userTranscript || !assistantTranscript) return;
-
   try {
+    if (!state.repoId || !state.branchId || !userTranscript || !assistantTranscript) return;
+
     const result = await authorizedFetch<{ turn?: { id?: string } }>('/v1/story/live-turn', {
       method: 'POST',
       providerKey: state.usingByok ? state.key : undefined,
@@ -1817,6 +1823,8 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
     }
   } catch (error) {
     addLine('system', messageFrom(error));
+  } finally {
+    resumeRecognitionAfterLiveTurn();
   }
 }
 
@@ -1902,7 +1910,7 @@ async function authorizedFetch<T>(
 
 function restartRecognitionSoon(): void {
   window.setTimeout(() => {
-    if (!recognition || state.recognitionActive) return;
+    if (!recognition || state.recognitionActive || recognitionPausedForLiveTurn || activeTurn?.inputClosed) return;
     try {
       recognition.start();
       state.recognitionActive = true;
@@ -1910,6 +1918,22 @@ function restartRecognitionSoon(): void {
       // start() throws if the browser still considers the previous recognition session active.
     }
   }, 180);
+}
+
+function pauseRecognitionForLiveTurn(): void {
+  recognitionPausedForLiveTurn = true;
+  if (!recognition) return;
+  try {
+    recognition.abort();
+  } catch {
+    // Some browsers throw if recognition has already stopped.
+  }
+  state.recognitionActive = false;
+}
+
+function resumeRecognitionAfterLiveTurn(): void {
+  recognitionPausedForLiveTurn = false;
+  if (state.started) restartRecognitionSoon();
 }
 
 function prunePcmChunks(now: number): void {
