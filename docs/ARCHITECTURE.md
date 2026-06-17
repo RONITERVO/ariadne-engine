@@ -25,7 +25,7 @@ Paid usage uses server Gemini keys and Firestore credits. BYOK sends the user ke
 ```text
 Firebase Hosting
   -> /v1/** rewrite to Cloud Run ariadne-api
-  -> Firestore for story state, entitlements, usage, and billing events
+  -> Firestore for user-rooted story DAGs, billing accounts, usage, and billing events
   -> Stripe webhook grants prepaid credits
 ```
 

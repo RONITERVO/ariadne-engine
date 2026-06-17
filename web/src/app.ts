@@ -70,6 +70,21 @@ type AdminUserDetailResponse = {
   documents: Record<string, AdminDocument[]>;
 };
 
+type AdminMapTone = 'root' | 'story' | 'branch' | 'turn' | 'state' | 'billing' | 'warning' | 'doc';
+
+type AdminMapNode = {
+  id: string;
+  title: string;
+  kicker?: string;
+  meta?: string;
+  badges?: string[];
+  details?: string[];
+  raw?: unknown;
+  children?: AdminMapNode[];
+  open?: boolean;
+  tone?: AdminMapTone;
+};
+
 type RepoState = {
   repoId: string | null;
   branchId: string | null;
@@ -359,6 +374,7 @@ function renderAdminDetail(container: HTMLElement, payload: AdminUserDetailRespo
     metric('Last seen', formatDate(user.lastSeenAt))
   );
   root.append(identity);
+  root.append(renderAdminConnectionMap(payload));
 
   root.append(
     usagePanel('Live sessions', user.usage.liveSessions),
@@ -374,12 +390,969 @@ function renderAdminDetail(container: HTMLElement, payload: AdminUserDetailRespo
     'eventPatches',
     'continuityWarnings',
     'branchMutationLocks',
-    'billingEvents'
+    'liveSessions',
+    'storyTurns',
+    'billingEvents',
+    'repoIndexes',
+    'branchIndexes',
+    'turnIndexes',
+    'billingEventIndexes'
   ];
   for (const key of order) {
     root.append(documentSection(key, payload.documents[key] ?? []));
   }
   container.replaceChildren(root);
+}
+
+
+function renderAdminConnectionMap(payload: AdminUserDetailResponse): HTMLElement {
+  const section = document.createElement('section');
+  section.className = 'admin-doc-section admin-map-section';
+
+  const header = document.createElement('div');
+  header.className = 'admin-map-header';
+  const heading = document.createElement('h3');
+  heading.textContent = 'Connection tree';
+  const help = document.createElement('p');
+  help.className = 'admin-muted admin-map-help';
+  help.textContent = 'Click any card to open the next layer: user → billing and story repos → branches → timeline turns → canon patches, warnings, state, entities, facts, and threads.';
+  header.append(heading, help);
+
+  const controls = document.createElement('div');
+  controls.className = 'admin-map-controls';
+  const filter = document.createElement('input');
+  filter.type = 'search';
+  filter.placeholder = 'Filter by repo, branch, turn, entity, warning, status, or ID';
+  filter.setAttribute('aria-label', 'Filter connection tree');
+  const expand = document.createElement('button');
+  expand.type = 'button';
+  expand.textContent = 'Expand all';
+  const collapse = document.createElement('button');
+  collapse.type = 'button';
+  collapse.textContent = 'Collapse all';
+  controls.append(filter, expand, collapse);
+
+  const map = document.createElement('div');
+  map.className = 'admin-map';
+  map.append(adminMapList([buildAdminMap(payload)]));
+
+  filter.addEventListener('input', () => applyAdminMapFilter(map, filter.value));
+  expand.addEventListener('click', () => {
+    map.querySelectorAll<HTMLDetailsElement>('.admin-map-node').forEach(details => {
+      details.open = true;
+    });
+  });
+  collapse.addEventListener('click', () => {
+    map.querySelectorAll<HTMLDetailsElement>('.admin-map-node').forEach(details => {
+      details.open = details.dataset.defaultOpen === 'true';
+    });
+    applyAdminMapFilter(map, filter.value);
+  });
+
+  section.append(header, controls, map);
+  return section;
+}
+
+function buildAdminMap(payload: AdminUserDetailResponse): AdminMapNode {
+  const user = payload.user;
+  const repos = adminDocs(payload, 'repos');
+  const branches = adminDocs(payload, 'branches');
+  const turns = adminDocs(payload, 'turns');
+  const warnings = adminDocs(payload, 'continuityWarnings');
+  const billingEvents = adminDocs(payload, 'billingEvents');
+  const liveSessions = adminDocs(payload, 'liveSessions');
+  const storyTurnUsage = adminDocs(payload, 'storyTurns');
+  const activeLiveSessionId = stringFrom(user.entitlement.activeLiveSessionId);
+
+  return {
+    id: `user:${user.uid}`,
+    kicker: 'Selected user',
+    title: user.email || user.name || shortId(user.uid),
+    meta: user.name && user.email ? user.name : user.uid,
+    badges: compactStrings([
+      `${repos.length} repo${repos.length === 1 ? '' : 's'}`,
+      `${branches.length} branch${branches.length === 1 ? '' : 'es'}`,
+      `${turns.length} turn${turns.length === 1 ? '' : 's'}`,
+      warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : '',
+      activeLiveSessionId ? 'live session active' : ''
+    ]),
+    details: compactStrings([
+      `Last seen: ${formatDate(user.lastSeenAt)}`,
+      `Credits: ${formatCredits(numberFrom(user.entitlement.remainingCreditMicros))} remaining, ${formatCredits(numberFrom(user.entitlement.reservedCreditMicros))} reserved`,
+      user.stripeCustomerId ? `Stripe customer: ${user.stripeCustomerId}` : ''
+    ]),
+    open: true,
+    tone: 'root',
+    children: [
+      buildStoriesMapNode(payload),
+      buildBillingMapNode(user, billingEvents, liveSessions.length ? liveSessions : user.usage.liveSessions.recent, storyTurnUsage.length ? storyTurnUsage : user.usage.storyTurns.recent)
+    ]
+  };
+}
+
+function buildStoriesMapNode(payload: AdminUserDetailResponse): AdminMapNode {
+  const repos = sortDocs(adminDocs(payload, 'repos'));
+  const branches = adminDocs(payload, 'branches');
+  const turns = adminDocs(payload, 'turns');
+  const branchStates = adminDocs(payload, 'branchStates');
+  const branchSnapshots = adminDocs(payload, 'branchSnapshots');
+  const eventPatches = adminDocs(payload, 'eventPatches');
+  const continuityWarnings = adminDocs(payload, 'continuityWarnings');
+  const branchMutationLocks = adminDocs(payload, 'branchMutationLocks');
+  const turnById = indexDocsByEntityId(turns);
+  const repoChildren = repos.map(repo => buildRepoMapNode(repo, {
+    branches,
+    turns,
+    branchStates,
+    branchSnapshots,
+    eventPatches,
+    continuityWarnings,
+    branchMutationLocks,
+    turnById
+  }));
+
+  const branchRepoIds = new Set(branches.map(doc => stringFrom(doc.data.repoId)).filter(Boolean));
+  const repoIds = new Set(repos.map(docEntityId));
+  const orphanBranches = branches.filter(branch => !repoIds.has(stringFrom(branch.data.repoId)));
+  if (orphanBranches.length) {
+    repoChildren.push(docsGroupNode('story:orphan-branches', 'Unlinked branches', orphanBranches, branch => compactDocNode('Branch without loaded repo', branch, 'branch')));
+  }
+  const orphanRepoIds = [...branchRepoIds].filter(id => !repoIds.has(id));
+  if (orphanRepoIds.length) {
+    repoChildren.push({
+      id: 'story:missing-repos',
+      kicker: 'Data gap',
+      title: 'Missing repo documents referenced by branches',
+      meta: orphanRepoIds.map(shortId).join(', '),
+      tone: 'warning',
+      details: ['These branches point to repos that were not returned in this admin payload.']
+    });
+  }
+
+  return {
+    id: 'stories',
+    kicker: 'Story graph',
+    title: 'Stories',
+    meta: repos.length ? 'Repos, branch DAGs, turns, patches, compiled state, and continuity checks.' : 'No story repos for this user.',
+    badges: compactStrings([
+      `${repos.length} repo${repos.length === 1 ? '' : 's'}`,
+      `${branches.length} branch${branches.length === 1 ? '' : 'es'}`,
+      `${turns.length} turn${turns.length === 1 ? '' : 's'}`,
+      `${eventPatches.length} patch${eventPatches.length === 1 ? '' : 'es'}`,
+      continuityWarnings.length ? `${continuityWarnings.length} continuity warning${continuityWarnings.length === 1 ? '' : 's'}` : ''
+    ]),
+    open: true,
+    tone: 'story',
+    children: repoChildren
+  };
+}
+
+function buildRepoMapNode(repo: AdminDocument, graph: {
+  branches: AdminDocument[];
+  turns: AdminDocument[];
+  branchStates: AdminDocument[];
+  branchSnapshots: AdminDocument[];
+  eventPatches: AdminDocument[];
+  continuityWarnings: AdminDocument[];
+  branchMutationLocks: AdminDocument[];
+  turnById: Map<string, AdminDocument>;
+}): AdminMapNode {
+  const repoId = docEntityId(repo);
+  const branches = sortDocs(graph.branches.filter(doc => stringFrom(doc.data.repoId) === repoId));
+  const repoTurns = graph.turns.filter(doc => stringFrom(doc.data.repoId) === repoId);
+  const patches = graph.eventPatches.filter(doc => stringFrom(doc.data.repoId) === repoId);
+  const warnings = graph.continuityWarnings.filter(doc => stringFrom(doc.data.repoId) === repoId);
+  const branchIds = new Set(branches.map(docEntityId));
+  const branchChildren = branches.map(branch => buildBranchMapNode(branch, graph));
+  const unlinkedTurns = repoTurns.filter(turn => !branchIds.has(stringFrom(turn.data.branchId)));
+  if (unlinkedTurns.length) {
+    branchChildren.push(docsGroupNode(
+      `repo:${repoId}:unlinked-turns`,
+      'Turns without a loaded branch',
+      sortTurnDocs(unlinkedTurns),
+      turn => buildTurnMapNode(turn, graph.eventPatches, graph.branchSnapshots, graph.continuityWarnings, false)
+    ));
+  }
+
+  return {
+    id: `repo:${repoId}`,
+    kicker: 'Repo',
+    title: stringFrom(repo.data.title) || shortId(repoId),
+    meta: compactStrings([stringFrom(repo.data.description), stringFrom(repo.data.defaultStyle)]).join(' · ') || `Updated ${formatDate(repo.data.updatedAt)}`,
+    badges: compactStrings([
+      `${branches.length} branch${branches.length === 1 ? '' : 'es'}`,
+      `${repoTurns.length} turn${repoTurns.length === 1 ? '' : 's'}`,
+      `${patches.length} patch${patches.length === 1 ? '' : 'es'}`,
+      warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''
+    ]),
+    details: compactStrings([
+      `Created: ${formatDate(repo.data.createdAt)}`,
+      `Updated: ${formatDate(repo.data.updatedAt)}`,
+      `Safety profile: ${stringFrom(repo.data.safetyProfile) || '-'}`,
+      `Repo ID: ${repoId}`
+    ]),
+    raw: repo.data,
+    open: branches.length === 1,
+    tone: 'story',
+    children: branchChildren
+  };
+}
+
+function buildBranchMapNode(branch: AdminDocument, graph: {
+  branches: AdminDocument[];
+  turns: AdminDocument[];
+  branchStates: AdminDocument[];
+  branchSnapshots: AdminDocument[];
+  eventPatches: AdminDocument[];
+  continuityWarnings: AdminDocument[];
+  branchMutationLocks: AdminDocument[];
+  turnById: Map<string, AdminDocument>;
+}): AdminMapNode {
+  const branchId = docEntityId(branch);
+  const headTurnId = stringFrom(branch.data.headTurnId);
+  const timeline = branchTimeline(branch, graph.turnById);
+  const directTurns = sortTurnDocs(graph.turns.filter(doc => stringFrom(doc.data.branchId) === branchId));
+  const timelineIds = new Set(timeline.map(docEntityId));
+  const directOnlyTurns = directTurns.filter(turn => !timelineIds.has(docEntityId(turn)));
+  const branchState = graph.branchStates.find(doc => docEntityId(doc) === branchId || stringFrom(doc.data.branchId) === branchId) ?? null;
+  const snapshots = sortDocs(graph.branchSnapshots.filter(doc => stringFrom(doc.data.branchId) === branchId));
+  const patches = sortDocs(graph.eventPatches.filter(doc => stringFrom(doc.data.branchId) === branchId));
+  const warnings = sortDocs(graph.continuityWarnings.filter(doc => stringFrom(doc.data.branchId) === branchId));
+  const locks = sortDocs(graph.branchMutationLocks.filter(doc => docEntityId(doc) === branchId || stringFrom(doc.data.branchId) === branchId));
+  const forkedFromTurnId = stringFrom(branch.data.forkedFromTurnId);
+  const forkedFromTurn = forkedFromTurnId ? graph.turnById.get(forkedFromTurnId) ?? null : null;
+  const children: AdminMapNode[] = [];
+
+  if (forkedFromTurnId) {
+    children.push({
+      id: `branch:${branchId}:fork`,
+      kicker: 'Fork point',
+      title: forkedFromTurn ? turnTitle(forkedFromTurn) : shortId(forkedFromTurnId),
+      meta: forkedFromTurn ? clip(stringFrom(forkedFromTurn.data.userTranscript) || stringFrom(forkedFromTurn.data.assistantTranscript), 140) : 'Referenced turn is not in this payload.',
+      badges: forkedFromTurn ? ['ancestor turn'] : ['missing turn'],
+      raw: forkedFromTurn?.data ?? { forkedFromTurnId },
+      tone: forkedFromTurn ? 'turn' : 'warning'
+    });
+  }
+
+  children.push({
+    id: `branch:${branchId}:timeline`,
+    kicker: 'Branch path',
+    title: 'Timeline',
+    meta: timeline.length ? `${timeline.length} turn${timeline.length === 1 ? '' : 's'} from root to head.` : 'No committed turns yet.',
+    badges: compactStrings([headTurnId ? `head ${shortId(headTurnId)}` : 'empty branch']),
+    open: timeline.length > 0 && timeline.length <= 4,
+    tone: 'turn',
+    children: timeline.map(turn => buildTurnMapNode(turn, graph.eventPatches, graph.branchSnapshots, graph.continuityWarnings, docEntityId(turn) === headTurnId))
+  });
+
+  if (directOnlyTurns.length) {
+    children.push(docsGroupNode(
+      `branch:${branchId}:direct-only`,
+      'Direct turns not on current head path',
+      directOnlyTurns,
+      turn => buildTurnMapNode(turn, graph.eventPatches, graph.branchSnapshots, graph.continuityWarnings, false)
+    ));
+  }
+  if (branchState) children.push(buildWorldStateMapNode(branchState));
+  children.push(docsGroupNode(`branch:${branchId}:patches`, 'Event patches', patches, buildPatchMapNode));
+  children.push(docsGroupNode(`branch:${branchId}:warnings`, 'Continuity warnings', warnings, buildContinuityWarningMapNode, 'No continuity warnings recorded for this branch.'));
+  if (locks.length) children.push(docsGroupNode(`branch:${branchId}:locks`, 'Mutation locks', locks, doc => compactDocNode('Lock', doc, 'warning')));
+  if (snapshots.length) children.push(docsGroupNode(`branch:${branchId}:snapshots`, 'Compiled snapshots', snapshots, doc => compactDocNode('Snapshot', doc, 'state')));
+
+  return {
+    id: `branch:${branchId}`,
+    kicker: 'Branch',
+    title: stringFrom(branch.data.name) || shortId(branchId),
+    meta: forkedFromTurnId ? `Forked from ${shortId(forkedFromTurnId)}` : 'Main/root branch',
+    badges: compactStrings([
+      `${timeline.length} path turn${timeline.length === 1 ? '' : 's'}`,
+      headTurnId ? `head ${shortId(headTurnId)}` : 'no head',
+      warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : '',
+      locks.length ? 'locked' : ''
+    ]),
+    details: compactStrings([
+      `Branch ID: ${branchId}`,
+      `Created: ${formatDate(branch.data.createdAt)}`,
+      `Updated: ${formatDate(branch.data.updatedAt)}`,
+      forkedFromTurnId ? `Forked from turn: ${forkedFromTurnId}` : ''
+    ]),
+    raw: branch.data,
+    open: false,
+    tone: 'branch',
+    children
+  };
+}
+
+function buildTurnMapNode(
+  turn: AdminDocument,
+  allPatches: AdminDocument[],
+  allSnapshots: AdminDocument[],
+  allWarnings: AdminDocument[],
+  isHead: boolean
+): AdminMapNode {
+  const turnId = docEntityId(turn);
+  const patches = sortDocs(allPatches.filter(doc => stringFrom(doc.data.turnId) === turnId));
+  const snapshots = sortDocs(allSnapshots.filter(doc => stringFrom(doc.data.turnId) === turnId || docEntityId(doc) === turnId));
+  const warnings = sortDocs(allWarnings.filter(doc => stringFrom(doc.data.turnId) === turnId));
+  const modelMetadata = arrayFrom(turn.data.modelMetadata);
+  const transcriptChildren: AdminMapNode[] = [
+    transcriptNode(`turn:${turnId}:user`, 'User transcript', stringFrom(turn.data.userTranscript)),
+    transcriptNode(`turn:${turnId}:assistant`, 'Assistant transcript', stringFrom(turn.data.assistantTranscript))
+  ];
+  if (modelMetadata.length) {
+    transcriptChildren.push({
+      id: `turn:${turnId}:models`,
+      kicker: 'Model calls',
+      title: `${modelMetadata.length} invocation${modelMetadata.length === 1 ? '' : 's'}`,
+      badges: compactStrings(modelMetadata.map(item => stringFrom(recordFrom(item)?.purpose)).filter(Boolean)),
+      tone: 'doc',
+      children: modelMetadata.map((item, index) => {
+        const record = recordFrom(item) ?? {};
+        return {
+          id: `turn:${turnId}:model:${index}`,
+          kicker: stringFrom(record.purpose) || 'Model invocation',
+          title: compactStrings([stringFrom(record.provider), stringFrom(record.model)]).join(' · ') || `Invocation ${index + 1}`,
+          meta: compactStrings([formatDate(record.startedAt), formatDate(record.completedAt)]).filter(text => text !== '-').join(' → '),
+          raw: record,
+          tone: 'doc'
+        };
+      })
+    });
+  }
+
+  return {
+    id: `turn:${turnId}`,
+    kicker: isHead ? 'Head turn' : 'Turn',
+    title: turnTitle(turn),
+    meta: clip(stringFrom(turn.data.userTranscript) || stringFrom(turn.data.assistantTranscript), 160),
+    badges: compactStrings([
+      stringFrom(turn.data.stateStatus) || 'unknown state',
+      `index ${numberFrom(turn.data.turnIndex) || '?'}`,
+      patches.length ? `${patches.length} patch${patches.length === 1 ? '' : 'es'}` : '',
+      warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : '',
+      isHead ? 'branch head' : ''
+    ]),
+    details: compactStrings([
+      `Turn ID: ${turnId}`,
+      `Parent: ${stringFrom(turn.data.parentTurnId) || 'root'}`,
+      `Committed: ${formatDate(turn.data.committedAt ?? turn.data.createdAt)}`
+    ]),
+    raw: turn.data,
+    open: false,
+    tone: 'turn',
+    children: [
+      ...transcriptChildren,
+      docsGroupNode(`turn:${turnId}:patches`, 'Canon patches', patches, buildPatchMapNode, 'No canon patch document linked to this turn.'),
+      docsGroupNode(`turn:${turnId}:warnings`, 'Warnings', warnings, buildContinuityWarningMapNode, 'No continuity warnings linked to this turn.'),
+      docsGroupNode(`turn:${turnId}:snapshots`, 'Snapshots', snapshots, doc => compactDocNode('Compiled state snapshot', doc, 'state'), 'No compiled snapshot linked to this turn.')
+    ]
+  };
+}
+
+function buildWorldStateMapNode(stateDoc: AdminDocument): AdminMapNode {
+  const branchId = stringFrom(stateDoc.data.branchId) || docEntityId(stateDoc);
+  const state = recordFrom(stateDoc.data.state) ?? {};
+  const scene = recordFrom(state.scene) ?? {};
+  const entities = recordFrom(state.entities) ?? {};
+  const entityNodes = Object.values(entities)
+    .map(value => recordFrom(value))
+    .filter((value): value is Record<string, unknown> => Boolean(value))
+    .sort((a, b) => stringFrom(a.name).localeCompare(stringFrom(b.name)));
+  const entityGroups = groupEntityNodes(entityNodes);
+  const facts = arrayFrom(state.facts);
+  const threads = arrayFrom(state.threads);
+  const presentEntityIds = arrayFrom(scene.presentEntityIds).map(String);
+  const contextBudget = recordFrom(state.contextBudget);
+
+  const children: AdminMapNode[] = [
+    {
+      id: `state:${branchId}:scene`,
+      kicker: 'Current scene',
+      title: stringFrom(scene.summary) || 'Scene',
+      meta: stringFrom(scene.locationId) ? `Location ${shortId(stringFrom(scene.locationId))}` : '',
+      badges: compactStrings([
+        presentEntityIds.length ? `${presentEntityIds.length} present` : '',
+        stringFrom(scene.tone)
+      ]),
+      raw: scene,
+      tone: 'state'
+    },
+    {
+      id: `state:${branchId}:entities`,
+      kicker: 'World state',
+      title: 'Entities',
+      meta: `${entityNodes.length} tracked entity${entityNodes.length === 1 ? '' : 'ies'}.`,
+      badges: entityGroups.map(group => `${group.children?.length ?? 0} ${group.title}`),
+      tone: 'state',
+      children: entityGroups
+    },
+    {
+      id: `state:${branchId}:threads`,
+      kicker: 'World state',
+      title: 'Threads',
+      meta: threads.length ? `${threads.length} narrative thread${threads.length === 1 ? '' : 's'}.` : 'No active or historical threads.',
+      badges: statusBadges(threads),
+      tone: 'state',
+      children: threads.map((item, index) => threadPatchNode(`state:${branchId}:thread:${index}`, item))
+    },
+    {
+      id: `state:${branchId}:facts`,
+      kicker: 'World state',
+      title: 'Facts',
+      meta: facts.length ? `${facts.length} known fact${facts.length === 1 ? '' : 's'}.` : 'No explicit facts recorded.',
+      badges: certaintyBadges(facts),
+      tone: 'state',
+      children: facts.map((item, index) => factPatchNode(`state:${branchId}:fact:${index}`, item))
+    }
+  ];
+
+  if (contextBudget) {
+    children.push({
+      id: `state:${branchId}:budget`,
+      kicker: 'Runtime budget',
+      title: 'Context budget',
+      meta: compactStrings([
+        `estimated ${numberFrom(contextBudget.estimatedTokens)} tokens`,
+        `remaining ${numberFrom(contextBudget.remainingTurnBudget)} turns`
+      ]).join(' · '),
+      badges: compactStrings([
+        truthy(contextBudget.closureMode) ? 'closure mode' : '',
+        truthy(contextBudget.hardStop) ? 'hard stop' : ''
+      ]),
+      raw: contextBudget,
+      tone: 'state'
+    });
+  }
+
+  return {
+    id: `state:${branchId}`,
+    kicker: 'Compiled branch state',
+    title: `World state for ${shortId(branchId)}`,
+    meta: `Head ${shortId(stringFrom(stateDoc.data.headTurnId) || stringFrom(state.headTurnId) || 'root')} · Updated ${formatDate(stateDoc.data.updatedAt)}`,
+    badges: compactStrings([
+      `${entityNodes.length} entities`,
+      `${threads.length} threads`,
+      `${facts.length} facts`,
+      stringFrom(stateDoc.data.stateHash) ? `hash ${shortId(stringFrom(stateDoc.data.stateHash))}` : ''
+    ]),
+    raw: stateDoc.data,
+    open: false,
+    tone: 'state',
+    children
+  };
+}
+
+function groupEntityNodes(entities: Array<Record<string, unknown>>): AdminMapNode[] {
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  for (const entity of entities) {
+    const kind = stringFrom(entity.kind) || 'entity';
+    groups.set(kind, [...(groups.get(kind) ?? []), entity]);
+  }
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([kind, records]) => ({
+    id: `entities:${kind}`,
+    kicker: 'Entity kind',
+    title: kind,
+    meta: `${records.length} ${kind}${records.length === 1 ? '' : 's'}`,
+    tone: 'state' as AdminMapTone,
+    children: records.map(entity => ({
+      id: `entity:${stringFrom(entity.id) || stringFrom(entity.name)}`,
+      kicker: stringFrom(entity.kind) || 'Entity',
+      title: stringFrom(entity.name) || shortId(stringFrom(entity.id) || 'entity'),
+      meta: stringFrom(entity.status) || '',
+      badges: Object.keys(recordFrom(entity.attributes) ?? {}).slice(0, 4),
+      raw: entity,
+      tone: 'state' as AdminMapTone
+    }))
+  }));
+}
+
+function buildPatchMapNode(doc: AdminDocument): AdminMapNode {
+  const patch = recordFrom(doc.data.patch) ?? {};
+  const events = arrayFrom(patch.events);
+  const facts = arrayFrom(patch.facts);
+  const threads = arrayFrom(patch.threads);
+  const warnings = arrayFrom(patch.warnings);
+  const turnId = stringFrom(doc.data.turnId);
+  return {
+    id: `patch:${docEntityId(doc)}`,
+    kicker: 'Canon patch',
+    title: turnId ? `Patch for ${shortId(turnId)}` : shortId(docEntityId(doc)),
+    meta: `${formatDate(doc.data.appliedAt ?? doc.data.createdAt)} · ${stringFrom(doc.data.status) || 'unknown status'}`,
+    badges: compactStrings([
+      `${events.length} event${events.length === 1 ? '' : 's'}`,
+      `${facts.length} fact${facts.length === 1 ? '' : 's'}`,
+      `${threads.length} thread${threads.length === 1 ? '' : 's'}`,
+      warnings.length ? `${warnings.length} warning${warnings.length === 1 ? '' : 's'}` : ''
+    ]),
+    raw: doc.data,
+    tone: warnings.length ? 'warning' : 'doc',
+    children: [
+      patchItemsGroup(`patch:${docEntityId(doc)}:events`, 'Events', events, eventPatchNode),
+      patchItemsGroup(`patch:${docEntityId(doc)}:facts`, 'Facts', facts, factPatchNode),
+      patchItemsGroup(`patch:${docEntityId(doc)}:threads`, 'Threads', threads, threadPatchNode),
+      patchItemsGroup(`patch:${docEntityId(doc)}:warnings`, 'Patch warnings', warnings, patchWarningNode)
+    ]
+  };
+}
+
+function buildContinuityWarningMapNode(doc: AdminDocument): AdminMapNode {
+  const severity = stringFrom(doc.data.severity) || 'warning';
+  return {
+    id: `warning:${docEntityId(doc)}`,
+    kicker: `Continuity ${severity}`,
+    title: stringFrom(doc.data.message) || stringFrom(doc.data.warningType) || shortId(docEntityId(doc)),
+    meta: compactStrings([
+      stringFrom(doc.data.warningType),
+      stringFrom(doc.data.turnId) ? `turn ${shortId(stringFrom(doc.data.turnId))}` : '',
+      formatDate(doc.data.createdAt)
+    ]).join(' · '),
+    badges: compactStrings([severity, stringFrom(doc.data.resolvedAt) ? 'resolved' : 'open']),
+    details: compactStrings([stringFrom(doc.data.repairStrategy) ? `Repair: ${stringFrom(doc.data.repairStrategy)}` : '']),
+    raw: doc.data,
+    tone: 'warning'
+  };
+}
+
+function buildBillingMapNode(
+  user: AdminUserSummary,
+  billingEvents: AdminDocument[],
+  liveSessions: AdminDocument[],
+  storyTurnUsage: AdminDocument[]
+): AdminMapNode {
+  const entitlement = user.entitlement;
+  const children: AdminMapNode[] = [
+    {
+      id: `billing:${user.uid}:entitlement`,
+      kicker: 'Entitlement',
+      title: `${formatCredits(numberFrom(entitlement.remainingCreditMicros))} remaining`,
+      meta: `${formatCredits(numberFrom(entitlement.usedCreditMicros))} used · ${formatCredits(numberFrom(entitlement.reservedCreditMicros))} reserved`,
+      badges: compactStrings([
+        numberFrom(entitlement.reservedCreditMicros) > 0 ? 'reservation open' : '',
+        stringFrom(entitlement.activeLiveSessionId) ? 'active live session' : ''
+      ]),
+      raw: entitlement,
+      tone: 'billing'
+    },
+    docsGroupNode('billing:live-sessions', 'Live session usage', liveSessions, doc => usageDocNode('Live session', doc), 'No live session usage documents returned.'),
+    docsGroupNode('billing:story-turns', 'Story turn usage', storyTurnUsage, doc => usageDocNode('Story turn usage', doc), 'No story-turn usage documents returned.'),
+    docsGroupNode('billing:events', 'Billing events', sortDocs(billingEvents), doc => compactDocNode('Billing event', doc, 'billing'), 'No billing events returned.')
+  ];
+
+  return {
+    id: `billing:${user.uid}`,
+    kicker: 'Money and usage',
+    title: 'Billing',
+    meta: compactStrings([
+      `${formatCredits(numberFrom(entitlement.remainingCreditMicros))} remaining`,
+      `${user.usage.liveSessions.count} live sessions`,
+      `${user.usage.storyTurns.count} story usage turns`
+    ]).join(' · '),
+    badges: compactStrings([
+      `${billingEvents.length} billing event${billingEvents.length === 1 ? '' : 's'}`,
+      user.stripeCustomerId ? 'Stripe linked' : '',
+      stringFrom(entitlement.activeLiveSessionId) ? 'live active' : ''
+    ]),
+    open: false,
+    tone: 'billing',
+    children
+  };
+}
+
+function usageDocNode(kicker: string, doc: AdminDocument): AdminMapNode {
+  return {
+    id: `usage:${doc.path}`,
+    kicker,
+    title: stringFrom(doc.data.status) || shortId(docEntityId(doc)),
+    meta: compactStrings([
+      stringFrom(doc.data.model),
+      formatDate(primaryDate(doc.data)),
+      numberFrom(doc.data.billableSeconds) ? `${numberFrom(doc.data.billableSeconds)} billable sec` : ''
+    ]).join(' · '),
+    badges: compactStrings([
+      formatCredits(numberFrom(doc.data.usedCreditMicros || doc.data.reservedCreditMicros)),
+      numberFrom(doc.data.inputTokens) ? `${numberFrom(doc.data.inputTokens)} in` : '',
+      numberFrom(doc.data.outputTokens) ? `${numberFrom(doc.data.outputTokens)} out` : ''
+    ]),
+    raw: doc.data,
+    tone: 'billing'
+  };
+}
+
+function docsGroupNode(
+  id: string,
+  title: string,
+  docs: AdminDocument[],
+  child: (doc: AdminDocument) => AdminMapNode,
+  emptyText = 'No documents.'
+): AdminMapNode {
+  return {
+    id,
+    kicker: 'Collection',
+    title,
+    meta: docs.length ? `${docs.length} document${docs.length === 1 ? '' : 's'}.` : emptyText,
+    badges: docs.length ? [`${docs.length}`] : [],
+    tone: 'doc',
+    children: docs.map(child)
+  };
+}
+
+function compactDocNode(kicker: string, doc: AdminDocument, tone: AdminMapTone = 'doc'): AdminMapNode {
+  return {
+    id: `doc:${doc.path}`,
+    kicker,
+    title: compactStrings([
+      stringFrom(doc.data.name),
+      stringFrom(doc.data.title),
+      stringFrom(doc.data.kind),
+      stringFrom(doc.data.status),
+      shortId(docEntityId(doc))
+    ])[0] || shortId(docEntityId(doc)),
+    meta: compactStrings([doc.path, formatDate(primaryDate(doc.data))]).join(' · '),
+    badges: compactStrings([
+      stringFrom(doc.data.status),
+      stringFrom(doc.data.severity),
+      stringFrom(doc.data.turnId) ? `turn ${shortId(stringFrom(doc.data.turnId))}` : ''
+    ]),
+    raw: doc.data,
+    tone
+  };
+}
+
+function patchItemsGroup(
+  id: string,
+  title: string,
+  items: unknown[],
+  child: (id: string, item: unknown) => AdminMapNode
+): AdminMapNode {
+  return {
+    id,
+    kicker: 'Patch list',
+    title,
+    meta: items.length ? `${items.length} item${items.length === 1 ? '' : 's'}.` : `No ${title.toLowerCase()}.`,
+    badges: items.length ? [`${items.length}`] : [],
+    tone: 'doc',
+    children: items.map((item, index) => child(`${id}:${index}`, item))
+  };
+}
+
+function eventPatchNode(id: string, item: unknown): AdminMapNode {
+  const record = recordFrom(item) ?? {};
+  return {
+    id,
+    kicker: stringFrom(record.eventType) || 'Story event',
+    title: stringFrom(record.summary) || 'Event',
+    meta: compactStrings([
+      stringFrom(record.locationId) ? `location ${shortId(stringFrom(record.locationId))}` : '',
+      stringFrom(record.certainty)
+    ]).join(' · '),
+    badges: arrayFrom(record.participants).map(value => shortId(String(value))).slice(0, 6),
+    raw: record,
+    tone: 'doc'
+  };
+}
+
+function factPatchNode(id: string, item: unknown): AdminMapNode {
+  const record = recordFrom(item) ?? {};
+  return {
+    id,
+    kicker: 'Fact',
+    title: compactStrings([stringFrom(record.subjectId), stringFrom(record.predicate)]).join(' · ') || 'Fact',
+    meta: clip(valueToHumanText(record.value), 160),
+    badges: compactStrings([stringFrom(record.certainty)]),
+    raw: record,
+    tone: 'state'
+  };
+}
+
+function threadPatchNode(id: string, item: unknown): AdminMapNode {
+  const record = recordFrom(item) ?? {};
+  return {
+    id,
+    kicker: 'Thread',
+    title: stringFrom(record.summary) || stringFrom(record.threadId) || 'Thread',
+    meta: compactStrings([
+      stringFrom(record.threadId),
+      numberFrom(record.priority) ? `priority ${numberFrom(record.priority)}` : ''
+    ]).join(' · '),
+    badges: compactStrings([stringFrom(record.status)]),
+    raw: record,
+    tone: 'state'
+  };
+}
+
+function patchWarningNode(id: string, item: unknown): AdminMapNode {
+  const record = recordFrom(item) ?? {};
+  return {
+    id,
+    kicker: `Patch warning ${stringFrom(record.severity)}`.trim(),
+    title: stringFrom(record.message) || stringFrom(record.type) || 'Warning',
+    meta: stringFrom(record.repairStrategy),
+    badges: compactStrings([stringFrom(record.severity), stringFrom(record.type)]),
+    raw: record,
+    tone: 'warning'
+  };
+}
+
+function transcriptNode(id: string, title: string, transcript: string): AdminMapNode {
+  return {
+    id,
+    kicker: 'Transcript',
+    title,
+    meta: transcript ? clip(transcript, 220) : 'Empty transcript.',
+    raw: transcript || null,
+    tone: 'doc'
+  };
+}
+
+function adminMapList(nodes: AdminMapNode[]): HTMLUListElement {
+  const list = document.createElement('ul');
+  list.className = 'admin-map-tree';
+  for (const node of nodes) list.append(adminMapItem(node));
+  return list;
+}
+
+function adminMapItem(node: AdminMapNode): HTMLLIElement {
+  const item = document.createElement('li');
+  item.className = `admin-map-item admin-map-tone-${node.tone ?? 'doc'}`;
+  item.dataset.filterText = adminMapFilterText(node).toLowerCase();
+
+  const details = document.createElement('details');
+  details.className = 'admin-map-node';
+  details.dataset.defaultOpen = node.open ? 'true' : 'false';
+  details.open = Boolean(node.open);
+
+  const summary = document.createElement('summary');
+  summary.className = 'admin-map-card';
+  const top = document.createElement('span');
+  top.className = 'admin-map-card-top';
+  const chevron = document.createElement('span');
+  chevron.className = 'admin-map-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  const kicker = document.createElement('span');
+  kicker.className = 'admin-map-kicker';
+  kicker.textContent = node.kicker ?? 'Node';
+  top.append(chevron, kicker);
+  const title = document.createElement('strong');
+  title.textContent = node.title;
+  summary.append(top, title);
+  if (node.meta) {
+    const meta = document.createElement('span');
+    meta.className = 'admin-map-meta';
+    meta.textContent = node.meta;
+    summary.append(meta);
+  }
+  if (node.badges?.length) summary.append(adminMapBadges(node.badges));
+  details.append(summary);
+
+  const body = document.createElement('div');
+  body.className = 'admin-map-body';
+  if (node.details?.length) {
+    const detailsList = document.createElement('ul');
+    detailsList.className = 'admin-map-details';
+    for (const text of node.details) {
+      const detail = document.createElement('li');
+      detail.textContent = text;
+      detailsList.append(detail);
+    }
+    body.append(detailsList);
+  }
+  if (node.raw !== undefined) body.append(adminMapRaw(node.raw));
+  if (node.children?.length) body.append(adminMapList(node.children));
+  if (!body.childElementCount) {
+    const empty = document.createElement('p');
+    empty.className = 'admin-muted admin-map-empty';
+    empty.textContent = 'No deeper connections recorded here.';
+    body.append(empty);
+  }
+  details.append(body);
+  item.append(details);
+  return item;
+}
+
+function adminMapBadges(badges: string[]): HTMLElement {
+  const wrap = document.createElement('span');
+  wrap.className = 'admin-map-badges';
+  for (const badge of badges.filter(Boolean).slice(0, 8)) {
+    const item = document.createElement('span');
+    item.textContent = badge;
+    wrap.append(item);
+  }
+  return wrap;
+}
+
+function adminMapRaw(raw: unknown): HTMLElement {
+  const details = document.createElement('details');
+  details.className = 'admin-map-raw';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Raw data';
+  const pre = document.createElement('pre');
+  pre.textContent = valueToPrettyJson(raw);
+  details.append(summary, pre);
+  return details;
+}
+
+function applyAdminMapFilter(map: HTMLElement, query: string): void {
+  const normalized = query.trim().toLowerCase();
+  const items = [...map.querySelectorAll<HTMLElement>('.admin-map-item')];
+  map.classList.toggle('is-filtered', Boolean(normalized));
+  if (!normalized) {
+    for (const item of items) {
+      item.hidden = false;
+      item.classList.remove('is-search-hit');
+    }
+    return;
+  }
+
+  for (const item of items) {
+    item.hidden = true;
+    item.classList.remove('is-search-hit');
+  }
+
+  for (const item of items) {
+    if (!(item.dataset.filterText ?? '').includes(normalized)) continue;
+    item.classList.add('is-search-hit');
+    revealAdminMapItem(item, true);
+  }
+}
+
+function revealAdminMapItem(item: HTMLElement, includeDescendants: boolean): void {
+  item.hidden = false;
+  item.querySelector<HTMLDetailsElement>(':scope > details.admin-map-node')!.open = true;
+  if (includeDescendants) {
+    item.querySelectorAll<HTMLElement>(':scope .admin-map-item').forEach(child => {
+      child.hidden = false;
+    });
+  }
+  let parent = item.parentElement?.closest<HTMLElement>('.admin-map-item') ?? null;
+  while (parent) {
+    parent.hidden = false;
+    const details = parent.querySelector<HTMLDetailsElement>(':scope > details.admin-map-node');
+    if (details) details.open = true;
+    parent = parent.parentElement?.closest<HTMLElement>('.admin-map-item') ?? null;
+  }
+}
+
+function adminDocs(payload: AdminUserDetailResponse, key: string): AdminDocument[] {
+  return payload.documents[key] ?? [];
+}
+
+function indexDocsByEntityId(docs: AdminDocument[]): Map<string, AdminDocument> {
+  const map = new Map<string, AdminDocument>();
+  for (const doc of docs) {
+    const id = docEntityId(doc);
+    if (id) map.set(id, doc);
+    if (doc.id) map.set(doc.id, doc);
+  }
+  return map;
+}
+
+function branchTimeline(branch: AdminDocument, turnById: Map<string, AdminDocument>): AdminDocument[] {
+  const timeline: AdminDocument[] = [];
+  const seen = new Set<string>();
+  let currentId = stringFrom(branch.data.headTurnId);
+  while (currentId) {
+    if (seen.has(currentId)) break;
+    seen.add(currentId);
+    const turn = turnById.get(currentId);
+    if (!turn) break;
+    timeline.push(turn);
+    currentId = stringFrom(turn.data.parentTurnId);
+  }
+  return timeline.reverse();
+}
+
+function docEntityId(doc: AdminDocument): string {
+  return stringFrom(doc.data.id) || doc.id;
+}
+
+function turnTitle(turn: AdminDocument): string {
+  const index = numberFrom(turn.data.turnIndex);
+  return `${index ? `#${index} ` : ''}${shortId(docEntityId(turn))}`;
+}
+
+function sortDocs(docs: AdminDocument[]): AdminDocument[] {
+  return [...docs].sort((a, b) => dateValue(primaryDate(b.data)) - dateValue(primaryDate(a.data)) || docEntityId(a).localeCompare(docEntityId(b)));
+}
+
+function sortTurnDocs(docs: AdminDocument[]): AdminDocument[] {
+  return [...docs].sort((a, b) => numberFrom(a.data.turnIndex) - numberFrom(b.data.turnIndex) || dateValue(primaryDate(a.data)) - dateValue(primaryDate(b.data)));
+}
+
+function dateValue(value: unknown): number {
+  if (!value) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Date.parse(value) || 0;
+  return 0;
+}
+
+function arrayFrom(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function recordFrom(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function truthy(value: unknown): boolean {
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function statusBadges(items: unknown[]): string[] {
+  return countedBadges(items, 'status');
+}
+
+function certaintyBadges(items: unknown[]): string[] {
+  return countedBadges(items, 'certainty');
+}
+
+function countedBadges(items: unknown[], key: string): string[] {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const record = recordFrom(item);
+    const value = record ? stringFrom(record[key]) : '';
+    if (!value) continue;
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([value, count]) => `${value} ${count}`);
+}
+
+function compactStrings(values: Array<string | null | undefined | false>): string[] {
+  return values.map(value => typeof value === 'string' ? value.trim() : '').filter(Boolean);
+}
+
+function clip(value: string, maxLength: number): string {
+  const clean = value.replace(/\s+/g, ' ').trim();
+  if (clean.length <= maxLength) return clean;
+  return `${clean.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
+function valueToHumanText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return valueToPrettyJson(value);
+}
+
+function valueToPrettyJson(value: unknown): string {
+  try {
+    const json = JSON.stringify(value, null, 2);
+    return json === undefined ? String(value) : json;
+  } catch {
+    return String(value);
+  }
+}
+
+function adminMapFilterText(node: AdminMapNode): string {
+  return compactStrings([
+    node.id,
+    node.kicker,
+    node.title,
+    node.meta,
+    ...(node.badges ?? []),
+    ...(node.details ?? []),
+    node.raw === undefined ? '' : valueToPrettyJson(node.raw).slice(0, 4000)
+  ]).join(' ');
 }
 
 function usagePanel(title: string, usage: AdminUsageSummary): HTMLElement {

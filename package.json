@@ -22,7 +22,7 @@
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit",
     "deploy:api": "gcloud builds submit --config cloudbuild.api.yaml",
     "deploy:firebase": "npm run build:web:firebase && firebase deploy --project ariadne-engine-rt --only hosting,firestore",
-    "admin:backfill-owner-user-id": "node scripts/backfill-owner-user-id.mjs ariadne-engine-rt"
+    "admin:clear-firestore-data": "node scripts/clear-firestore-data.mjs ariadne-engine-rt --dry-run"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.0",

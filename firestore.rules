@@ -10,54 +10,63 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isReservedOwner(userId) {
+      return userId == '__unowned__' || userId == '_public';
+    }
+
     match /users/{userId} {
-      allow read: if isSelf(userId);
+      allow read: if isSelf(userId) && !isReservedOwner(userId);
       allow write: if false;
+
+      match /billingAccounts/{accountId} {
+        allow read: if isSelf(userId) && accountId == 'default';
+        allow write: if false;
+
+        match /liveSessions/{sessionId} {
+          allow read: if isSelf(userId) && accountId == 'default';
+          allow write: if false;
+        }
+
+        match /storyTurns/{usageId} {
+          allow read: if isSelf(userId) && accountId == 'default';
+          allow write: if false;
+        }
+
+        match /billingEvents/{eventId} {
+          allow read, write: if false;
+        }
+
+        match /{document=**} {
+          allow read, write: if false;
+        }
+      }
+
+      // Story data is API-only so branch authorization, future sharing, and raw
+      // transcript/world-state privacy stay on the trusted server path.
+      match /storyRepos/{document=**} {
+        allow read, write: if false;
+      }
+
+      match /{document=**} {
+        allow read, write: if false;
+      }
     }
 
-    match /entitlements/{userId} {
-      allow read: if isSelf(userId);
-      allow write: if false;
-    }
-
-    match /usage/{userId}/{document=**} {
-      allow read: if isSelf(userId);
-      allow write: if false;
-    }
-
-    match /billingEvents/{eventId} {
+    // Server-maintained lookup/idempotency ledgers. Clients must not read these
+    // because they reveal global IDs across users.
+    match /storyRepoIndex/{repoId} {
       allow read, write: if false;
     }
 
-    match /storyRepos/{repoId} {
+    match /storyBranchIndex/{branchId} {
       allow read, write: if false;
     }
 
-    match /branches/{branchId} {
+    match /storyTurnIndex/{turnId} {
       allow read, write: if false;
     }
 
-    match /turns/{turnId} {
-      allow read, write: if false;
-    }
-
-    match /branchStates/{branchId} {
-      allow read, write: if false;
-    }
-
-    match /branchSnapshots/{turnId} {
-      allow read, write: if false;
-    }
-
-    match /eventPatches/{patchId} {
-      allow read, write: if false;
-    }
-
-    match /continuityWarnings/{warningId} {
-      allow read, write: if false;
-    }
-
-    match /branchMutationLocks/{branchId} {
+    match /billingEventIndex/{eventId} {
       allow read, write: if false;
     }
 

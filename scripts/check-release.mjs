@@ -60,7 +60,7 @@ for (const [phrase, contents] of [
 }
 
 const firebase = readFileSync('firebase.json', 'utf8') + readFileSync('firestore.rules', 'utf8');
-for (const phrase of ['ariadne-api', '/v1/**', 'entitlements/{userId}', 'usage/{userId}']) {
+for (const phrase of ['ariadne-api', '/v1/**', 'users/{userId}', 'billingAccounts/{accountId}', 'storyRepos/{document=**}', 'storyRepoIndex/{repoId}']) {
   if (!firebase.includes(phrase)) {
     console.error(`Firebase release config is missing: ${phrase}`);
     process.exit(1);

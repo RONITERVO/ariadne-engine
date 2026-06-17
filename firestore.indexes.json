@@ -1,131 +1,140 @@
 {
   "indexes": [
     {
-      "collectionGroup": "branches",
-      "queryScope": "COLLECTION",
-      "fields": [
-        {
-          "fieldPath": "repoId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "ASCENDING"
-        }
-      ]
-    },
-    {
       "collectionGroup": "storyRepos",
-      "queryScope": "COLLECTION",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "updatedAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
     },
     {
       "collectionGroup": "branches",
-      "queryScope": "COLLECTION",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "updatedAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "repoId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "ASCENDING" }
       ]
     },
     {
       "collectionGroup": "turns",
-      "queryScope": "COLLECTION",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "repoId", "order": "ASCENDING" },
+        { "fieldPath": "branchId", "order": "ASCENDING" },
+        { "fieldPath": "turnIndex", "order": "ASCENDING" }
       ]
     },
     {
-      "collectionGroup": "branchStates",
+      "collectionGroup": "storyRepoIndex",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "updatedAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
     },
     {
-      "collectionGroup": "branchSnapshots",
+      "collectionGroup": "storyBranchIndex",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
       ]
     },
     {
-      "collectionGroup": "eventPatches",
+      "collectionGroup": "storyTurnIndex",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "branchState",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "stateSnapshots",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "canonPatches",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
     {
       "collectionGroup": "continuityWarnings",
-      "queryScope": "COLLECTION",
+      "queryScope": "COLLECTION_GROUP",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "severity", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
     {
-      "collectionGroup": "branchMutationLocks",
+      "collectionGroup": "mutationLocks",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "ownerUserId", "order": "ASCENDING" },
+        { "fieldPath": "acquiredAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "storyTurns",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "liveSessions",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "billingEvents",
+      "queryScope": "COLLECTION_GROUP",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "billingEventIndex",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "ownerUserId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "acquiredAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    { "collectionGroup": "turns", "fieldPath": "userTranscript", "indexes": [] },
+    { "collectionGroup": "turns", "fieldPath": "assistantTranscript", "indexes": [] },
+    { "collectionGroup": "turns", "fieldPath": "modelMetadata", "indexes": [] },
+    { "collectionGroup": "branchState", "fieldPath": "state", "indexes": [] },
+    { "collectionGroup": "stateSnapshots", "fieldPath": "state", "indexes": [] },
+    { "collectionGroup": "canonPatches", "fieldPath": "patch", "indexes": [] },
+    { "collectionGroup": "continuityWarnings", "fieldPath": "message", "indexes": [] },
+    { "collectionGroup": "continuityWarnings", "fieldPath": "repairStrategy", "indexes": [] },
+    { "collectionGroup": "storyTurns", "fieldPath": "metadata", "indexes": [] },
+    { "collectionGroup": "storyTurns", "fieldPath": "lineItems", "indexes": [] },
+    { "collectionGroup": "liveSessions", "fieldPath": "lineItems", "indexes": [] },
+    { "collectionGroup": "billingEvents", "fieldPath": "source", "indexes": [] }
+  ]
 }

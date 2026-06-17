@@ -47,17 +47,23 @@ Create these Secret Manager secrets before deploying `cloudbuild.api.yaml`:
 - `stripe-secret-key`
 - `stripe-webhook-secret`
 
-Firestore stores durable state:
+Firestore stores durable state in the v2 user-rooted, repo-centered schema:
 
-- `storyRepos`, `branches`, `turns`, `branchStates`, `branchSnapshots`, `eventPatches`, `continuityWarnings`
-- `branchMutationLocks`
-- `users/{uid}`
-- `entitlements/{uid}`
-- `usage/{uid}/storyTurns/{id}`
-- `usage/{uid}/liveSessions/{id}`
-- `billingEvents/{eventId}`
+- `users/{uid}/storyRepos/{repoId}`
+- `users/{uid}/storyRepos/{repoId}/branches/{branchId}`
+- `users/{uid}/storyRepos/{repoId}/turns/{turnId}`
+- `users/{uid}/storyRepos/{repoId}/branchState/{branchId}`
+- `users/{uid}/storyRepos/{repoId}/mutationLocks/{branchId}`
+- `users/{uid}/storyRepos/{repoId}/stateSnapshots/{turnId}`
+- `users/{uid}/storyRepos/{repoId}/canonPatches/{patchId}`
+- `users/{uid}/storyRepos/{repoId}/continuityWarnings/{warningId}`
+- `users/{uid}/billingAccounts/default`
+- `users/{uid}/billingAccounts/default/storyTurns/{id}`
+- `users/{uid}/billingAccounts/default/liveSessions/{id}`
+- `users/{uid}/billingAccounts/default/billingEvents/{eventId}`
+- `storyRepoIndex/{repoId}`, `storyBranchIndex/{branchId}`, `storyTurnIndex/{turnId}`, and `billingEventIndex/{eventId}`
 
-Client Firestore rules allow users to read only their own user, entitlement, and usage documents. Story data is accessed through the API so branch authorization and future sharing rules stay server-side.
+Client Firestore rules allow users to read only their own profile, credit entitlement, and usage documents. Story data and billing events are accessed through the API/admin dashboard so branch authorization, future sharing, and raw transcript/world-state privacy stay server-side.
 
 ## Billing
 
