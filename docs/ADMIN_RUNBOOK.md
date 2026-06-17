@@ -293,12 +293,13 @@ Promotion codes:
 
 Use the Ariadne admin dashboard before using the Firestore data tab for user support. The dashboard groups documents by Firebase UID and shows the user profile, Stripe customer ID, credit entitlement, usage records, story repos, branches, turns, patches, warnings, and locks together.
 
-Firestore is the raw storage inspector. Every story operational document should include `ownerUserId` so a document can be mapped back to the exact Firebase Auth user without manually joining through `storyRepos`.
+Firestore is the raw storage inspector. The canonical story tree now lives under `users/{uid}/storyRepos/{repoId}/...`; lookup documents in `storyRepoIndex`, `storyBranchIndex`, and `storyTurnIndex` exist only so API routes can jump from public IDs to canonical paths.
 
-Backfill launch-test data after deploying ownership-field changes:
+For the tester-only clean break, clear old launch-test Firestore data before using the v2 schema. The script dry-runs by default:
 
 ```powershell
-npm run admin:backfill-owner-user-id
+npm run admin:clear-firestore-data
+node scripts/clear-firestore-data.mjs ariadne-engine-rt --yes
 ```
 
 List indexes:
@@ -327,13 +328,11 @@ List backup schedules:
 firebase firestore:backups:schedules:list --project ariadne-engine-rt
 ```
 
-Delete launch-test data only when the team intentionally wants a clean empty production project. Do not run this after real users exist:
+Delete launch-test data only when the team intentionally wants a clean empty production project. Do not run this after real users exist. Prefer the reset script because it recursively removes v2 user subcollections and old v1 flat collections:
 
 ```powershell
-$project = 'ariadne-engine-rt'
-foreach ($collection in 'storyRepos','branches','turns','branchStates','branchSnapshots','eventPatches','continuityWarnings','branchMutationLocks','users','entitlements','billingEvents','usage') {
-  firebase firestore:delete $collection --project $project --recursive --yes
-}
+node scripts/clear-firestore-data.mjs ariadne-engine-rt --dry-run
+node scripts/clear-firestore-data.mjs ariadne-engine-rt --yes
 ```
 
 ## Logs And Incidents

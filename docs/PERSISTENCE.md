@@ -13,35 +13,51 @@ User
       TurnCommit DAG
         AudioAsset
         TranscriptSpan
-        EventPatch
+        CanonPatch
         ModelInvocation
-    Snapshot
-    SemanticIndex
+        ContinuityWarning
+      CurrentBranchState cache
+      BranchMutationLock lease
+  Billing entitlement
+  Usage ledger
+  Billing event ledger
 ```
 
 ## Firestore Collections
 
-The production store maps the hierarchy to Firestore collections:
+The production Firestore schema is user-rooted and repo-centered. Story data is owned by a user document first, then grouped under the repo so the admin dashboard can show one coherent tree. Small top-level lookup documents let API routes jump from public IDs to canonical paths without scanning collection groups.
 
 ```text
-storyRepos/{repoId}
-branches/{branchId}
-turns/{turnId}
-branchStates/{branchId}
-branchSnapshots/{turnId}
-eventPatches/{patchId}
-continuityWarnings/{warningId}
-branchMutationLocks/{branchId}
 users/{uid}
-entitlements/{uid}
-usage/{uid}/storyTurns/{usageId}
-usage/{uid}/liveSessions/{sessionId}
-billingEvents/{eventId}
+users/{uid}/billingAccounts/default
+users/{uid}/billingAccounts/default/storyTurns/{usageId}
+users/{uid}/billingAccounts/default/liveSessions/{sessionId}
+users/{uid}/billingAccounts/default/billingEvents/{eventId}
+users/{uid}/storyRepos/{repoId}
+users/{uid}/storyRepos/{repoId}/branches/{branchId}
+users/{uid}/storyRepos/{repoId}/turns/{turnId}
+users/{uid}/storyRepos/{repoId}/branchState/{branchId}
+users/{uid}/storyRepos/{repoId}/mutationLocks/{branchId}
+users/{uid}/storyRepos/{repoId}/stateSnapshots/{turnId}
+users/{uid}/storyRepos/{repoId}/canonPatches/{patchId}
+users/{uid}/storyRepos/{repoId}/continuityWarnings/{warningId}
+storyRepoIndex/{repoId}
+storyBranchIndex/{branchId}
+storyTurnIndex/{turnId}
+billingEventIndex/{eventId}
 ```
 
-`branchStates/{branchId}` is a cache of the current reduced world state. The branch timeline remains recoverable by following `branches/{branchId}.headTurnId` through each turn's `parentTurnId`, so older turns remain reachable like a time machine after new turns move the branch head.
+Turns are repo-level commits rather than branch-owned documents. That is deliberate: once a branch forks, old turns can be ancestors of more than one branch, so the branch points at `headTurnId` and the timeline is reconstructed by following each turn's `parentTurnId`.
 
-`branchMutationLocks/{branchId}` is a short-lived server-only lease. It prevents two requests from generating and applying turns to the same branch at the same time. The lock is not the source of truth; it is a concurrency guard around the immutable turn chain and branch head update.
+`branchState/{branchId}` is a cache of the current reduced world state for that branch. Older compiled snapshots live in `stateSnapshots/{turnId}`. They are caches/audit material, not the canonical history.
+
+`mutationLocks/{branchId}` is a short-lived server-only lease. It prevents two requests from generating and applying turns to the same branch at the same time. The lock is not the source of truth; it is a concurrency guard around the immutable turn chain and branch head update.
+
+`canonPatches/{patchId}` stores the structured canon patch that changed the state, and `continuityWarnings/{warningId}` stores warnings in a repo-level warning stream that is easy for admin tooling to scan.
+
+`storyRepoIndex`, `storyBranchIndex`, and `storyTurnIndex` are lookup/index documents, not canon. They exist so API routes that receive only `repoId`, `branchId`, or `turnId` can jump to the canonical user-rooted path. They must be updated in the same transaction as the canonical write.
+
+`billingAccounts/default` is the user credit entitlement. Its `storyTurns` and `liveSessions` subcollections are immutable-ish usage ledgers; `billingEvents` is the per-user billing event history. `billingEventIndex` is a global idempotency ledger for Stripe webhook events, so retries cannot grant credits twice.
 
 ## Branching
 
@@ -117,3 +133,8 @@ Every AI call should store:
 - safety/continuity flags
 
 This makes branches reproducible and debuggable.
+
+
+## Reset Instead Of Migrate
+
+The v2 schema is a clean break from the earlier flat collections. Because there are no real users yet, clear launch-test Firestore data before deploying this schema instead of trying to run a lossy migration. The repository includes `npm run admin:clear-firestore-data` as a dry run; use `node scripts/clear-firestore-data.mjs ariadne-engine-rt --yes` only when the team intentionally wants an empty production Firestore.

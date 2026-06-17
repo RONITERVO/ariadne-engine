@@ -5,6 +5,8 @@ import Stripe from 'stripe';
 import { FieldValue, getFirebaseAdminDb } from '../firebase/admin.js';
 import type { LiveSessionCharge, UsageCharge } from './modelCatalog.js';
 
+const FIRESTORE_SCHEMA_VERSION = 2;
+
 export interface BillingConfig {
   enabled: boolean;
   currency: string;
@@ -80,11 +82,14 @@ export class UsageBillingService {
       if (entitlement.remainingCreditMicros < amount) {
         throw new BillingError('Buy Ariadne credits before running this model turn.', 402, 'ariadne_credits_required');
       }
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(entitlementRef, {
+        ...entitlementDocumentBase(uid),
         reservedCreditMicros: FieldValue.increment(amount),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       tx.set(usageRef, {
+        ...usageDocumentBase(uid, id, 'story_turn_usage'),
         status: 'reserved',
         reservedCreditMicros: amount,
         metadata,
@@ -119,13 +124,16 @@ export class UsageBillingService {
       if (entitlement.remainingCreditMicros < amount) {
         throw new BillingError('Buy Ariadne credits before starting Gemini Live.', 402, 'ariadne_credits_required');
       }
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(entitlementRef, {
+        ...entitlementDocumentBase(uid),
         reservedCreditMicros: FieldValue.increment(amount),
         activeLiveSessionId: id,
         activeLiveSessionExpiresAtMs: expiresAtMs,
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       tx.set(usageRef, {
+        ...usageDocumentBase(uid, id, 'live_session_usage'),
         status: 'reserved',
         model: charge.model,
         billableSeconds: charge.billableSeconds,
@@ -152,14 +160,17 @@ export class UsageBillingService {
     const usageRef = this.usageRef(uid, 'liveSessions', sessionId);
     await this.db.runTransaction(async tx => {
       const entitlement = normalizeEntitlement(uid, (await tx.get(entitlementRef)).data());
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       if (entitlement.activeLiveSessionId === sessionId) {
         tx.set(entitlementRef, {
+          ...entitlementDocumentBase(uid),
           activeLiveSessionId: FieldValue.delete(),
           activeLiveSessionExpiresAtMs: FieldValue.delete(),
           updatedAt: FieldValue.serverTimestamp()
         }, { merge: true });
       }
       tx.set(usageRef, {
+        ...usageDocumentBase(uid, sessionId, 'live_session_usage'),
         status: 'ended',
         endedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
@@ -240,12 +251,15 @@ export class UsageBillingService {
       if (extra > unreservedRemaining) {
         throw new BillingError('Buy more Ariadne credits before saving this model turn.', 402, 'ariadne_credits_required');
       }
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(entitlementRef, {
+        ...entitlementDocumentBase(uid),
         reservedCreditMicros: FieldValue.increment(-reservedCreditMicros),
         usedCreditMicros: FieldValue.increment(usedCreditMicros),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       tx.set(usageRef, {
+        ...usageDocumentBase(uid, id, usageKind(collection)),
         status: 'settled',
         reservedCreditMicros,
         usedCreditMicros,
@@ -259,11 +273,14 @@ export class UsageBillingService {
   private async releaseReservation(uid: string, collection: string, id: string, reservedCreditMicros: number, status = 'released'): Promise<void> {
     if (reservedCreditMicros <= 0) return;
     await this.db.runTransaction(async tx => {
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(this.entitlementRef(uid), {
+        ...entitlementDocumentBase(uid),
         reservedCreditMicros: FieldValue.increment(-reservedCreditMicros),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       tx.set(this.usageRef(uid, collection, id), {
+        ...usageDocumentBase(uid, id, usageKind(collection)),
         status,
         releasedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
@@ -280,7 +297,9 @@ export class UsageBillingService {
     tokenExpiresAt?: string
   ): Promise<void> {
     await this.db.runTransaction(async tx => {
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(this.entitlementRef(uid), {
+        ...entitlementDocumentBase(uid),
         reservedCreditMicros: FieldValue.increment(-reservedCreditMicros),
         usedCreditMicros: FieldValue.increment(reservedCreditMicros),
         activeLiveSessionId: id,
@@ -288,6 +307,7 @@ export class UsageBillingService {
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       tx.set(this.usageRef(uid, 'liveSessions', id), {
+        ...usageDocumentBase(uid, id, 'live_session_usage'),
         status: 'active',
         usedCreditMicros: reservedCreditMicros,
         model: charge.model,
@@ -305,7 +325,9 @@ export class UsageBillingService {
     if (reservedCreditMicros <= 0) return;
     await this.db.runTransaction(async tx => {
       const entitlement = normalizeEntitlement(uid, (await tx.get(this.entitlementRef(uid))).data());
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(this.entitlementRef(uid), {
+        ...entitlementDocumentBase(uid),
         reservedCreditMicros: FieldValue.increment(-reservedCreditMicros),
         ...(entitlement.activeLiveSessionId === id
           ? {
@@ -316,6 +338,7 @@ export class UsageBillingService {
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
       tx.set(this.usageRef(uid, 'liveSessions', id), {
+        ...usageDocumentBase(uid, id, 'live_session_usage'),
         status,
         releasedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp()
@@ -334,22 +357,39 @@ export class UsageBillingService {
   }
 
   private async grantCredits(uid: string, creditMicros: number, idempotencyKey: string, source: Record<string, unknown>): Promise<boolean> {
-    const eventRef = this.db.collection('billingEvents').doc(idempotencyKey);
+    const eventRef = this.billingEventRef(uid, idempotencyKey);
+    const eventIndexRef = this.db.collection('billingEventIndex').doc(idempotencyKey);
     const entitlementRef = this.entitlementRef(uid);
     let granted = false;
 
     await this.db.runTransaction(async tx => {
-      const existing = await tx.get(eventRef);
+      const existing = await tx.get(eventIndexRef);
       if (existing.exists) return;
       granted = true;
-      tx.set(eventRef, {
+      const eventData = {
+        schemaVersion: FIRESTORE_SCHEMA_VERSION,
+        documentKind: 'billing_event',
+        id: idempotencyKey,
         uid,
         kind: 'ariadne_credits_granted',
         creditMicros,
         source,
         createdAt: FieldValue.serverTimestamp()
+      };
+      tx.set(eventRef, eventData);
+      tx.set(eventIndexRef, {
+        schemaVersion: FIRESTORE_SCHEMA_VERSION,
+        documentKind: 'billing_event_index',
+        id: idempotencyKey,
+        uid,
+        eventPath: eventRef.path,
+        kind: eventData.kind,
+        creditMicros,
+        createdAt: FieldValue.serverTimestamp()
       });
+      tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(entitlementRef, {
+        ...entitlementDocumentBase(uid),
         paidCreditMicros: FieldValue.increment(creditMicros),
         updatedAt: FieldValue.serverTimestamp()
       }, { merge: true });
@@ -389,7 +429,7 @@ export class UsageBillingService {
   }
 
   private async getOrCreateStripeCustomer(user: DecodedIdToken): Promise<string> {
-    const userRef = this.db.collection('users').doc(user.uid);
+    const userRef = this.userRef(user.uid);
     const snapshot = await userRef.get();
     const existingCustomerId = String(snapshot.data()?.stripeCustomerId || '').trim();
     const stripe = this.requireStripe();
@@ -408,11 +448,11 @@ export class UsageBillingService {
       metadata: { firebaseUid: user.uid }
     });
     await userRef.set({
+      ...userTouchData(user.uid),
       email: user.email || '',
       name: user.name || '',
       picture: user.picture || '',
-      stripeCustomerId: customer.id,
-      updatedAt: FieldValue.serverTimestamp()
+      stripeCustomerId: customer.id
     }, { merge: true });
     return customer.id;
   }
@@ -432,13 +472,56 @@ export class UsageBillingService {
     };
   }
 
+  private userRef(uid: string) {
+    return this.db.collection('users').doc(uid);
+  }
+
   private entitlementRef(uid: string) {
-    return this.db.collection('entitlements').doc(uid);
+    return this.billingAccountRef(uid);
+  }
+
+  private billingAccountRef(uid: string) {
+    return this.userRef(uid).collection('billingAccounts').doc('default');
+  }
+
+  private billingEventRef(uid: string, id: string) {
+    return this.billingAccountRef(uid).collection('billingEvents').doc(id);
   }
 
   private usageRef(uid: string, collection: string, id: string) {
-    return this.db.collection('usage').doc(uid).collection(collection).doc(id);
+    return this.billingAccountRef(uid).collection(collection).doc(id);
   }
+}
+
+function userTouchData(uid: string): Record<string, unknown> {
+  return {
+    schemaVersion: FIRESTORE_SCHEMA_VERSION,
+    documentKind: 'user',
+    uid,
+    updatedAt: FieldValue.serverTimestamp()
+  };
+}
+
+function entitlementDocumentBase(uid: string): Record<string, unknown> {
+  return {
+    schemaVersion: FIRESTORE_SCHEMA_VERSION,
+    documentKind: 'entitlement',
+    id: 'default',
+    uid
+  };
+}
+
+function usageDocumentBase(uid: string, id: string, documentKind: 'story_turn_usage' | 'live_session_usage'): Record<string, unknown> {
+  return {
+    schemaVersion: FIRESTORE_SCHEMA_VERSION,
+    documentKind,
+    id,
+    uid
+  };
+}
+
+function usageKind(collection: string): 'story_turn_usage' | 'live_session_usage' {
+  return collection === 'liveSessions' ? 'live_session_usage' : 'story_turn_usage';
 }
 
 function normalizeEntitlement(uid: string, data: DocumentData | undefined): Entitlement {

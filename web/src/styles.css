@@ -293,6 +293,233 @@ summary {
   cursor: pointer;
 }
 
+.admin-map-section {
+  border-top-color: #404039;
+}
+
+.admin-map-header {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.admin-map-help {
+  margin: 0;
+}
+
+.admin-map-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.admin-map-controls input {
+  min-width: 0;
+}
+
+.admin-map {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid #2d2d2a;
+  border-radius: 12px;
+  padding: 14px;
+  background: #050505;
+}
+
+.admin-map-tree,
+.admin-map-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.admin-map-tree .admin-map-tree {
+  position: relative;
+  margin-top: 10px;
+  padding-left: 24px;
+}
+
+.admin-map-tree .admin-map-tree::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 12px;
+  left: 9px;
+  width: 1px;
+  background: #30302d;
+}
+
+.admin-map-item {
+  position: relative;
+  min-width: 280px;
+  margin: 0 0 10px;
+}
+
+.admin-map-tree .admin-map-tree > .admin-map-item::before {
+  content: "";
+  position: absolute;
+  top: 24px;
+  left: -15px;
+  width: 14px;
+  height: 1px;
+  background: #30302d;
+}
+
+.admin-map-node > summary {
+  list-style: none;
+}
+
+.admin-map-node > summary::-webkit-details-marker {
+  display: none;
+}
+
+.admin-map-card {
+  display: grid;
+  gap: 5px;
+  width: min(100%, 720px);
+  border: 1px solid #2d2d2a;
+  border-radius: 12px;
+  padding: 10px 12px;
+  color: #f4f4f1;
+  background: #10100e;
+}
+
+.admin-map-card:hover {
+  border-color: #6f6f66;
+  background: #181815;
+}
+
+.admin-map-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.admin-map-chevron {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: #a7a7a0;
+  transition: transform 0.14s ease;
+}
+
+.admin-map-chevron::before {
+  content: "›";
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.admin-map-node[open] > .admin-map-card .admin-map-chevron {
+  transform: rotate(90deg);
+}
+
+.admin-map-kicker {
+  overflow: hidden;
+  color: #a7a7a0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.admin-map-card strong {
+  overflow-wrap: anywhere;
+  font-size: 0.98rem;
+  line-height: 1.25;
+}
+
+.admin-map-meta {
+  overflow-wrap: anywhere;
+  color: #bdbdb6;
+  font-size: 0.84rem;
+}
+
+.admin-map-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.admin-map-badges span {
+  border: 1px solid #30302d;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #d7d7d0;
+  background: #080808;
+  font-size: 0.72rem;
+}
+
+.admin-map-body {
+  margin-left: 12px;
+  padding-left: 14px;
+}
+
+.admin-map-details {
+  margin: 9px 0;
+  padding-left: 18px;
+  color: #bdbdb6;
+  font-size: 0.82rem;
+}
+
+.admin-map-empty {
+  margin: 8px 0 0;
+}
+
+.admin-map-raw {
+  width: min(100%, 720px);
+  margin: 8px 0 0;
+  color: #a7a7a0;
+  font-size: 0.8rem;
+}
+
+.admin-map-raw pre {
+  max-height: 300px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 10px;
+  border: 1px solid #272724;
+  border-radius: 8px;
+  color: #d7d7d0;
+  background: #080808;
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+}
+
+.admin-map-tone-root > .admin-map-node > .admin-map-card {
+  border-color: #56564d;
+  background: #141411;
+}
+
+.admin-map-tone-story > .admin-map-node > .admin-map-card,
+.admin-map-tone-branch > .admin-map-node > .admin-map-card,
+.admin-map-tone-turn > .admin-map-node > .admin-map-card {
+  border-color: #343a38;
+}
+
+.admin-map-tone-state > .admin-map-node > .admin-map-card {
+  border-color: #3a3a2f;
+}
+
+.admin-map-tone-billing > .admin-map-node > .admin-map-card {
+  border-color: #3b352e;
+}
+
+.admin-map-tone-warning > .admin-map-node > .admin-map-card {
+  border-color: #72504c;
+}
+
+.admin-map.is-filtered .admin-map-item.is-search-hit > .admin-map-node > .admin-map-card {
+  border-color: #c4c4ba;
+}
+
+.admin-map-item[hidden] {
+  display: none;
+}
+
 @media (max-width: 640px) {
   .transcript-shell {
     width: min(100% - 20px, 980px);
@@ -327,5 +554,22 @@ summary {
 
   .admin-summary {
     grid-template-columns: 1fr;
+  }
+
+  .admin-map-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-map {
+    padding: 10px;
+  }
+
+  .admin-map-tree .admin-map-tree {
+    padding-left: 18px;
+  }
+
+  .admin-map-card,
+  .admin-map-raw {
+    width: 100%;
   }
 }

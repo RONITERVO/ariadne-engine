@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { Firestore, Transaction } from 'firebase-admin/firestore';
+import type { DocumentData, DocumentReference, Firestore, Transaction } from 'firebase-admin/firestore';
 import { createInitialWorldState } from '../domain/initialState.js';
 import { sha256Json } from '../domain/stateHash.js';
 import type { BranchRef, CreateRepoInput, ForkBranchInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
@@ -14,16 +14,34 @@ import type {
 } from './storyStore.js';
 import { StoreError } from './storyStore.js';
 
+const SCHEMA_VERSION = 2;
+const UNOWNED_OWNER_KEY = '__unowned__';
+
 const COLLECTIONS = {
+  users: 'users',
   repos: 'storyRepos',
   branches: 'branches',
   turns: 'turns',
-  states: 'branchStates',
-  snapshots: 'branchSnapshots',
-  patches: 'eventPatches',
+  states: 'branchState',
+  snapshots: 'stateSnapshots',
+  patches: 'canonPatches',
   warnings: 'continuityWarnings',
-  branchLocks: 'branchMutationLocks'
+  locks: 'mutationLocks',
+  repoIndex: 'storyRepoIndex',
+  branchIndex: 'storyBranchIndex',
+  turnIndex: 'storyTurnIndex'
 } as const;
+
+type FirestoreDocRef = DocumentReference<DocumentData, DocumentData>;
+
+type RepoLoc = {
+  ownerKey: string;
+  ownerUserId: string | null;
+  repoId: string;
+};
+
+type BranchLoc = RepoLoc & { branchId: string };
+type TurnLoc = BranchLoc & { turnId: string };
 
 export class FirestoreStoryStore implements StoryStore {
   constructor(private readonly db: Firestore = getFirebaseAdminDb()) {}
@@ -32,9 +50,11 @@ export class FirestoreStoryStore implements StoryStore {
     const now = new Date().toISOString();
     const repoId = randomUUID();
     const branchId = randomUUID();
+    const ownerUserId = normalizeOwnerUserId(input.ownerUserId);
+    const ownerKey = ownerKeyFromOwnerUserId(ownerUserId);
     const repo: StoryRepo = {
       id: repoId,
-      ownerUserId: input.ownerUserId ?? null,
+      ownerUserId,
       title: input.title,
       description: input.description ?? null,
       defaultStyle: input.defaultStyle ?? null,
@@ -45,7 +65,7 @@ export class FirestoreStoryStore implements StoryStore {
     const branch: BranchRef = {
       id: branchId,
       repoId,
-      ownerUserId: repo.ownerUserId,
+      ownerUserId,
       name: 'main',
       headTurnId: null,
       forkedFromTurnId: null,
@@ -53,70 +73,75 @@ export class FirestoreStoryStore implements StoryStore {
       updatedAt: now
     };
     const state = createInitialWorldState(branchId, { style: input.defaultStyle });
+    const repoLoc: RepoLoc = { ownerKey, ownerUserId, repoId };
+    const branchLoc: BranchLoc = { ...repoLoc, branchId };
 
     await this.db.runTransaction(async tx => {
-      tx.set(this.repoRef(repoId), repo);
-      tx.set(this.branchRef(branchId), branch);
-      tx.set(this.stateRef(branchId), {
-        repoId,
-        branchId,
-        ownerUserId: repo.ownerUserId,
-        headTurnId: null,
-        state,
-        stateHash: sha256Json(state),
-        updatedAt: now
-      });
+      tx.set(this.userRef(ownerKey), userRootData(ownerKey, ownerUserId, now), { merge: true });
+      tx.set(this.repoRef(repoLoc), storyDoc(repo, 'story_repo'));
+      tx.set(this.repoIndexRef(repoId), repoIndexData(repo, ownerKey, this.repoRef(repoLoc).path));
+      tx.set(this.branchRef(branchLoc), storyDoc(branch, 'branch'));
+      tx.set(this.branchIndexRef(branchId), branchIndexData(branch, ownerKey, this.branchRef(branchLoc).path));
+      tx.set(this.stateRef(branchLoc), branchStateData(repoLoc, branchId, null, state, now));
     });
 
     return clone({ repo, branch, state });
   }
 
   async getRepo(repoId: string): Promise<StoryRepo | null> {
-    const snapshot = await this.repoRef(repoId).get();
-    return snapshot.exists ? clone(snapshot.data() as StoryRepo) : null;
+    const loc = await this.locateRepo(repoId);
+    if (!loc) return null;
+    const snapshot = await this.repoRef(loc).get();
+    return snapshot.exists ? cleanRepo(snapshot.data()) : null;
   }
 
   async listRepos(ownerUserId?: string): Promise<StoryRepo[]> {
-    const query = ownerUserId === undefined
-      ? this.db.collection(COLLECTIONS.repos).orderBy('createdAt', 'asc')
-      : this.db.collection(COLLECTIONS.repos).where('ownerUserId', '==', ownerUserId);
-    const snapshot = await query.get();
-    return snapshot.docs
-      .map(doc => clone(doc.data() as StoryRepo))
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    if (ownerUserId !== undefined) {
+      const ownerKey = ownerKeyFromOwnerUserId(normalizeOwnerUserId(ownerUserId));
+      const snapshot = await this.userRef(ownerKey).collection(COLLECTIONS.repos).get();
+      return snapshot.docs.map(doc => cleanRepo(doc.data())).filter(isPresent).sort(sortByCreatedAt);
+    }
+    const snapshot = await this.db.collectionGroup(COLLECTIONS.repos).get();
+    return snapshot.docs.map(doc => cleanRepo(doc.data())).filter(isPresent).sort(sortByCreatedAt);
   }
 
   async getBranch(branchId: string): Promise<BranchRef | null> {
-    const snapshot = await this.branchRef(branchId).get();
-    return snapshot.exists ? clone(snapshot.data() as BranchRef) : null;
+    const loc = await this.locateBranch(branchId);
+    if (!loc) return null;
+    const snapshot = await this.branchRef(loc).get();
+    return snapshot.exists ? cleanBranch(snapshot.data()) : null;
   }
 
   async listBranches(repoId: string): Promise<BranchRef[]> {
-    const snapshot = await this.db
-      .collection(COLLECTIONS.branches)
-      .where('repoId', '==', repoId)
-      .orderBy('createdAt', 'asc')
-      .get();
-    return snapshot.docs.map(doc => clone(doc.data() as BranchRef));
+    const loc = await this.locateRepo(repoId);
+    if (!loc) return [];
+    const snapshot = await this.repoRef(loc).collection(COLLECTIONS.branches).get();
+    return snapshot.docs.map(doc => cleanBranch(doc.data())).filter(isPresent).sort(sortByCreatedAt);
   }
 
   async forkBranch(input: ForkBranchInput): Promise<{ branch: BranchRef; state: WorldState }> {
     return this.db.runTransaction(async tx => {
-      const repoSnapshot = await tx.get(this.repoRef(input.repoId));
+      const repoLoc = await this.locateRepoTx(tx, input.repoId);
+      if (!repoLoc) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+
+      const repoSnapshot = await tx.get(this.repoRef(repoLoc));
       if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
-      const repo = repoSnapshot.data() as StoryRepo;
+      const repo = cleanRepo(repoSnapshot.data());
+      if (!repo) throw new StoreError(`repo is invalid: ${input.repoId}`, 'invalid');
 
       const duplicate = await tx.get(
-        this.db.collection(COLLECTIONS.branches)
-          .where('repoId', '==', input.repoId)
-          .where('name', '==', input.name)
-          .limit(1)
+        this.repoRef(repoLoc).collection(COLLECTIONS.branches).where('name', '==', input.name).limit(1)
       );
       if (!duplicate.empty) throw new StoreError(`branch already exists: ${input.name}`, 'conflict');
 
       let sourceState: WorldState | null = null;
       if (input.sourceTurnId) {
-        const snapshot = await tx.get(this.snapshotRef(input.sourceTurnId));
+        const sourceTurnLoc = await this.locateTurnTx(tx, input.sourceTurnId);
+        if (!sourceTurnLoc) {
+          throw new StoreError(`cannot fork from ${input.sourceTurnId}; no turn exists for that id`, 'not_found');
+        }
+        if (sourceTurnLoc.repoId !== input.repoId) throw new StoreError('source turn does not belong to repo', 'invalid');
+        const snapshot = await tx.get(this.snapshotRef(sourceTurnLoc));
         if (!snapshot.exists) {
           throw new StoreError(
             `cannot fork from ${input.sourceTurnId}; no compiled state snapshot exists for that turn`,
@@ -126,14 +151,11 @@ export class FirestoreStoryStore implements StoryStore {
         sourceState = (snapshot.data() as { state?: WorldState }).state ?? null;
       } else {
         const main = await tx.get(
-          this.db.collection(COLLECTIONS.branches)
-            .where('repoId', '==', input.repoId)
-            .where('name', '==', 'main')
-            .limit(1)
+          this.repoRef(repoLoc).collection(COLLECTIONS.branches).where('name', '==', 'main').limit(1)
         );
-        const mainBranch = main.docs[0]?.data() as BranchRef | undefined;
+        const mainBranch = cleanBranch(main.docs[0]?.data());
         if (mainBranch) {
-          const stateSnapshot = await tx.get(this.stateRef(mainBranch.id));
+          const stateSnapshot = await tx.get(this.stateRef({ ...repoLoc, branchId: mainBranch.id }));
           sourceState = (stateSnapshot.data() as { state?: WorldState } | undefined)?.state ?? null;
         }
       }
@@ -153,34 +175,35 @@ export class FirestoreStoryStore implements StoryStore {
       const state = clone(sourceState ?? createInitialWorldState(branchId, { style: repo.defaultStyle ?? undefined }));
       state.branchId = branchId;
       state.headTurnId = input.sourceTurnId ?? 'root';
+      const branchLoc: BranchLoc = { ...repoLoc, branchId };
 
-      tx.set(this.branchRef(branchId), branch);
-      tx.set(this.stateRef(branchId), {
-        repoId: input.repoId,
-        branchId,
-        ownerUserId: repo.ownerUserId ?? null,
-        headTurnId: input.sourceTurnId ?? null,
-        state,
-        stateHash: sha256Json(state),
-        updatedAt: now
-      });
+      tx.set(this.userRef(repoLoc.ownerKey), userRootData(repoLoc.ownerKey, repo.ownerUserId ?? null, now), { merge: true });
+      tx.set(this.branchRef(branchLoc), storyDoc(branch, 'branch'));
+      tx.set(this.branchIndexRef(branchId), branchIndexData(branch, repoLoc.ownerKey, this.branchRef(branchLoc).path));
+      tx.set(this.stateRef(branchLoc), branchStateData(repoLoc, branchId, input.sourceTurnId ?? null, state, now));
+      tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
       return clone({ branch, state });
     });
   }
 
   async acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease> {
     return this.db.runTransaction(async tx => {
-      const repoSnapshot = await tx.get(this.repoRef(input.repoId));
+      const branchLoc = await this.locateBranchTx(tx, input.branchId);
+      if (!branchLoc) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+      if (branchLoc.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+
+      const repoSnapshot = await tx.get(this.repoRef(branchLoc));
+      const branchSnapshot = await tx.get(this.branchRef(branchLoc));
+      const lockSnapshot = await tx.get(this.branchLockRef(branchLoc));
       if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
-      const repo = repoSnapshot.data() as StoryRepo;
-      const branchSnapshot = await tx.get(this.branchRef(input.branchId));
       if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
-      const branch = branchSnapshot.data() as BranchRef;
+      const repo = cleanRepo(repoSnapshot.data());
+      const branch = cleanBranch(branchSnapshot.data());
+      if (!repo || !branch) throw new StoreError('repo or branch is invalid', 'invalid');
       if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
 
       const nowMs = Date.now();
-      const lockRef = this.branchLockRef(input.branchId);
-      const lockSnapshot = await tx.get(lockRef);
       const lock = lockSnapshot.data() as { leaseId?: string; expiresAtMillis?: number } | undefined;
       if (lockSnapshot.exists && (lock?.expiresAtMillis ?? 0) > nowMs) {
         throw new StoreError('branch already has a story turn in progress', 'conflict');
@@ -193,8 +216,12 @@ export class FirestoreStoryStore implements StoryStore {
         ownerUserId: repo.ownerUserId ?? branch.ownerUserId ?? null,
         expiresAt: new Date(nowMs + input.ttlMs).toISOString()
       };
-      tx.set(lockRef, {
+      tx.set(this.branchLockRef(branchLoc), {
+        schemaVersion: SCHEMA_VERSION,
+        documentKind: 'branch_mutation_lock',
+        id: input.branchId,
         ...lease,
+        ownerKey: branchLoc.ownerKey,
         expiresAtMillis: nowMs + input.ttlMs,
         acquiredAt: new Date(nowMs).toISOString()
       });
@@ -204,30 +231,35 @@ export class FirestoreStoryStore implements StoryStore {
 
   async releaseBranchMutationLease(lease: BranchMutationLease): Promise<void> {
     await this.db.runTransaction(async tx => {
-      const lockRef = this.branchLockRef(lease.branchId);
+      const branchLoc = await this.locateBranchTx(tx, lease.branchId);
+      if (!branchLoc) return;
+      const lockRef = this.branchLockRef(branchLoc);
       const lockSnapshot = await tx.get(lockRef);
       const lock = lockSnapshot.data() as { leaseId?: string } | undefined;
-      if (lockSnapshot.exists && lock?.leaseId === lease.leaseId) {
-        tx.delete(lockRef);
-      }
+      if (lockSnapshot.exists && lock?.leaseId === lease.leaseId) tx.delete(lockRef);
     });
   }
 
   async commitTurn(input: CommitTurnInput): Promise<TurnCommit> {
     return this.db.runTransaction(async tx => {
-      const repoSnapshot = await tx.get(this.repoRef(input.repoId));
+      const branchLoc = await this.locateBranchTx(tx, input.branchId);
+      if (!branchLoc) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+      if (branchLoc.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+
+      const repoSnapshot = await tx.get(this.repoRef(branchLoc));
+      const branchSnapshot = await tx.get(this.branchRef(branchLoc));
       if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
-      const repo = repoSnapshot.data() as StoryRepo;
-      const branchSnapshot = await tx.get(this.branchRef(input.branchId));
       if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
-      const branch = branchSnapshot.data() as BranchRef;
+      const repo = cleanRepo(repoSnapshot.data());
+      const branch = cleanBranch(branchSnapshot.data());
+      if (!repo || !branch) throw new StoreError('repo or branch is invalid', 'invalid');
       if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
 
       const parentTurnId = branch.headTurnId ?? null;
       if (input.expectedHeadTurnId !== undefined && input.expectedHeadTurnId !== parentTurnId) {
         throw new StoreError('branch head moved before the turn could be committed', 'conflict');
       }
-      const parent = parentTurnId ? await this.getTurnInTransaction(tx, parentTurnId) : null;
+      const parent = parentTurnId ? await this.getTurnTx(tx, parentTurnId) : null;
       const now = new Date().toISOString();
       const turn: TurnCommit = {
         id: randomUUID(),
@@ -245,10 +277,14 @@ export class FirestoreStoryStore implements StoryStore {
         createdAt: now,
         committedAt: now
       };
+      const turnLoc: TurnLoc = { ...branchLoc, turnId: turn.id };
 
-      tx.set(this.turnRef(turn.id), turn);
-      tx.update(this.branchRef(input.branchId), { headTurnId: turn.id, updatedAt: now });
-      tx.update(this.repoRef(input.repoId), { updatedAt: now });
+      tx.set(this.turnRef(turnLoc), storyDoc(turn, 'turn'));
+      tx.set(this.turnIndexRef(turn.id), turnIndexData(turn, branchLoc.ownerKey, this.turnRef(turnLoc).path));
+      tx.set(this.branchRef(branchLoc), { headTurnId: turn.id, updatedAt: now }, { merge: true });
+      tx.set(this.branchIndexRef(input.branchId), { headTurnId: turn.id, updatedAt: now }, { merge: true });
+      tx.set(this.repoRef(branchLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
       return clone(turn);
     });
   }
@@ -263,9 +299,8 @@ export class FirestoreStoryStore implements StoryStore {
     while (currentId) {
       if (seen.has(currentId)) throw new StoreError(`cycle detected at turn ${currentId}`, 'invalid');
       seen.add(currentId);
-      const snapshot = await this.turnRef(currentId).get();
-      if (!snapshot.exists) throw new StoreError(`turn not found: ${currentId}`, 'not_found');
-      const turn = snapshot.data() as TurnCommit;
+      const turn = await this.getTurn(currentId);
+      if (!turn) throw new StoreError(`turn not found: ${currentId}`, 'not_found');
       timeline.push(turn);
       currentId = turn.parentTurnId ?? null;
     }
@@ -273,76 +308,90 @@ export class FirestoreStoryStore implements StoryStore {
   }
 
   async getState(branchId: string): Promise<WorldState | null> {
-    const snapshot = await this.stateRef(branchId).get();
+    const branchLoc = await this.locateBranch(branchId);
+    if (!branchLoc) return null;
+    const snapshot = await this.stateRef(branchLoc).get();
     const state = (snapshot.data() as { state?: WorldState } | undefined)?.state;
     return state ? clone(state) : null;
   }
 
   async applyCanonPatch(input: ApplyCanonPatchInput): Promise<void> {
     await this.db.runTransaction(async tx => {
-      const turnSnapshot = await tx.get(this.turnRef(input.turnId));
-      if (!turnSnapshot.exists) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
-      const turn = turnSnapshot.data() as TurnCommit;
-      if (turn.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
-      if (turn.repoId !== input.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
-      const branchSnapshot = await tx.get(this.branchRef(input.branchId));
+      const turnLoc = await this.locateTurnTx(tx, input.turnId);
+      if (!turnLoc) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
+      if (turnLoc.repoId !== input.repoId || turnLoc.branchId !== input.branchId) {
+        throw new StoreError('turn does not belong to branch or repo', 'invalid');
+      }
+
+      const repoSnapshot = await tx.get(this.repoRef(turnLoc));
+      const branchSnapshot = await tx.get(this.branchRef(turnLoc));
+      const turnSnapshot = await tx.get(this.turnRef(turnLoc));
+      if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
       if (!branchSnapshot.exists) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
-      const branch = branchSnapshot.data() as BranchRef;
-      if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+      if (!turnSnapshot.exists) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
+      const repo = cleanRepo(repoSnapshot.data());
+      const branch = cleanBranch(branchSnapshot.data());
+      const turn = cleanTurn(turnSnapshot.data());
+      if (!repo || !branch || !turn) throw new StoreError('repo, branch, or turn is invalid', 'invalid');
+      if (turn.repoId !== input.repoId || turn.branchId !== input.branchId) {
+        throw new StoreError('turn does not belong to branch or repo', 'invalid');
+      }
       if ((branch.headTurnId ?? null) !== input.turnId) {
         throw new StoreError('cannot canonize a turn that is no longer the branch head', 'conflict');
       }
-      const repoSnapshot = await tx.get(this.repoRef(input.repoId));
-      if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
-      const repo = repoSnapshot.data() as StoryRepo;
 
       const now = new Date().toISOString();
+      const ownerUserId = repo.ownerUserId ?? branch.ownerUserId ?? turn.ownerUserId ?? null;
+      const ownerKey = turnLoc.ownerKey;
       const stateHash = sha256Json(input.state);
       const status = input.patch.warnings.some(w => w.severity === 'high') ? 'needs_review' : 'canonized';
       const modelMetadata = [...(turn.modelMetadata ?? []), ...(input.modelMetadata ?? [])];
-      const ownerUserId = repo.ownerUserId ?? turn.ownerUserId ?? branch.ownerUserId ?? null;
-
       const patchId = randomUUID();
-      tx.set(this.db.collection(COLLECTIONS.patches).doc(patchId), {
+
+      tx.set(this.patchRef(turnLoc, patchId), {
+        schemaVersion: SCHEMA_VERSION,
+        documentKind: 'canon_patch',
         id: patchId,
         repoId: input.repoId,
         branchId: input.branchId,
         turnId: input.turnId,
         ownerUserId,
+        ownerKey,
         patch: input.patch,
         status: 'applied',
         createdAt: now,
         appliedAt: now
       });
-      tx.set(this.snapshotRef(input.turnId), {
+      tx.set(this.snapshotRef(turnLoc), {
+        schemaVersion: SCHEMA_VERSION,
+        documentKind: 'branch_snapshot',
+        id: input.turnId,
         repoId: input.repoId,
         branchId: input.branchId,
         turnId: input.turnId,
         ownerUserId,
+        ownerKey,
         state: input.state,
         stateHash,
         createdAt: now
       });
-      tx.set(this.stateRef(input.branchId), {
-        repoId: input.repoId,
-        branchId: input.branchId,
-        headTurnId: input.turnId,
-        ownerUserId,
-        state: input.state,
-        stateHash,
-        updatedAt: now
-      });
-      tx.update(this.turnRef(input.turnId), { stateStatus: status, modelMetadata });
-      tx.update(this.repoRef(input.repoId), { updatedAt: now });
+      tx.set(this.stateRef(turnLoc), branchStateData(turnLoc, input.branchId, input.turnId, input.state, now));
+      tx.set(this.turnRef(turnLoc), { stateStatus: status, modelMetadata, updatedAt: now }, { merge: true });
+      tx.set(this.turnIndexRef(input.turnId), { stateStatus: status, updatedAt: now }, { merge: true });
+      tx.set(this.repoRef(turnLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
 
       for (const warning of input.patch.warnings) {
         const warningId = randomUUID();
-        tx.set(this.db.collection(COLLECTIONS.warnings).doc(warningId), {
+        tx.set(this.warningRef(turnLoc, warningId), {
+          schemaVersion: SCHEMA_VERSION,
+          documentKind: 'continuity_warning',
           id: warningId,
           repoId: input.repoId,
           branchId: input.branchId,
           turnId: input.turnId,
           ownerUserId,
+          ownerKey,
           severity: warning.severity,
           warningType: warning.type,
           message: warning.message,
@@ -358,34 +407,262 @@ export class FirestoreStoryStore implements StoryStore {
     // Firebase Admin owns the process-level Firestore client.
   }
 
-  private repoRef(id: string) {
-    return this.db.collection(COLLECTIONS.repos).doc(id);
+  private userRef(ownerKey: string): FirestoreDocRef {
+    return this.db.collection(COLLECTIONS.users).doc(ownerKey);
   }
 
-  private branchRef(id: string) {
-    return this.db.collection(COLLECTIONS.branches).doc(id);
+  private repoRef(loc: RepoLoc): FirestoreDocRef {
+    return this.userRef(loc.ownerKey).collection(COLLECTIONS.repos).doc(loc.repoId);
   }
 
-  private turnRef(id: string) {
-    return this.db.collection(COLLECTIONS.turns).doc(id);
+  private branchRef(loc: BranchLoc): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.branches).doc(loc.branchId);
   }
 
-  private stateRef(branchId: string) {
-    return this.db.collection(COLLECTIONS.states).doc(branchId);
+  private turnRef(loc: TurnLoc): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.turns).doc(loc.turnId);
   }
 
-  private snapshotRef(turnId: string) {
-    return this.db.collection(COLLECTIONS.snapshots).doc(turnId);
+  private stateRef(loc: BranchLoc): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.states).doc(loc.branchId);
   }
 
-  private branchLockRef(branchId: string) {
-    return this.db.collection(COLLECTIONS.branchLocks).doc(branchId);
+  private snapshotRef(loc: TurnLoc): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.snapshots).doc(loc.turnId);
   }
 
-  private async getTurnInTransaction(tx: Transaction, turnId: string): Promise<TurnCommit | null> {
-    const snapshot = await tx.get(this.turnRef(turnId));
-    return snapshot.exists ? (snapshot.data() as TurnCommit) : null;
+  private patchRef(loc: TurnLoc, patchId: string): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.patches).doc(patchId);
   }
+
+  private warningRef(loc: TurnLoc, warningId: string): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.warnings).doc(warningId);
+  }
+
+  private branchLockRef(loc: BranchLoc): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.locks).doc(loc.branchId);
+  }
+
+  private repoIndexRef(repoId: string): FirestoreDocRef {
+    return this.db.collection(COLLECTIONS.repoIndex).doc(repoId);
+  }
+
+  private branchIndexRef(branchId: string): FirestoreDocRef {
+    return this.db.collection(COLLECTIONS.branchIndex).doc(branchId);
+  }
+
+  private turnIndexRef(turnId: string): FirestoreDocRef {
+    return this.db.collection(COLLECTIONS.turnIndex).doc(turnId);
+  }
+
+  private async locateRepo(repoId: string): Promise<RepoLoc | null> {
+    const snapshot = await this.repoIndexRef(repoId).get();
+    return snapshot.exists ? repoLocFromIndex(repoId, snapshot.data()) : null;
+  }
+
+  private async locateRepoTx(tx: Transaction, repoId: string): Promise<RepoLoc | null> {
+    const snapshot = await tx.get(this.repoIndexRef(repoId));
+    return snapshot.exists ? repoLocFromIndex(repoId, snapshot.data()) : null;
+  }
+
+  private async locateBranch(branchId: string): Promise<BranchLoc | null> {
+    const snapshot = await this.branchIndexRef(branchId).get();
+    return snapshot.exists ? branchLocFromIndex(branchId, snapshot.data()) : null;
+  }
+
+  private async locateBranchTx(tx: Transaction, branchId: string): Promise<BranchLoc | null> {
+    const snapshot = await tx.get(this.branchIndexRef(branchId));
+    return snapshot.exists ? branchLocFromIndex(branchId, snapshot.data()) : null;
+  }
+
+  private async locateTurn(turnId: string): Promise<TurnLoc | null> {
+    const snapshot = await this.turnIndexRef(turnId).get();
+    return snapshot.exists ? turnLocFromIndex(turnId, snapshot.data()) : null;
+  }
+
+  private async locateTurnTx(tx: Transaction, turnId: string): Promise<TurnLoc | null> {
+    const snapshot = await tx.get(this.turnIndexRef(turnId));
+    return snapshot.exists ? turnLocFromIndex(turnId, snapshot.data()) : null;
+  }
+
+  private async getTurn(turnId: string): Promise<TurnCommit | null> {
+    const loc = await this.locateTurn(turnId);
+    if (!loc) return null;
+    const snapshot = await this.turnRef(loc).get();
+    return snapshot.exists ? cleanTurn(snapshot.data()) : null;
+  }
+
+  private async getTurnTx(tx: Transaction, turnId: string): Promise<TurnCommit | null> {
+    const loc = await this.locateTurnTx(tx, turnId);
+    if (!loc) return null;
+    const snapshot = await tx.get(this.turnRef(loc));
+    return snapshot.exists ? cleanTurn(snapshot.data()) : null;
+  }
+}
+
+function userRootData(ownerKey: string, ownerUserId: string | null, now: string): Record<string, unknown> {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    documentKind: ownerUserId ? 'user' : 'reserved_owner',
+    ownerKey,
+    uid: ownerUserId,
+    updatedAt: now,
+    lastStoryActivityAt: now
+  };
+}
+
+function branchStateData(loc: RepoLoc, branchId: string, headTurnId: string | null, state: WorldState, now: string): Record<string, unknown> {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    documentKind: 'branch_state',
+    id: branchId,
+    repoId: loc.repoId,
+    branchId,
+    ownerUserId: loc.ownerUserId,
+    ownerKey: loc.ownerKey,
+    headTurnId,
+    state,
+    stateHash: sha256Json(state),
+    updatedAt: now
+  };
+}
+
+function storyDoc<T extends object>(value: T, documentKind: string): Record<string, unknown> {
+  return { schemaVersion: SCHEMA_VERSION, documentKind, ...(value as Record<string, unknown>) };
+}
+
+function repoIndexData(repo: StoryRepo, ownerKey: string, repoPath: string): Record<string, unknown> {
+  return {
+    ...storyDoc(repo, 'story_repo_index'),
+    repoId: repo.id,
+    ownerKey,
+    repoPath
+  };
+}
+
+function branchIndexData(branch: BranchRef, ownerKey: string, branchPath: string): Record<string, unknown> {
+  return {
+    ...storyDoc(branch, 'story_branch_index'),
+    branchId: branch.id,
+    ownerKey,
+    branchPath
+  };
+}
+
+function turnIndexData(turn: TurnCommit, ownerKey: string, turnPath: string): Record<string, unknown> {
+  return {
+    ...storyDoc(turn, 'story_turn_index'),
+    turnId: turn.id,
+    ownerKey,
+    turnPath
+  };
+}
+
+function repoLocFromIndex(repoId: string, data: DocumentData | undefined): RepoLoc | null {
+  const ownerUserId = normalizeOwnerUserId(data?.ownerUserId);
+  const ownerKey = stringFrom(data?.ownerKey) || ownerKeyFromOwnerUserId(ownerUserId);
+  return ownerKey ? { repoId, ownerKey, ownerUserId } : null;
+}
+
+function branchLocFromIndex(branchId: string, data: DocumentData | undefined): BranchLoc | null {
+  const repoId = stringFrom(data?.repoId);
+  if (!repoId) return null;
+  const repoLoc = repoLocFromIndex(repoId, data);
+  return repoLoc ? { ...repoLoc, branchId } : null;
+}
+
+function turnLocFromIndex(turnId: string, data: DocumentData | undefined): TurnLoc | null {
+  const branchId = stringFrom(data?.branchId);
+  if (!branchId) return null;
+  const branchLoc = branchLocFromIndex(branchId, data);
+  return branchLoc ? { ...branchLoc, turnId } : null;
+}
+
+function cleanRepo(data: DocumentData | undefined): StoryRepo | null {
+  if (!data) return null;
+  const id = stringFrom(data.id);
+  if (!id) return null;
+  return clone({
+    id,
+    ownerUserId: normalizeOwnerUserId(data.ownerUserId),
+    title: stringFrom(data.title),
+    description: nullableString(data.description),
+    defaultStyle: nullableString(data.defaultStyle),
+    safetyProfile: nullableString(data.safetyProfile),
+    createdAt: stringFrom(data.createdAt),
+    updatedAt: stringFrom(data.updatedAt)
+  });
+}
+
+function cleanBranch(data: DocumentData | undefined): BranchRef | null {
+  if (!data) return null;
+  const id = stringFrom(data.id);
+  const repoId = stringFrom(data.repoId);
+  if (!id || !repoId) return null;
+  return clone({
+    id,
+    repoId,
+    ownerUserId: normalizeOwnerUserId(data.ownerUserId),
+    name: stringFrom(data.name),
+    headTurnId: nullableString(data.headTurnId),
+    forkedFromTurnId: nullableString(data.forkedFromTurnId),
+    createdAt: stringFrom(data.createdAt),
+    updatedAt: stringFrom(data.updatedAt)
+  });
+}
+
+function cleanTurn(data: DocumentData | undefined): TurnCommit | null {
+  if (!data) return null;
+  const id = stringFrom(data.id);
+  const repoId = stringFrom(data.repoId);
+  const branchId = stringFrom(data.branchId);
+  if (!id || !repoId || !branchId) return null;
+  return clone({
+    id,
+    repoId,
+    branchId,
+    ownerUserId: normalizeOwnerUserId(data.ownerUserId),
+    parentTurnId: nullableString(data.parentTurnId),
+    turnIndex: numberFrom(data.turnIndex),
+    userAudioAssetId: nullableString(data.userAudioAssetId),
+    assistantAudioAssetId: nullableString(data.assistantAudioAssetId),
+    userTranscript: stringFrom(data.userTranscript),
+    assistantTranscript: stringFrom(data.assistantTranscript),
+    stateStatus: (stringFrom(data.stateStatus) || 'pending') as TurnCommit['stateStatus'],
+    modelMetadata: Array.isArray(data.modelMetadata) ? data.modelMetadata : [],
+    createdAt: stringFrom(data.createdAt),
+    committedAt: nullableString(data.committedAt)
+  });
+}
+
+function ownerKeyFromOwnerUserId(ownerUserId: string | null | undefined): string {
+  return normalizeOwnerUserId(ownerUserId) ?? UNOWNED_OWNER_KEY;
+}
+
+function normalizeOwnerUserId(value: unknown): string | null {
+  const text = stringFrom(value);
+  return text || null;
+}
+
+function nullableString(value: unknown): string | null {
+  return stringFrom(value) || null;
+}
+
+function stringFrom(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function numberFrom(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function sortByCreatedAt<T extends { createdAt: string }>(a: T, b: T): number {
+  return a.createdAt.localeCompare(b.createdAt);
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }
 
 function clone<T>(value: T): T {

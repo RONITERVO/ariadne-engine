@@ -70,7 +70,7 @@ test('fully discounted checkout completion grants credits from session metadata'
 
   await service.handleStripeWebhook(Buffer.from(payload), signedHeader(payload));
 
-  const eventWrite = db.writes.find(write => write.path === 'billingEvents/stripe:checkout:cs_test_free');
+  const eventWrite = db.writes.find(write => write.path === 'users/uid_free/billingAccounts/default/billingEvents/stripe:checkout:cs_test_free');
   assert.equal(eventWrite?.data.uid, 'uid_free');
   assert.equal(eventWrite?.data.creditMicros, 10_000_000);
   assert.deepEqual(eventWrite?.data.source, {
@@ -82,7 +82,7 @@ test('fully discounted checkout completion grants credits from session metadata'
     discountFullyCovered: true
   });
 
-  const entitlementWrite = db.writes.find(write => write.path === 'entitlements/uid_free');
+  const entitlementWrite = db.writes.find(write => write.path === 'users/uid_free/billingAccounts/default');
   assert.ok(entitlementWrite?.data.paidCreditMicros);
 });
 
@@ -114,7 +114,7 @@ test('checkout completion with a payment intent waits for payment_intent.succeed
 
   await service.handleStripeWebhook(Buffer.from(payload), signedHeader(payload));
 
-  assert.equal(db.writes.some(write => write.path.startsWith('billingEvents/')), false);
+  assert.equal(db.writes.some(write => write.path.includes('/billingAccounts/default/billingEvents/') || write.path.startsWith('billingEventIndex/')), false);
 });
 
 class TestUsageBillingService extends UsageBillingService {
