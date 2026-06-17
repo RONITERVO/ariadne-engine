@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
 import { ACTION_TOKEN } from '../src/domain/actionTokens.js';
-import type { AudioObjectVerification, AudioUploadIntent, RegisterAudioAssetInput } from '../src/domain/types.js';
+import type { AudioAsset, AudioObjectVerification, AudioUploadIntent, RegisterAudioAssetInput } from '../src/domain/types.js';
 import { buildApp } from '../src/server/app.js';
-import type { AudioObjectStore, PreparedAudioUpload, PrepareAudioUploadInput } from '../src/storage/audioObjectStore.js';
+import type { AudioObjectStore, PreparedAudioPlayback, PreparedAudioUpload, PrepareAudioUploadInput } from '../src/storage/audioObjectStore.js';
 
 function testConfig() {
   return loadConfig({
@@ -138,6 +138,17 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
   });
   assert.equal(liveTurn.statusCode, 201);
   assert.equal((liveTurn.json() as { turn: { userAudioAssetId: string } }).turn.userAudioAssetId, audioAsset.id);
+
+  const playback = await app.inject({
+    method: 'GET',
+    url: `/v1/repos/${encodeURIComponent(repo.repo.id)}/audio-assets/${encodeURIComponent(audioAsset.id)}/playback-url`
+  });
+  assert.equal(playback.statusCode, 200);
+  const playbackPayload = playback.json() as { audioPlayback: PreparedAudioPlayback; tokens: { activeTokens: string[] } };
+  assert.equal(playbackPayload.audioPlayback.method, 'GET');
+  assert.equal(playbackPayload.audioPlayback.playbackUrl, `https://storage.example/play/${audioAsset.id}`);
+  assert.equal(playbackPayload.audioPlayback.contentType, 'audio/webm;codecs=opus');
+  assert.ok(playbackPayload.tokens.activeTokens.includes(ACTION_TOKEN.AUDIO_PLAYBACK_URL_CREATED));
 
   const deleted = await app.inject({ method: 'DELETE', url: `/v1/repos/${encodeURIComponent(repo.repo.id)}` });
   assert.equal(deleted.statusCode, 200);
@@ -436,6 +447,17 @@ class FakeAudioObjectStore implements AudioObjectStore {
       generation: 'fake-generation-1',
       metageneration: '1',
       updatedAt: new Date().toISOString()
+    };
+  }
+
+  async createPlaybackUrl(asset: AudioAsset): Promise<PreparedAudioPlayback> {
+    return {
+      method: 'GET',
+      playbackUrl: `https://storage.example/play/${asset.id}`,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      contentType: asset.contentType ?? null,
+      byteLength: asset.byteLength,
+      durationMs: asset.durationMs
     };
   }
 

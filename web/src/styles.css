@@ -264,6 +264,27 @@ input:focus {
   opacity: 0.65;
 }
 
+.line.playable {
+  cursor: pointer;
+}
+
+.line.playable .text {
+  text-decoration: underline dotted #686862;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+.line.playable:hover .text,
+.line.playable:focus-visible .text,
+.line.is-playing-audio .text {
+  color: #ffffff;
+  text-decoration-color: #b8d7d0;
+}
+
+.line.is-loading-audio {
+  opacity: 0.72;
+}
+
 .role {
   display: block;
   margin-bottom: 2px;

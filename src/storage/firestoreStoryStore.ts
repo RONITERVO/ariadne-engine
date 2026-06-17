@@ -379,6 +379,14 @@ export class FirestoreStoryStore implements StoryStore {
     });
   }
 
+  async getAudioAsset(repoId: string, assetId: string): Promise<AudioAsset | null> {
+    const repoLoc = await this.locateRepo(repoId);
+    if (!repoLoc) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    const snapshot = await this.audioAssetRef(repoLoc, assetId).get();
+    const asset = cleanAudioAsset(snapshot.data());
+    return asset && asset.repoId === repoId ? asset : null;
+  }
+
   async listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]> {
     const repoLoc = await this.locateRepo(repoId);
     if (!repoLoc) throw new StoreError(`repo not found: ${repoId}`, 'not_found');

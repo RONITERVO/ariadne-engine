@@ -290,6 +290,12 @@ export class InMemoryStoryStore implements StoryStore {
     return structuredClone(asset);
   }
 
+  async getAudioAsset(repoId: string, assetId: string): Promise<AudioAsset | null> {
+    if (!this.repos.has(repoId)) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    const asset = this.audioAssets.get(assetId);
+    return asset && asset.repoId === repoId ? structuredClone(asset) : null;
+  }
+
   async listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]> {
     if (!this.repos.has(repoId)) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
     return [...this.audioAssets.values()]

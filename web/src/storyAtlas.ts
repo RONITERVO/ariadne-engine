@@ -2271,7 +2271,7 @@ function continueTargetFor(node: StoryMapNode, graph: StoryMapResponse): { repoI
 function continueBranch(repoId: string, branchId: string): void {
   sessionStorage.setItem(STORAGE.repoId, repoId);
   sessionStorage.setItem(STORAGE.branchId, branchId);
-  window.location.href = '/';
+  window.location.href = storyEntryUrl(repoId, branchId);
 }
 
 async function forkFromTurn(repoId: string, sourceTurnId: string, selectedLabel: string): Promise<void> {
@@ -2289,10 +2289,16 @@ async function forkFromTurn(repoId: string, sourceTurnId: string, selectedLabel:
     sessionStorage.setItem(STORAGE.repoId, result.branch.repoId);
     sessionStorage.setItem(STORAGE.branchId, result.branch.id);
     setAtlasStatus(`Forked ${result.branch.name}. Opening the new branch.`);
-    window.location.href = '/';
+    window.location.href = storyEntryUrl(result.branch.repoId, result.branch.id);
   } catch (error) {
     setAtlasStatus(messageFrom(error));
   }
+}
+
+function storyEntryUrl(repoId: string, branchId: string): string {
+  const params = new URLSearchParams({ repoId, branchId });
+  if (atlasState.apiBase && atlasState.apiBase !== window.location.origin) params.set('api', atlasState.apiBase);
+  return `/?${params.toString()}`;
 }
 
 async function exportRepoArchive(repoId: string, format: 'json' | 'markdown'): Promise<void> {

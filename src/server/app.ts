@@ -136,7 +136,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     origin: config.corsOrigins,
     credentials: false,
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['content-type', 'authorization', 'x-ariadne-provider-key']
+    allowedHeaders: ['content-type', 'authorization', 'x-ariadne-provider-key', 'x-client-id']
   });
   await app.register(rateLimit, {
     max: config.rateLimitMax,
@@ -539,6 +539,26 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     return { audioAssets: await store.listAudioAssets(repoId, typeof query.branchId === 'string' ? query.branchId : undefined), tokens: tokens.snapshot() };
   });
 
+  app.get('/v1/repos/:repoId/audio-assets/:assetId/playback-url', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_CREATE_AUDIO_PLAYBACK_URL);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { repoId, assetId } = request.params as { repoId: string; assetId: string };
+    if (!audioObjects.isEnabled()) {
+      throw tokens.fail('Audio object storage is not configured for this deployment.', 503, 'audio_storage_disabled', ACTION_TOKEN.AUDIO_STORAGE_DISABLED);
+    }
+    tokens.add(ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+    const repo = await store.getRepo(repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    const audioAsset = await store.getAudioAsset(repoId, assetId);
+    if (!audioAsset) throw tokens.fail(`audio asset not found: ${assetId}`, 404, 'store_not_found', ACTION_TOKEN.AUDIO_ASSET_MISSING);
+    tokens.add(ACTION_TOKEN.AUDIO_ASSET_FOUND);
+    const audioPlayback = await audioObjects.createPlaybackUrl(audioAsset);
+    tokens.add(ACTION_TOKEN.AUDIO_PLAYBACK_URL_CREATED);
+    return sendWithTokens(reply, { audioPlayback }, tokens);
+  });
+
   app.get('/v1/branches/compare', async request => {
     const tokens = createActionTokenSet(ACTION_ID.STORY_COMPARE_BRANCHES);
     const user = await resolveStoryUser(request, config, tokens);
@@ -886,6 +906,7 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'GET' && pathname === '/v1/branches/compare') return ACTION_ID.STORY_COMPARE_BRANCHES;
   if (method === 'POST' && pathname === '/v1/audio-assets/upload-url') return ACTION_ID.STORY_CREATE_AUDIO_UPLOAD;
   if (method === 'POST' && pathname === '/v1/audio-assets') return ACTION_ID.STORY_REGISTER_AUDIO_ASSET;
+  if (method === 'GET' && /^\/v1\/repos\/[^/]+\/audio-assets\/[^/]+\/playback-url$/.test(pathname)) return ACTION_ID.STORY_CREATE_AUDIO_PLAYBACK_URL;
   if (method === 'POST' && pathname === '/v1/repos') return ACTION_ID.STORY_CREATE_REPO;
   if (method === 'POST' && pathname === '/v1/branches/fork') return ACTION_ID.STORY_FORK_BRANCH;
   if (method === 'GET' && pathname === '/v1/billing/me') return ACTION_ID.BILLING_GET_ENTITLEMENT;
