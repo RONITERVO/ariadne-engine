@@ -71,6 +71,18 @@ type StoryMapResponse = {
   warnings: string[];
 };
 
+type CosmicScaleKey = 'observable' | 'supercluster' | 'galactic' | 'stellar' | 'landmark';
+
+type CosmicScale = {
+  key: CosmicScaleKey;
+  label: string;
+  eyebrow: string;
+  hint: string;
+  distance: number;
+  rank: number;
+  kinds: StoryMapNodeKind[];
+};
+
 type PositionedNode = StoryMapNode & {
   x: number;
   y: number;
@@ -80,6 +92,8 @@ type PositionedNode = StoryMapNode & {
   labelVisible: boolean;
   angle: number;
   orbitSpeed: number;
+  scale: CosmicScaleKey;
+  scaleRank: number;
 };
 
 type OrbitRing = {
@@ -87,7 +101,9 @@ type OrbitRing = {
   cy: number;
   cz: number;
   r: number;
-  kind: 'library' | 'repo' | 'branch';
+  kind: CosmicScaleKey;
+  tilt: number;
+  spin: number;
 };
 
 type ViewState = {
@@ -129,6 +145,54 @@ type CameraGesture = {
   lastFocus: Vec3;
 };
 
+const COSMIC_SCALES: CosmicScale[] = [
+  {
+    key: 'observable',
+    label: 'Observable Universe',
+    eyebrow: 'All story space',
+    hint: 'Every repo as one navigable universe.',
+    distance: 2300,
+    rank: 0,
+    kinds: ['library']
+  },
+  {
+    key: 'supercluster',
+    label: 'Superclusters & Filaments',
+    eyebrow: 'Story worlds',
+    hint: 'Repos become luminous superclusters connected by canon filaments.',
+    distance: 1350,
+    rank: 1,
+    kinds: ['repo']
+  },
+  {
+    key: 'galactic',
+    label: 'Galaxies & Local',
+    eyebrow: 'Branches',
+    hint: 'Branch timelines become galaxies and local groups.',
+    distance: 720,
+    rank: 2,
+    kinds: ['branch']
+  },
+  {
+    key: 'stellar',
+    label: 'Solar Systems & Stars',
+    eyebrow: 'Turns',
+    hint: 'Committed turns glow as stars along each timeline arm.',
+    distance: 380,
+    rank: 3,
+    kinds: ['turn', 'scene']
+  },
+  {
+    key: 'landmark',
+    label: 'Planets, Moons & Signals',
+    eyebrow: 'Canon detail',
+    hint: 'Scenes, entities, threads, and facts become inspectable worlds.',
+    distance: 190,
+    rank: 4,
+    kinds: ['entity', 'thread', 'fact']
+  }
+];
+
 const STORAGE = {
   repoId: 'ariadne.repoId',
   branchId: 'ariadne.branchId'
@@ -138,20 +202,20 @@ const DEFAULT_VIEW: ViewState = {
   cx: 0,
   cy: 0,
   cz: 0,
-  distance: 980,
-  yaw: -0.42,
-  pitch: 0.58
+  distance: COSMIC_SCALES[0].distance,
+  yaw: -0.62,
+  pitch: 0.54
 };
 
 const CAMERA = {
-  minDistance: 120,
-  maxDistance: 3400,
-  minPitch: -1.18,
-  maxPitch: 1.22,
-  dragYaw: 0.0052,
-  dragPitch: 0.0032,
-  pan: 0.0017,
-  zoom: 0.0012
+  minDistance: 92,
+  maxDistance: 5200,
+  minPitch: -1.22,
+  maxPitch: 1.24,
+  dragYaw: 0.0048,
+  dragPitch: 0.003,
+  pan: 0.00155,
+  zoom: 0.00105
 } as const;
 
 const atlasState: {
@@ -167,6 +231,8 @@ const atlasState: {
   view: ViewState;
   targetView: ViewState;
   hitSet: Set<string>;
+  scale: CosmicScaleKey;
+  tourStep: number;
 } = {
   apiBase: '',
   user: null,
@@ -179,10 +245,14 @@ const atlasState: {
   simulated: false,
   view: copyView(DEFAULT_VIEW),
   targetView: copyView(DEFAULT_VIEW),
-  hitSet: new Set()
+  hitSet: new Set(),
+  scale: 'observable',
+  tourStep: 0
 };
 
 let renderer: GalaxyRenderer | null = null;
+let scaleRenderSignature = '';
+let tourTimerId: number | null = null;
 
 export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   atlasState.apiBase = options.apiBase.replace(/\/$/, '');
@@ -190,8 +260,8 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   document.title = 'Ariadne Atlas';
   document.body.classList.add('atlas-body');
   document.body.innerHTML = `
-    <main class="atlas-shell" aria-label="Ariadne story atlas">
-      <section class="atlas-map-panel" aria-label="Interactive story galaxy">
+    <main class="atlas-shell" aria-label="Ariadne cosmic story map">
+      <section class="atlas-map-panel" aria-label="Interactive Google Galaxy style story universe">
         <div id="atlas-map" class="atlas-map">
           <canvas id="atlas-canvas" aria-hidden="true"></canvas>
           <nav id="atlas-a11y" class="atlas-a11y sr-only" aria-label="Map nodes"></nav>
@@ -201,22 +271,24 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
       <section class="atlas-ui-layer">
         <header class="atlas-header">
           <div class="atlas-title-block">
-            <p class="eyebrow">Ariadne Atlas</p>
-            <h1>Story galaxy</h1>
-            <p class="atlas-subtitle">Branch timelines and current world state.</p>
+            <p class="eyebrow">Ariadne Atlas / Galaxy mode</p>
+            <h1>Observable Universe</h1>
+            <p class="atlas-subtitle">Zoom from superclusters and filaments into galaxies, local branches, solar-system turns, and canon landmarks.</p>
           </div>
           <nav class="atlas-actions" aria-label="Atlas actions">
             <a class="atlas-link" href="/">Return</a>
             <button id="atlas-sign-in" type="button">Sign in</button>
             <button id="atlas-sign-out" type="button" hidden>Sign out</button>
+            <button id="atlas-tour" type="button">Tour</button>
             <button id="atlas-refresh" type="button">Refresh</button>
           </nav>
         </header>
 
         <div class="atlas-controls-left">
+          <nav id="atlas-scale-nav" class="atlas-scale-nav" aria-label="Cosmic zoom scale"></nav>
           <label class="atlas-search">
-            <span>Search atlas</span>
-            <input id="atlas-search" type="search" placeholder="Find a story, branch, turn, character, location, fact, or thread" autocomplete="off" />
+            <span>Search universe</span>
+            <input id="atlas-search" type="search" placeholder="Find a story world, galaxy, star, character, location, fact, or thread" autocomplete="off" />
           </label>
           <div class="atlas-zoom-actions" aria-label="Zoom controls">
             <button id="atlas-zoom-out" type="button" aria-label="Zoom out">-</button>
@@ -227,6 +299,7 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
         </div>
 
         <aside id="atlas-detail" class="atlas-detail" aria-label="Selected atlas node"></aside>
+        <aside id="atlas-legend" class="atlas-legend" aria-label="Galaxy legend"></aside>
       </section>
 
       <div id="atlas-status" class="atlas-status" role="status">Loading atlas...</div>
@@ -241,6 +314,10 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   els.signIn.addEventListener('click', () => void signInWithGoogle().catch(error => setAtlasStatus(messageFrom(error))));
   els.signOut.addEventListener('click', () => void signOutFirebase().catch(error => setAtlasStatus(messageFrom(error))));
   els.refresh.addEventListener('click', () => void loadAtlas());
+  els.tour.addEventListener('click', () => toggleTour());
+  renderScaleNav();
+  renderLegend();
+  window.addEventListener('keydown', handleAtlasKeydown);
   els.search.addEventListener('input', () => {
     atlasState.query = els.search.value.trim().toLowerCase();
     updateSearchHighlight();
@@ -248,7 +325,10 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   });
   els.zoomIn.addEventListener('click', () => zoomAtlas(1.3));
   els.zoomOut.addEventListener('click', () => zoomAtlas(1 / 1.3));
-  els.reset.addEventListener('click', () => resetAtlasView());
+  els.reset.addEventListener('click', () => {
+    stopTour();
+    resetAtlasView();
+  });
 
   if (isFirebaseConfigured() && !atlasState.simulated) {
     onFirebaseAuthStateChanged(user => {
@@ -266,6 +346,7 @@ async function loadAtlas(): Promise<void> {
   setAtlasStatus(atlasState.simulated ? 'Loading simulated cluster...' : 'Loading atlas...');
   try {
     const graph = atlasState.simulated ? simulatedStoryMap() : await atlasFetch<StoryMapResponse>('/v1/story-map');
+    document.querySelector('.atlas-empty')?.remove();
     const layout = layoutGraph(graph);
     atlasState.graph = graph;
     atlasState.positioned = layout.positioned;
@@ -274,8 +355,12 @@ async function loadAtlas(): Promise<void> {
     atlasState.hoveredId = null;
     atlasState.hitSet.clear();
     atlasState.query = atlasEls().search.value.trim().toLowerCase();
+    atlasState.scale = 'observable';
+    atlasState.tourStep = 0;
     updateSearchHighlight();
     renderAtlasStats(graph);
+    renderScaleNav(true);
+    renderLegend();
     renderA11yLayer(graph);
     renderSearchResults();
     renderDetail(graph.rootId);
@@ -291,6 +376,7 @@ async function loadAtlas(): Promise<void> {
     renderA11yLayer(null);
     renderDetail('');
     renderer?.stop();
+    stopTour();
     setAtlasStatus(messageFrom(error));
   }
 }
@@ -313,6 +399,7 @@ class GalaxyRenderer {
   private readonly camera = new THREE.PerspectiveCamera(48, 1, 1, 12000);
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
+  private readonly backgroundGroup = new THREE.Group();
   private readonly graphGroup = new THREE.Group();
   private readonly events = new AbortController();
   private readonly pointers = new Map<number, ActivePointer>();
@@ -346,12 +433,15 @@ class GalaxyRenderer {
       alpha: false,
       powerPreference: 'high-performance'
     });
-    this.renderer.setClearColor(0x020304, 1);
+    this.renderer.setClearColor(0x010207, 1);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.scene.fog = new THREE.FogExp2(0x020304, 0.00036);
+    this.scene.background = new THREE.Color(0x010207);
+    this.scene.fog = new THREE.FogExp2(0x020408, 0.00026);
+    this.backgroundGroup.name = 'observable-universe-backdrop';
     this.graphGroup.name = 'story-galaxy';
+    this.scene.add(this.backgroundGroup);
     this.scene.add(this.graphGroup);
-    this.scene.add(new THREE.AmbientLight(0xcad9d4, 0.42));
+    this.scene.add(new THREE.AmbientLight(0xcad9d4, 0.36));
     const key = new THREE.DirectionalLight(0xffffff, 1.2);
     key.position.set(420, 620, 760);
     this.scene.add(key);
@@ -360,6 +450,7 @@ class GalaxyRenderer {
     window.addEventListener('resize', this.handleResize);
     this.handleResize();
     this.initStarfield();
+    this.initNebulae();
     this.wireEvents();
   }
 
@@ -378,6 +469,10 @@ class GalaxyRenderer {
     window.removeEventListener('resize', this.handleResize);
     this.events.abort();
     this.clearGraph();
+    while (this.backgroundGroup.children.length) {
+      const child = this.backgroundGroup.children.pop();
+      if (child) disposeObject(child);
+    }
     this.renderer.dispose();
   }
 
@@ -392,19 +487,25 @@ class GalaxyRenderer {
   }
 
   private initStarfield(): void {
-    const count = 1800;
+    this.backgroundGroup.add(this.createStarfieldLayer('near', 2400, 900, 4300, 4.8, 0.76, 0.62));
+    this.backgroundGroup.add(this.createStarfieldLayer('deep', 3600, 2600, 8200, 6.2, 0.42, 0.86));
+  }
+
+  private createStarfieldLayer(name: string, count: number, minRadius: number, maxRadius: number, size: number, opacity: number, verticalScale: number): THREE.Points {
     const positions = new Float32Array(count * 3);
     const colors = new Float32Array(count * 3);
     const color = new THREE.Color();
+    const radiusSpan = Math.max(1, maxRadius - minRadius);
     for (let i = 0; i < count; i += 1) {
-      const radius = 1400 + (hashNumber(`star:r:${i}`) % 3800);
-      const theta = hashAngle(`star:t:${i}`);
-      const phi = Math.acos(((hashNumber(`star:p:${i}`) % 2000) / 1000) - 1);
+      const radius = minRadius + (hashNumber(`star:${name}:r:${i}`) % radiusSpan);
+      const theta = hashAngle(`star:${name}:t:${i}`);
+      const phi = Math.acos(((hashNumber(`star:${name}:p:${i}`) % 2000) / 1000) - 1);
       positions[i * 3] = Math.sin(phi) * Math.cos(theta) * radius;
-      positions[i * 3 + 1] = Math.cos(phi) * radius * 0.58;
+      positions[i * 3 + 1] = Math.cos(phi) * radius * verticalScale;
       positions[i * 3 + 2] = Math.sin(phi) * Math.sin(theta) * radius;
-      const warmth = (hashNumber(`star:w:${i}`) % 100) / 100;
-      color.setHSL(0.55 + warmth * 0.12, 0.25, 0.58 + warmth * 0.24);
+      const warmth = (hashNumber(`star:${name}:w:${i}`) % 100) / 100;
+      const lightness = name === 'deep' ? 0.42 + warmth * 0.22 : 0.58 + warmth * 0.28;
+      color.setHSL(0.56 + warmth * 0.14, 0.2 + warmth * 0.22, lightness);
       colors[i * 3] = color.r;
       colors[i * 3 + 1] = color.g;
       colors[i * 3 + 2] = color.b;
@@ -413,16 +514,41 @@ class GalaxyRenderer {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     const material = new THREE.PointsMaterial({
-      size: 4.4,
+      size,
       sizeAttenuation: true,
       vertexColors: true,
       transparent: true,
-      opacity: 0.7,
-      depthWrite: false
+      opacity,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
     });
     const stars = new THREE.Points(geometry, material);
-    stars.name = 'atlas-starfield';
-    this.scene.add(stars);
+    stars.name = `atlas-starfield-${name}`;
+    return stars;
+  }
+
+  private initNebulae(): void {
+    const nebulae: Array<[string, number, number, number, number, number, number]> = [
+      ['orion-memory', -1800, 520, -2200, 2200, 0x5f7fb8, 0.13],
+      ['veil-thread', 1600, -420, 1900, 2600, 0x8b6db5, 0.1],
+      ['green-reef', 600, 980, -3100, 1900, 0x4f9c91, 0.1],
+      ['amber-fog', -2600, -720, 1800, 2300, 0xb38a5f, 0.085]
+    ];
+    for (const [name, x, y, z, size, color, opacity] of nebulae) {
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: nebulaTexture(name),
+        color,
+        transparent: true,
+        opacity,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        depthTest: false
+      }));
+      sprite.name = `atlas-nebula-${name}`;
+      sprite.position.set(x, y, z);
+      sprite.scale.set(size, size * 0.62, 1);
+      this.backgroundGroup.add(sprite);
+    }
   }
 
   private wireEvents(): void {
@@ -437,9 +563,12 @@ class GalaxyRenderer {
     }, { signal });
     this.canvas.addEventListener('wheel', event => {
       event.preventDefault();
+      stopTour();
       const next = copyView(atlasState.targetView);
       next.distance = clamp(next.distance * Math.exp(event.deltaY * CAMERA.zoom), CAMERA.minDistance, CAMERA.maxDistance);
       atlasState.targetView = next;
+      atlasState.scale = scaleForDistance(next.distance);
+      renderScaleNav();
       this.yawVelocity = 0;
       this.pitchVelocity = 0;
       this.panVelocity = { x: 0, y: 0, z: 0 };
@@ -449,6 +578,7 @@ class GalaxyRenderer {
   private handlePointerDown(event: PointerEvent): void {
     if (event.pointerType === 'mouse' && event.button > 2) return;
     event.preventDefault();
+    stopTour();
     this.yawVelocity = 0;
     this.pitchVelocity = 0;
     this.panVelocity = { x: 0, y: 0, z: 0 };
@@ -635,6 +765,12 @@ class GalaxyRenderer {
     const offset = cameraOffset(atlasState.view);
     this.camera.position.set(focus.x + offset.x, focus.y + offset.y, focus.z + offset.z);
     this.camera.lookAt(focus);
+
+    const nextScale = scaleForDistance(atlasState.view.distance);
+    if (nextScale !== atlasState.scale && !tourTimerId) {
+      atlasState.scale = nextScale;
+      renderScaleNav();
+    }
   }
 
   private updateSceneState(): void {
@@ -657,6 +793,18 @@ class GalaxyRenderer {
 
       for (const child of group.children) {
         if (child.userData.role === 'selection') child.visible = selected || hovered || hit;
+        if (child.userData.role === 'spiral') child.rotation.z += (child.userData.spin as number | undefined ?? 0.0025);
+        if (child.userData.role === 'halo') {
+          child.rotation.x += 0.0012;
+          child.rotation.z -= 0.0016;
+        }
+        if (child.userData.role === 'shell') {
+          child.rotation.y += 0.0009;
+          child.rotation.z += 0.0004;
+        }
+        if (child.userData.role === 'beacon') {
+          child.rotation.y = this.time * 0.45;
+        }
         if (child.userData.role === 'glow') {
           const material = (child as THREE.Sprite).material as THREE.SpriteMaterial;
           material.opacity = dim ? 0.08 : selected || hovered || hit ? 0.9 : 0.38;
@@ -734,6 +882,7 @@ class GalaxyRenderer {
     this.graphRef = atlasState.graph;
     if (!atlasState.graph) return;
 
+    for (const filament of this.createCosmicWeb()) this.graphGroup.add(filament);
     for (const orbit of atlasState.orbits) this.graphGroup.add(this.createOrbit(orbit));
     for (const link of atlasState.graph.links) {
       const source = atlasState.positioned.get(link.source);
@@ -757,25 +906,68 @@ class GalaxyRenderer {
     }
   }
 
+  private createCosmicWeb(): THREE.Line[] {
+    const lines: THREE.Line[] = [];
+    const repos = [...atlasState.positioned.values()].filter(node => node.kind === 'repo').sort(sortByUpdatedThenLabel);
+    const root = atlasState.graph ? atlasState.positioned.get(atlasState.graph.rootId) : null;
+    for (let i = 0; i < repos.length; i += 1) {
+      if (root) lines.push(this.createFilament(root, repos[i], 0.18, 0x7fb7c7));
+      if (i > 0) lines.push(this.createFilament(repos[i - 1], repos[i], 0.12, 0x6b6fa8));
+    }
+    for (const repo of repos) {
+      const branches = [...atlasState.positioned.values()]
+        .filter(node => node.kind === 'branch' && node.parentId === repo.id)
+        .sort(sortByUpdatedThenLabel);
+      for (let i = 1; i < branches.length; i += 1) lines.push(this.createFilament(branches[i - 1], branches[i], 0.1, 0x9c87bd));
+    }
+    return lines;
+  }
+
+  private createFilament(source: PositionedNode, target: PositionedNode, opacity: number, color: number): THREE.Line {
+    const start = nodeVector(source);
+    const end = nodeVector(target);
+    const midpoint = start.clone().lerp(end, 0.5);
+    const bow = Math.max(40, start.distanceTo(end) * 0.12);
+    midpoint.x += Math.cos(source.angle + target.angle) * bow;
+    midpoint.y += Math.sin(source.angle - target.angle) * bow * 0.6;
+    midpoint.z += Math.sin(source.angle * 1.9) * bow;
+    const curve = new THREE.CatmullRomCurve3([start, midpoint, end]);
+    const geometry = new THREE.BufferGeometry().setFromPoints(curve.getPoints(36));
+    const material = new THREE.LineBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const line = new THREE.Line(geometry, material);
+    line.userData.kind = 'filament';
+    return line;
+  }
+
   private createOrbit(orbit: OrbitRing): THREE.LineLoop {
     const points: THREE.Vector3[] = [];
-    for (let i = 0; i < 160; i += 1) {
-      const angle = (i / 160) * Math.PI * 2;
+    for (let i = 0; i < 192; i += 1) {
+      const angle = (i / 192) * Math.PI * 2;
       points.push(new THREE.Vector3(
-        orbit.cx + Math.cos(angle) * orbit.r,
-        orbit.cy + Math.sin(angle) * orbit.r,
-        orbit.cz + Math.sin(angle * 2) * orbit.r * 0.035
+        Math.cos(angle) * orbit.r,
+        Math.sin(angle) * orbit.r * Math.cos(orbit.tilt),
+        Math.sin(angle) * orbit.r * Math.sin(orbit.tilt) * 0.52
       ));
     }
     const geometry = new THREE.BufferGeometry().setFromPoints(points);
     const material = new THREE.LineBasicMaterial({
-      color: orbit.kind === 'library' ? 0x8bb8c7 : orbit.kind === 'repo' ? 0xbad1b9 : 0xa69ac2,
+      color: scaleColorHex(orbit.kind),
       transparent: true,
-      opacity: orbit.kind === 'library' ? 0.16 : 0.1,
+      opacity: orbit.kind === 'observable' ? 0.22 : orbit.kind === 'supercluster' ? 0.14 : 0.1,
+      blending: THREE.AdditiveBlending,
       depthWrite: false
     });
     const line = new THREE.LineLoop(geometry, material);
+    line.position.set(orbit.cx, orbit.cy, orbit.cz);
+    line.rotation.z = orbit.spin;
     line.userData.kind = 'orbit';
+    line.userData.scale = orbit.kind;
     return line;
   }
 
@@ -804,15 +996,30 @@ class GalaxyRenderer {
     group.position.set(node.x, node.y, node.z);
     group.userData.nodeId = node.id;
     const style = this.colors[node.kind];
+
+    if (node.kind === 'library') {
+      group.add(this.createObservableShell(node, style));
+      group.add(this.createSpiralField(node, style.glow, node.r * 6.4, 520, 4, 0.46));
+    } else if (node.kind === 'repo') {
+      group.add(this.createSpiralField(node, style.glow, node.r * 4.8, 340, 3, 0.55));
+      group.add(this.createHalo(node.r * 2.8, style.ring, 0.3));
+    } else if (node.kind === 'branch') {
+      group.add(this.createSpiralField(node, style.glow, node.r * 4.2, 160, 2, 0.44));
+    } else if (node.kind === 'scene') {
+      group.add(this.createHalo(node.r * 2.4, style.ring, 0.26));
+    } else if (node.kind === 'thread') {
+      group.add(this.createBeacon(node.r * 2.2, style.ring));
+    }
+
     const geometry = node.kind === 'turn' || node.kind === 'fact'
-      ? new THREE.IcosahedronGeometry(node.r, 1)
-      : new THREE.SphereGeometry(node.r, 32, 20);
+      ? new THREE.IcosahedronGeometry(node.r, node.kind === 'turn' ? 1 : 0)
+      : new THREE.SphereGeometry(node.r, node.kind === 'library' ? 48 : 32, node.kind === 'library' ? 28 : 20);
     const material = new THREE.MeshStandardMaterial({
       color: style.fill,
       emissive: style.core,
-      emissiveIntensity: node.kind === 'library' ? 0.9 : 0.34,
-      roughness: 0.46,
-      metalness: node.kind === 'repo' ? 0.18 : 0.08,
+      emissiveIntensity: node.kind === 'library' ? 1.1 : node.kind === 'turn' ? 0.8 : 0.34,
+      roughness: node.kind === 'turn' ? 0.18 : 0.44,
+      metalness: node.kind === 'repo' ? 0.2 : node.kind === 'fact' ? 0.28 : 0.08,
       transparent: true
     });
     const body = new THREE.Mesh(geometry, material);
@@ -824,35 +1031,31 @@ class GalaxyRenderer {
       map: glowTexture(),
       color: style.glow,
       transparent: true,
-      opacity: node.kind === 'library' ? 0.76 : 0.38,
+      opacity: node.kind === 'library' ? 0.82 : node.kind === 'turn' ? 0.62 : 0.38,
       blending: THREE.AdditiveBlending,
       depthWrite: false
     }));
     glow.userData.role = 'glow';
-    glow.scale.setScalar(node.r * (node.kind === 'library' ? 7.2 : 4.6));
+    glow.scale.setScalar(node.r * (node.kind === 'library' ? 9.4 : node.kind === 'turn' ? 6.2 : 4.6));
     group.add(glow);
 
     const ring = new THREE.LineLoop(
-      new THREE.BufferGeometry().setFromPoints(ringPoints(node.r * 1.65, 96)),
-      new THREE.LineBasicMaterial({ color: style.ring, transparent: true, opacity: 0.78, depthWrite: false })
+      new THREE.BufferGeometry().setFromPoints(ringPoints(node.r * 1.68, 112)),
+      new THREE.LineBasicMaterial({ color: style.ring, transparent: true, opacity: 0.78, blending: THREE.AdditiveBlending, depthWrite: false })
     );
     ring.userData.role = 'selection';
     ring.visible = false;
     group.add(ring);
 
     if (node.kind === 'library') {
-      const light = new THREE.PointLight(0xfff3bf, 2.2, 1600, 1.2);
+      const light = new THREE.PointLight(0xfff3bf, 3.3, 2400, 1.15);
       light.position.set(0, 0, 0);
       group.add(light);
     }
 
-    if (node.kind === 'repo') {
-      const planetRing = new THREE.LineLoop(
-        new THREE.BufferGeometry().setFromPoints(ringPoints(node.r * 2.15, 128)),
-        new THREE.LineBasicMaterial({ color: style.ring, transparent: true, opacity: 0.42, depthWrite: false })
-      );
-      planetRing.rotation.x = 1.12;
-      group.add(planetRing);
+    if (node.kind === 'turn') {
+      const light = new THREE.PointLight(style.core, 0.45, node.r * 16, 1.8);
+      group.add(light);
     }
 
     const label = this.createLabel(node);
@@ -861,8 +1064,110 @@ class GalaxyRenderer {
     return group;
   }
 
+  private createObservableShell(node: PositionedNode, style: { core: number; fill: number; glow: number; ring: number }): THREE.Group {
+    const shell = new THREE.Group();
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(node.r * 4.6, 64, 32),
+      new THREE.MeshBasicMaterial({
+        color: style.glow,
+        transparent: true,
+        opacity: 0.045,
+        wireframe: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      })
+    );
+    sphere.userData.role = 'shell';
+    shell.add(sphere);
+    const equator = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(ringPoints(node.r * 4.9, 192)),
+      new THREE.LineBasicMaterial({ color: style.ring, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    equator.userData.role = 'shell';
+    shell.add(equator);
+    shell.userData.role = 'shell';
+    return shell;
+  }
+
+  private createSpiralField(node: PositionedNode, color: number, radius: number, count: number, arms: number, opacity: number): THREE.Points {
+    const positions = new Float32Array(count * 3);
+    const colors = new Float32Array(count * 3);
+    const base = new THREE.Color(color);
+    const tint = new THREE.Color(0xffffff);
+    for (let i = 0; i < count; i += 1) {
+      const progress = i / Math.max(1, count - 1);
+      const arm = i % arms;
+      const hash = hashNumber(`${node.id}:spiral:${i}`);
+      const jitter = ((hash % 1000) / 1000 - 0.5) * 0.72;
+      const angle = arm * (Math.PI * 2 / arms) + progress * Math.PI * 5.2 + jitter;
+      const distance = Math.sqrt(progress) * radius * (0.22 + (hash % 47) / 64);
+      const yLift = ((hashNumber(`${node.id}:spiral:y:${i}`) % 1000) / 1000 - 0.5) * radius * 0.16;
+      positions[i * 3] = Math.cos(angle) * distance;
+      positions[i * 3 + 1] = yLift;
+      positions[i * 3 + 2] = Math.sin(angle) * distance * 0.76;
+      tint.copy(base).lerp(new THREE.Color(0xffffff), 0.18 + (hash % 100) / 500);
+      colors[i * 3] = tint.r;
+      colors[i * 3 + 1] = tint.g;
+      colors[i * 3 + 2] = tint.b;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const material = new THREE.PointsMaterial({
+      size: node.kind === 'library' ? 4.8 : node.kind === 'repo' ? 3.4 : 2.5,
+      sizeAttenuation: true,
+      transparent: true,
+      opacity,
+      vertexColors: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    const points = new THREE.Points(geometry, material);
+    points.rotation.x = node.kind === 'library' ? 0.54 : 1.05;
+    points.rotation.z = node.angle * 0.4;
+    points.userData.role = 'spiral';
+    points.userData.spin = node.kind === 'library' ? 0.00045 : node.kind === 'repo' ? 0.0011 : 0.0018;
+    return points;
+  }
+
+  private createHalo(radius: number, color: number, opacity: number): THREE.Group {
+    const halo = new THREE.Group();
+    const outer = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(ringPoints(radius, 160)),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    outer.rotation.x = 1.1;
+    halo.add(outer);
+    const inner = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(ringPoints(radius * 0.68, 128)),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: opacity * 0.58, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    inner.rotation.x = 0.66;
+    inner.rotation.z = 0.72;
+    halo.add(inner);
+    halo.userData.role = 'halo';
+    return halo;
+  }
+
+  private createBeacon(radius: number, color: number): THREE.Group {
+    const beacon = new THREE.Group();
+    const vertical = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -radius, 0), new THREE.Vector3(0, radius, 0)]),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    beacon.add(vertical);
+    const horizontal = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(ringPoints(radius * 0.55, 80)),
+      new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false })
+    );
+    horizontal.rotation.x = Math.PI / 2;
+    beacon.add(horizontal);
+    beacon.userData.role = 'beacon';
+    return beacon;
+  }
+
   private createLabel(node: PositionedNode): THREE.Sprite {
-    const texture = labelTexture(node.label);
+    const texture = labelTexture(node.label, cosmicNounForKind(node.kind));
     const material = new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
@@ -878,12 +1183,21 @@ class GalaxyRenderer {
   }
 }
 
+
 function edgeColorHex(kind: StoryMapLinkKind): number {
   if (kind === 'contains' || kind === 'head') return 0x7f9c9d;
   if (kind === 'fork') return 0xb08a6a;
   if (kind === 'present') return 0x9fc58f;
   if (kind === 'mentions') return 0xa69ac2;
   return 0x556f71;
+}
+
+function scaleColorHex(kind: CosmicScaleKey): number {
+  if (kind === 'observable') return 0xfff1b0;
+  if (kind === 'supercluster') return 0x8bb8c7;
+  if (kind === 'galactic') return 0xa69ac2;
+  if (kind === 'stellar') return 0xfffdf0;
+  return 0x9fc58f;
 }
 
 function nodeVector(node: PositionedNode): THREE.Vector3 {
@@ -958,27 +1272,72 @@ function glowTexture(): THREE.CanvasTexture {
   return cachedGlowTexture;
 }
 
-function labelTexture(text: string): THREE.CanvasTexture {
-  const fontSize = 44;
+function labelTexture(text: string, subtext = ''): THREE.CanvasTexture {
+  const fontSize = 42;
+  const subFontSize = 20;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas labels are not available.');
   ctx.font = `800 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
-  const width = Math.ceil(ctx.measureText(text).width + 42);
-  const height = 78;
+  const textWidth = ctx.measureText(text).width;
+  ctx.font = `800 ${subFontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+  const subtextWidth = subtext ? ctx.measureText(subtext).width : 0;
+  const width = Math.ceil(Math.max(textWidth, subtextWidth) + 52);
+  const height = subtext ? 104 : 78;
   canvas.width = width;
   canvas.height = height;
-  ctx.font = `800 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineWidth = 9;
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.88)';
-  ctx.strokeText(text, width / 2, height / 2);
-  ctx.fillStyle = '#eef4f2';
-  ctx.fillText(text, width / 2, height / 2);
+
+  ctx.font = `800 ${fontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+  ctx.strokeText(text, width / 2, subtext ? height / 2 - 12 : height / 2);
+  ctx.fillStyle = '#f3f8f6';
+  ctx.fillText(text, width / 2, subtext ? height / 2 - 12 : height / 2);
+
+  if (subtext) {
+    ctx.font = `900 ${subFontSize}px Inter, ui-sans-serif, system-ui, sans-serif`;
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.86)';
+    ctx.strokeText(subtext.toUpperCase(), width / 2, height / 2 + 28);
+    ctx.fillStyle = '#9fb8be';
+    ctx.fillText(subtext.toUpperCase(), width / 2, height / 2 + 28);
+  }
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.minFilter = THREE.LinearFilter;
+  return texture;
+}
+
+const cachedNebulaTextures = new Map<string, THREE.CanvasTexture>();
+
+function nebulaTexture(seed: string): THREE.CanvasTexture {
+  const cached = cachedNebulaTextures.get(seed);
+  if (cached) return cached;
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas textures are not available.');
+  ctx.clearRect(0, 0, 512, 512);
+  for (let i = 0; i < 18; i += 1) {
+    const x = 156 + (hashNumber(`${seed}:x:${i}`) % 210);
+    const y = 156 + (hashNumber(`${seed}:y:${i}`) % 210);
+    const radius = 70 + (hashNumber(`${seed}:r:${i}`) % 160);
+    const alpha = 0.032 + (hashNumber(`${seed}:a:${i}`) % 80) / 2000;
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    gradient.addColorStop(0.42, `rgba(255,255,255,${alpha * 0.48})`);
+    gradient.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 512, 512);
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  cachedNebulaTextures.set(seed, texture);
   return texture;
 }
 
@@ -997,7 +1356,9 @@ function disposeObject(object: THREE.Object3D): void {
 
 function disposeMaterial(material: THREE.Material): void {
   const maybeMap = material as THREE.Material & { map?: THREE.Texture | null };
-  if (maybeMap.map && maybeMap.map !== cachedGlowTexture) maybeMap.map.dispose();
+  if (maybeMap.map && maybeMap.map !== cachedGlowTexture && ![...cachedNebulaTextures.values()].includes(maybeMap.map as THREE.CanvasTexture)) {
+    maybeMap.map.dispose();
+  }
   material.dispose();
 }
 
@@ -1024,9 +1385,9 @@ function layoutGraph(graph: StoryMapResponse): { positioned: Map<string, Positio
   const goldenAngle = (137.5 * Math.PI) / 180;
   for (let i = 0; i < repos.length; i += 1) {
     const angle = i * goldenAngle - Math.PI / 2;
-    const distance = 260 + Math.sqrt(i + 1) * 115;
-    const z = Math.sin(angle * 1.35) * 180 + (i - (repos.length - 1) / 2) * 90;
-    orbits.push({ cx: 0, cy: 0, cz: 0, r: distance, kind: 'library' });
+    const distance = 360 + Math.sqrt(i + 1) * 190;
+    const z = Math.sin(angle * 1.35) * 260 + (i - (repos.length - 1) / 2) * 130;
+    orbits.push({ cx: 0, cy: 0, cz: 0, r: distance, kind: 'observable', tilt: 0.18 + (i % 3) * 0.18, spin: angle * 0.08 });
     positioned.set(repos[i].id, withPosition(repos[i], Math.cos(angle) * distance, Math.sin(angle) * distance, radiusFor(repos[i]), true, angle, z));
   }
 
@@ -1036,8 +1397,8 @@ function layoutGraph(graph: StoryMapResponse): { positioned: Map<string, Positio
     const branches = graph.nodes
       .filter(node => node.kind === 'branch' && node.parentId === repo.id)
       .sort((a, b) => (a.label === 'main' ? -1 : b.label === 'main' ? 1 : sortByUpdatedThenLabel(a, b)));
-    const orbitRadius = repoPos.r * 2.6 + 48;
-    if (branches.length) orbits.push({ cx: repoPos.x, cy: repoPos.y, cz: repoPos.z, r: orbitRadius, kind: 'repo' });
+    const orbitRadius = repoPos.r * 3.1 + 88;
+    if (branches.length) orbits.push({ cx: repoPos.x, cy: repoPos.y, cz: repoPos.z, r: orbitRadius, kind: 'supercluster', tilt: 0.72, spin: repoPos.angle * 0.35 });
     for (let i = 0; i < branches.length; i += 1) {
       const angle = (i / Math.max(1, branches.length)) * Math.PI * 2 + Math.atan2(repoPos.y, repoPos.x) + 0.35;
       const x = repoPos.x + Math.cos(angle) * orbitRadius;
@@ -1052,7 +1413,7 @@ function layoutGraph(graph: StoryMapResponse): { positioned: Map<string, Positio
     if (!branchPos) continue;
     const repoPos = branch.parentId ? positioned.get(branch.parentId) : null;
     const armAngle = repoPos ? Math.atan2(branchPos.y - repoPos.y, branchPos.x - repoPos.x) : hashAngle(branch.id);
-    orbits.push({ cx: branchPos.x, cy: branchPos.y, cz: branchPos.z, r: 112, kind: 'branch' });
+    orbits.push({ cx: branchPos.x, cy: branchPos.y, cz: branchPos.z, r: 132, kind: 'galactic', tilt: 0.86, spin: branchPos.angle * 0.45 });
     layoutTurns(graph, positioned, branch, branchPos, armAngle);
     layoutStateNodes(graph, positioned, branch, branchPos, armAngle);
   }
@@ -1080,10 +1441,11 @@ function layoutTurns(
     .filter(node => node.kind === 'turn' && node.branchId === branch.branchId)
     .sort((a, b) => numberFrom(a.meta?.turnIndex) - numberFrom(b.meta?.turnIndex));
   for (let i = 0; i < turns.length; i += 1) {
-    const distance = 48 + i * 28;
-    const angle = armAngle + (i - (turns.length - 1) / 2) * 0.055;
-    const z = branchPos.z + (i - (turns.length - 1) / 2) * 18;
-    positioned.set(turns[i].id, withPosition(turns[i], branchPos.x + Math.cos(angle) * distance, branchPos.y + Math.sin(angle) * distance, radiusFor(turns[i]), i === turns.length - 1 || turns.length <= 10, angle, z));
+    const distance = 58 + Math.sqrt(i + 1) * 42 + i * 9;
+    const angle = armAngle + i * 0.52 - turns.length * 0.13;
+    const z = branchPos.z + Math.sin(i * 0.82 + armAngle) * 56 + (i - (turns.length - 1) / 2) * 8;
+    const labelVisible = i === turns.length - 1 || i === 0 || turns.length <= 12;
+    positioned.set(turns[i].id, withPosition(turns[i], branchPos.x + Math.cos(angle) * distance, branchPos.y + Math.sin(angle) * distance, radiusFor(turns[i]), labelVisible, angle, z));
   }
 }
 
@@ -1103,10 +1465,10 @@ function layoutStateNodes(
     .filter(node => ['entity', 'thread', 'fact'].includes(node.kind) && node.branchId === branch.branchId)
     .sort((a, b) => stateKindRank(a.kind) - stateKindRank(b.kind) || a.label.localeCompare(b.label));
   for (let i = 0; i < stateNodes.length; i += 1) {
-    const ringRadius = 104 + Math.floor(i / 8) * 34;
-    const angle = armAngle + Math.PI + (i * Math.PI * 2) / Math.min(8, Math.max(1, stateNodes.length));
-    const z = branchPos.z + Math.cos(angle * 1.2) * 70 + Math.floor(i / 4) * 24;
-    positioned.set(stateNodes[i].id, withPosition(stateNodes[i], branchPos.x + Math.cos(angle) * ringRadius, branchPos.y + Math.sin(angle) * ringRadius, radiusFor(stateNodes[i]), stateNodes.length <= 12, angle, z));
+    const ringRadius = 126 + Math.floor(i / 9) * 42;
+    const angle = armAngle + Math.PI + (i * Math.PI * 2) / Math.min(9, Math.max(1, stateNodes.length));
+    const z = branchPos.z + Math.cos(angle * 1.2) * 82 + Math.floor(i / 4) * 22;
+    positioned.set(stateNodes[i].id, withPosition(stateNodes[i], branchPos.x + Math.cos(angle) * ringRadius, branchPos.y + Math.sin(angle) * ringRadius, radiusFor(stateNodes[i]), stateNodes.length <= 14, angle, z));
   }
 }
 
@@ -1120,27 +1482,32 @@ function withPosition(node: StoryMapNode, x: number, y: number, r: number, label
     baseR: r,
     labelVisible,
     angle,
-    orbitSpeed: 0.5 + (hashNumber(node.id) % 100) / 220
+    orbitSpeed: 0.5 + (hashNumber(node.id) % 100) / 220,
+    scale: cosmicScaleForKind(node.kind),
+    scaleRank: cosmicScaleRank(cosmicScaleForKind(node.kind))
   };
 }
 
 function radiusFor(node: StoryMapNode): number {
   const base: Record<StoryMapNodeKind, number> = {
-    library: 54,
-    repo: 42,
-    branch: 20,
-    turn: 7,
-    scene: 16,
+    library: 68,
+    repo: 48,
+    branch: 24,
+    turn: 8,
+    scene: 17,
     entity: 12,
-    thread: 11,
+    thread: 12,
     fact: 8
   };
   return Math.max(5, base[node.kind] + Math.sqrt(Math.max(1, node.weight)) * 2.2);
 }
 
 function selectNode(nodeId: string, center: boolean): void {
-  if (!atlasState.graph || !atlasState.positioned.has(nodeId)) return;
+  const node = atlasState.positioned.get(nodeId);
+  if (!atlasState.graph || !node) return;
   atlasState.selectedId = nodeId;
+  atlasState.scale = node.scale;
+  renderScaleNav();
   renderDetail(nodeId);
   if (center) centerOnNode(nodeId);
 }
@@ -1151,15 +1518,20 @@ function centerOnNode(nodeId: string, snap = false): void {
   atlasState.targetView.cx = node.x;
   atlasState.targetView.cy = node.y;
   atlasState.targetView.cz = node.z;
-  const desiredDistance = node.kind === 'library' ? 880 : node.kind === 'repo' ? 520 : node.kind === 'branch' ? 340 : 240;
-  atlasState.targetView.distance = clamp(Math.min(atlasState.targetView.distance, desiredDistance), CAMERA.minDistance, CAMERA.maxDistance);
+  const desiredDistance = cosmicScaleForKind(node.kind) === 'observable' ? COSMIC_SCALES[0].distance : scaleByKey(node.scale).distance;
+  atlasState.targetView.distance = clamp(desiredDistance, CAMERA.minDistance, CAMERA.maxDistance);
+  atlasState.scale = node.scale;
+  renderScaleNav();
   if (snap) {
     atlasState.view = copyView(atlasState.targetView);
   }
 }
 
 function zoomAtlas(factor: number): void {
+  stopTour();
   atlasState.targetView.distance = clamp(atlasState.targetView.distance / factor, CAMERA.minDistance, CAMERA.maxDistance);
+  atlasState.scale = scaleForDistance(atlasState.targetView.distance);
+  renderScaleNav();
 }
 
 function resetAtlasView(snap = false): void {
@@ -1178,13 +1550,209 @@ function resetAtlasView(snap = false): void {
       cx: (minX + maxX) / 2,
       cy: (minY + maxY) / 2,
       cz: (minZ + maxZ) / 2,
-      distance: clamp(span * 1.35 + 360, 720, CAMERA.maxDistance),
+      distance: clamp(span * 1.1 + 820, COSMIC_SCALES[0].distance, CAMERA.maxDistance),
       yaw: DEFAULT_VIEW.yaw,
       pitch: DEFAULT_VIEW.pitch
     };
   }
+  atlasState.scale = 'observable';
+  renderScaleNav();
   if (snap) {
     atlasState.view = copyView(atlasState.targetView);
+  }
+}
+
+function scaleByKey(key: CosmicScaleKey): CosmicScale {
+  return COSMIC_SCALES.find(scale => scale.key === key) ?? COSMIC_SCALES[0];
+}
+
+function cosmicScaleForKind(kind: StoryMapNodeKind): CosmicScaleKey {
+  if (kind === 'library') return 'observable';
+  if (kind === 'repo') return 'supercluster';
+  if (kind === 'branch') return 'galactic';
+  if (kind === 'turn' || kind === 'scene') return 'stellar';
+  return 'landmark';
+}
+
+function cosmicScaleRank(key: CosmicScaleKey): number {
+  return scaleByKey(key).rank;
+}
+
+function scaleForDistance(distance: number): CosmicScaleKey {
+  if (distance >= 1650) return 'observable';
+  if (distance >= 960) return 'supercluster';
+  if (distance >= 520) return 'galactic';
+  if (distance >= 260) return 'stellar';
+  return 'landmark';
+}
+
+function cosmicNounForKind(kind: StoryMapNodeKind): string {
+  const labels: Record<StoryMapNodeKind, string> = {
+    library: 'observable universe',
+    repo: 'supercluster',
+    branch: 'galaxy',
+    turn: 'star',
+    scene: 'solar system',
+    entity: 'planet',
+    thread: 'signal',
+    fact: 'moon'
+  };
+  return labels[kind];
+}
+
+function focusCosmicScale(key: CosmicScaleKey, snap = false): void {
+  const scale = scaleByKey(key);
+  atlasState.scale = scale.key;
+  const node = focusNodeForScale(scale);
+  if (!node || scale.key === 'observable') {
+    resetAtlasView(snap);
+    atlasState.scale = scale.key;
+    atlasState.targetView.distance = scale.distance;
+    if (atlasState.graph?.rootId) atlasState.selectedId = atlasState.graph.rootId;
+    renderDetail(atlasState.selectedId);
+    renderScaleNav();
+    return;
+  }
+  atlasState.selectedId = node.id;
+  renderDetail(node.id);
+  atlasState.targetView.cx = node.x;
+  atlasState.targetView.cy = node.y;
+  atlasState.targetView.cz = node.z;
+  atlasState.targetView.distance = clamp(scale.distance, CAMERA.minDistance, CAMERA.maxDistance);
+  atlasState.targetView.yaw = normalizeAngle(DEFAULT_VIEW.yaw - scale.rank * 0.18 + node.angle * 0.08);
+  atlasState.targetView.pitch = clamp(DEFAULT_VIEW.pitch - scale.rank * 0.04, CAMERA.minPitch, CAMERA.maxPitch);
+  if (snap) atlasState.view = copyView(atlasState.targetView);
+  renderScaleNav();
+}
+
+function focusNodeForScale(scale: CosmicScale): PositionedNode | null {
+  const graph = atlasState.graph;
+  if (!graph) return null;
+  const selected = atlasState.positioned.get(atlasState.selectedId) ?? null;
+  const candidates = [...atlasState.positioned.values()]
+    .filter(node => scale.kinds.includes(node.kind))
+    .sort(sortByUpdatedThenLabel);
+  if (!candidates.length) return selected ?? atlasState.positioned.get(graph.rootId) ?? null;
+  if (selected && scale.kinds.includes(selected.kind)) return selected;
+  if (selected?.branchId) {
+    const branchPeer = candidates.find(node => node.branchId === selected.branchId);
+    if (branchPeer) return branchPeer;
+  }
+  if (selected?.repoId) {
+    const repoPeer = candidates.find(node => node.repoId === selected.repoId);
+    if (repoPeer) return repoPeer;
+  }
+  return candidates[0];
+}
+
+function renderScaleNav(force = false): void {
+  const nav = document.getElementById('atlas-scale-nav');
+  if (!nav) return;
+  const signature = `${atlasState.scale}:${atlasState.graph?.stats.nodes ?? 0}:${Boolean(tourTimerId)}`;
+  if (!force && signature === scaleRenderSignature) return;
+  scaleRenderSignature = signature;
+  nav.replaceChildren(...COSMIC_SCALES.map((scale, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'atlas-scale-button';
+    button.dataset.scale = scale.key;
+    button.setAttribute('aria-pressed', String(atlasState.scale === scale.key));
+    button.innerHTML = '<span class="atlas-scale-index"></span><strong></strong><small></small>';
+    button.querySelector('.atlas-scale-index')!.textContent = String(index + 1);
+    button.querySelector('strong')!.textContent = scale.label;
+    button.querySelector('small')!.textContent = scale.eyebrow;
+    button.title = scale.hint;
+    button.addEventListener('click', () => {
+      stopTour();
+      focusCosmicScale(scale.key);
+    });
+    return button;
+  }));
+  updateTourButton();
+}
+
+function renderLegend(): void {
+  const legend = document.getElementById('atlas-legend');
+  if (!legend) return;
+  const rows: Array<[StoryMapNodeKind, string]> = [
+    ['library', 'Observable Universe'],
+    ['repo', 'Supercluster / filament hub'],
+    ['branch', 'Galaxy / local group'],
+    ['turn', 'Star / committed turn'],
+    ['scene', 'Solar system / current scene'],
+    ['entity', 'Planet / entity'],
+    ['thread', 'Signal / open thread'],
+    ['fact', 'Moon / canon fact']
+  ];
+  legend.replaceChildren(...rows.map(([kind, label]) => {
+    const item = document.createElement('div');
+    item.className = 'atlas-legend-row';
+    item.dataset.kind = kind;
+    const dot = document.createElement('span');
+    dot.className = 'atlas-legend-dot';
+    const text = document.createElement('span');
+    text.textContent = label;
+    item.append(dot, text);
+    return item;
+  }));
+}
+
+function toggleTour(): void {
+  if (tourTimerId) {
+    stopTour();
+    return;
+  }
+  atlasState.tourStep = 0;
+  advanceTour();
+  tourTimerId = window.setInterval(advanceTour, 3200);
+  updateTourButton();
+}
+
+function advanceTour(): void {
+  const scale = COSMIC_SCALES[atlasState.tourStep % COSMIC_SCALES.length];
+  atlasState.tourStep += 1;
+  focusCosmicScale(scale.key);
+  setAtlasStatus(`Touring ${scale.label}: ${scale.hint}`);
+}
+
+function stopTour(): void {
+  if (!tourTimerId) return;
+  window.clearInterval(tourTimerId);
+  tourTimerId = null;
+  updateTourButton();
+}
+
+function updateTourButton(): void {
+  const button = document.getElementById('atlas-tour') as HTMLButtonElement | null;
+  if (!button) return;
+  button.textContent = tourTimerId ? 'Stop tour' : 'Tour';
+  button.setAttribute('aria-pressed', String(Boolean(tourTimerId)));
+}
+
+function handleAtlasKeydown(event: KeyboardEvent): void {
+  const target = event.target as HTMLElement | null;
+  const tag = target?.tagName.toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+  const index = Number(event.key) - 1;
+  if (Number.isInteger(index) && index >= 0 && index < COSMIC_SCALES.length) {
+    event.preventDefault();
+    stopTour();
+    focusCosmicScale(COSMIC_SCALES[index].key);
+    return;
+  }
+  if (event.key === '+' || event.key === '=') {
+    event.preventDefault();
+    zoomAtlas(1.22);
+  } else if (event.key === '-' || event.key === '_') {
+    event.preventDefault();
+    zoomAtlas(1 / 1.22);
+  } else if (event.key.toLowerCase() === 'r') {
+    event.preventDefault();
+    stopTour();
+    resetAtlasView();
+  } else if (event.key.toLowerCase() === 't') {
+    event.preventDefault();
+    toggleTour();
   }
 }
 
@@ -1259,7 +1827,8 @@ function renderDetail(nodeId: string): void {
   const header = document.createElement('div');
   header.className = 'atlas-detail-header';
   const kicker = document.createElement('span');
-  kicker.textContent = node.kind;
+  const scale = scaleByKey(cosmicScaleForKind(node.kind));
+  kicker.textContent = `${scale.label} · ${cosmicNounForKind(node.kind)}`;
   const title = document.createElement('h2');
   title.textContent = node.label;
   header.append(kicker, title);
@@ -1271,6 +1840,7 @@ function renderDetail(nodeId: string): void {
     summary.textContent = node.summary;
     body.append(summary);
   }
+  body.append(scaleContextCard(node, graph));
   if (node.tags.length) body.append(tagList(node.tags));
 
   const meta = metaList(node);
@@ -1305,6 +1875,37 @@ function renderDetail(nodeId: string): void {
   }
 
   detail.replaceChildren(header, body);
+}
+
+function scaleContextCard(node: StoryMapNode, graph: StoryMapResponse): HTMLElement {
+  const scale = scaleByKey(cosmicScaleForKind(node.kind));
+  const card = document.createElement('div');
+  card.className = 'atlas-scale-context';
+  const rows: Array<[string, string]> = [
+    ['Cosmic scale', scale.label],
+    ['Ariadne object', labelize(node.kind)],
+    ['Map metaphor', cosmicNounForKind(node.kind)]
+  ];
+  if (node.repoId) rows.push(['Story world', repoTitle(node.repoId, graph)]);
+  if (node.branchId) rows.push(['Local galaxy', branchTitle(node.branchId, graph)]);
+  for (const [label, value] of rows) {
+    const item = document.createElement('div');
+    const strong = document.createElement('strong');
+    strong.textContent = label;
+    const span = document.createElement('span');
+    span.textContent = value;
+    item.append(strong, span);
+    card.append(item);
+  }
+  return card;
+}
+
+function repoTitle(repoId: string, graph: StoryMapResponse): string {
+  return graph.nodes.find(node => node.kind === 'repo' && node.repoId === repoId)?.label ?? repoId;
+}
+
+function branchTitle(branchId: string, graph: StoryMapResponse): string {
+  return graph.nodes.find(node => node.kind === 'branch' && node.branchId === branchId)?.label ?? branchId;
 }
 
 function continueTargetFor(node: StoryMapNode, graph: StoryMapResponse): { repoId: string; branchId: string } | null {
@@ -1468,6 +2069,7 @@ function atlasEls(): {
   signIn: HTMLButtonElement;
   signOut: HTMLButtonElement;
   refresh: HTMLButtonElement;
+  tour: HTMLButtonElement;
   search: HTMLInputElement;
   zoomIn: HTMLButtonElement;
   zoomOut: HTMLButtonElement;
@@ -1477,11 +2079,14 @@ function atlasEls(): {
   map: HTMLElement;
   results: HTMLElement;
   detail: HTMLElement;
+  scaleNav: HTMLElement;
+  legend: HTMLElement;
 } {
   return {
     signIn: byId<HTMLButtonElement>('atlas-sign-in'),
     signOut: byId<HTMLButtonElement>('atlas-sign-out'),
     refresh: byId<HTMLButtonElement>('atlas-refresh'),
+    tour: byId<HTMLButtonElement>('atlas-tour'),
     search: byId<HTMLInputElement>('atlas-search'),
     zoomIn: byId<HTMLButtonElement>('atlas-zoom-in'),
     zoomOut: byId<HTMLButtonElement>('atlas-zoom-out'),
@@ -1490,7 +2095,9 @@ function atlasEls(): {
     stats: byId<HTMLElement>('atlas-stats'),
     map: byId<HTMLElement>('atlas-map'),
     results: byId<HTMLElement>('atlas-results'),
-    detail: byId<HTMLElement>('atlas-detail')
+    detail: byId<HTMLElement>('atlas-detail'),
+    scaleNav: byId<HTMLElement>('atlas-scale-nav'),
+    legend: byId<HTMLElement>('atlas-legend')
   };
 }
 
@@ -1502,84 +2109,228 @@ function shouldUseSimulatedAtlas(): boolean {
 }
 
 function simulatedStoryMap(): StoryMapResponse {
-  const nodes: StoryMapNode[] = [
-    node('library:ariadne', 'library', 'Story Library', 'All active story worlds, branches, turns, and current canon landmarks.', null, 9, ['library', 'galaxy'], { owner: 'simulated-player' }),
-    node('repo:glass', 'repo', 'The Glass Labyrinth', 'A mythic city of mirrors, debts, and half-remembered doors.', 'library:ariadne', 7, ['repo', 'mystery', 'city'], { repoId: 'glass', safety: 'general' }, 'glass'),
-    node('repo:nocturne', 'repo', 'Nocturne Sea', 'A moonlit archipelago where memories surface as weather.', 'library:ariadne', 5, ['repo', 'ocean', 'dreamlike'], { repoId: 'nocturne', safety: 'general' }, 'nocturne'),
-    node('branch:glass-main', 'branch', 'main', 'The current path through the labyrinth.', 'repo:glass', 3.4, ['branch', 'current', 'main'], { branchId: 'glass-main', headTurnId: 'turn:glass:4' }, 'glass', 'glass-main'),
-    node('branch:glass-mirror', 'branch', 'mirror bargain', 'A fork where the archivist accepted the mirror debt.', 'repo:glass', 2.8, ['branch', 'fork', 'risk'], { branchId: 'glass-mirror', forkedFromTurnId: 'turn:glass:2' }, 'glass', 'glass-mirror'),
-    node('branch:nocturne-main', 'branch', 'main', 'The tide-road toward the singing lighthouse.', 'repo:nocturne', 2.9, ['branch', 'main', 'voyage'], { branchId: 'nocturne-main', headTurnId: 'turn:nocturne:2' }, 'nocturne', 'nocturne-main'),
-    turn('turn:glass:1', 'Crossed the silver market', 'glass', 'glass-main', 1),
-    turn('turn:glass:2', 'Found the backward stair', 'glass', 'glass-main', 2),
-    turn('turn:glass:3', 'Named the debt collector', 'glass', 'glass-main', 3),
-    turn('turn:glass:4', 'Opened the black-glass door', 'glass', 'glass-main', 4),
-    turn('turn:mirror:1', 'Accepted the mirror bargain', 'glass', 'glass-mirror', 1),
-    turn('turn:mirror:2', 'Lost a reflected name', 'glass', 'glass-mirror', 2),
-    turn('turn:nocturne:1', 'Raised the lantern sail', 'nocturne', 'nocturne-main', 1),
-    turn('turn:nocturne:2', 'Heard the reef choir', 'nocturne', 'nocturne-main', 2),
-    stateNode('scene:glass-main', 'scene', 'Black-glass door', 'A locked door hums under the old observatory.', 'glass', 'glass-main', 'branch:glass-main', 3.2, ['scene', 'observatory', 'door'], { locationId: 'observatory-door', tone: 'tense' }),
-    stateNode('entity:player', 'entity', 'The player', 'player - active - carrying a brass key', 'glass', 'glass-main', 'scene:glass-main', 2.6, ['entity', 'player', 'present'], { kind: 'player', present: true }),
-    stateNode('entity:archivist', 'entity', 'Mirror Archivist', 'keeper - wary - knows the cost of names', 'glass', 'glass-main', 'scene:glass-main', 2.2, ['entity', 'npc', 'present'], { kind: 'npc', present: true }),
-    stateNode('entity:lantern', 'entity', 'Brass Lantern', 'tool - lit - reveals writing in glass', 'glass', 'glass-main', 'branch:glass-main', 1.6, ['entity', 'tool', 'known'], { kind: 'item', present: false }),
-    stateNode('thread:debt', 'thread', 'Mirror debt', 'Unresolved promise owed to the glass court.', 'glass', 'glass-main', 'branch:glass-main', 1.7, ['thread', 'unresolved', 'debt'], { status: 'open', stakes: 'identity' }),
-    stateNode('fact:oath', 'fact', 'Names bind doors', 'A spoken true name can lock or open certain mirrored thresholds.', 'glass', 'glass-main', 'branch:glass-main', 1.2, ['fact', 'rule', 'magic'], { certainty: 'high' }),
-    stateNode('scene:nocturne-main', 'scene', 'Reef choir', 'Moonlit coral sings beneath the hull.', 'nocturne', 'nocturne-main', 'branch:nocturne-main', 2.5, ['scene', 'sea', 'music'], { locationId: 'reef-choir', tone: 'wonder' }),
-    stateNode('entity:captain-vale', 'entity', 'Captain Vale', 'captain - suspicious - follows impossible currents', 'nocturne', 'nocturne-main', 'scene:nocturne-main', 2, ['entity', 'npc', 'present'], { kind: 'npc', present: true }),
-    stateNode('thread:lighthouse', 'thread', 'Singing lighthouse', 'The lighthouse answers only to remembered songs.', 'nocturne', 'nocturne-main', 'branch:nocturne-main', 1.6, ['thread', 'quest', 'open'], { status: 'open' }),
-    stateNode('fact:tide', 'fact', 'Memory tide', 'At moonrise the sea repeats places the crew has lost.', 'nocturne', 'nocturne-main', 'branch:nocturne-main', 1.1, ['fact', 'world-rule'], { certainty: 'medium' })
+  type DemoBranch = {
+    id: string;
+    label: string;
+    summary: string;
+    tags: string[];
+    turns: string[];
+    scene: [string, string, string[]];
+    entities: Array<[string, string, string, string[]]>;
+    threads: Array<[string, string, string[]]>;
+    facts: Array<[string, string, string[]]>;
+    forkedFromTurnId?: string;
+  };
+  type DemoWorld = {
+    id: string;
+    title: string;
+    summary: string;
+    tags: string[];
+    branches: DemoBranch[];
+  };
+
+  const worlds: DemoWorld[] = [
+    {
+      id: 'glass',
+      title: 'The Glass Labyrinth',
+      summary: 'A mythic city of mirrors, debts, and half-remembered doors.',
+      tags: ['mystery', 'city', 'mirror-court'],
+      branches: [
+        {
+          id: 'glass-main',
+          label: 'main',
+          summary: 'The current path through the labyrinth.',
+          tags: ['current', 'main'],
+          turns: ['Crossed the silver market', 'Found the backward stair', 'Named the debt collector', 'Opened the black-glass door', 'Woke the observatory mirror'],
+          scene: ['Black-glass observatory', 'A locked observatory reflects stars that have not happened yet.', ['scene', 'observatory', 'door']],
+          entities: [
+            ['player', 'The player', 'active - carrying a brass key', ['player', 'present']],
+            ['archivist', 'Mirror Archivist', 'keeper - wary - knows the cost of names', ['npc', 'present']],
+            ['lantern', 'Brass Lantern', 'lit - reveals writing in glass', ['tool', 'known']]
+          ],
+          threads: [['debt', 'Mirror debt', ['unresolved', 'debt']], ['choir', 'Glass choir', ['mystery', 'sound']]],
+          facts: [['oath', 'Names bind doors', ['rule', 'magic']], ['silver', 'Silver cannot lie', ['law', 'city']]]
+        },
+        {
+          id: 'glass-mirror',
+          label: 'mirror bargain',
+          summary: 'A fork where the archivist accepted the mirror debt.',
+          tags: ['fork', 'risk'],
+          forkedFromTurnId: 'turn:glass-main:2',
+          turns: ['Accepted the mirror bargain', 'Lost a reflected name', 'Bought a second shadow'],
+          scene: ['Court of Reflections', 'A circular court bargains with copies of everyone who enters.', ['scene', 'court', 'danger']],
+          entities: [['double', 'The Reflected Double', 'smiling - owns one true memory', ['npc', 'copy']]],
+          threads: [['identity', 'Stolen identity', ['open', 'identity']]],
+          facts: [['price', 'Every reflection asks a price', ['rule', 'mirror']]]
+        }
+      ]
+    },
+    {
+      id: 'nocturne',
+      title: 'Nocturne Sea',
+      summary: 'A moonlit archipelago where memories surface as weather.',
+      tags: ['ocean', 'dreamlike', 'voyage'],
+      branches: [
+        {
+          id: 'nocturne-main',
+          label: 'main',
+          summary: 'The tide-road toward the singing lighthouse.',
+          tags: ['main', 'voyage'],
+          turns: ['Raised the lantern sail', 'Heard the reef choir', 'Mapped the moon-current', 'Followed the impossible gull'],
+          scene: ['Reef choir', 'Moonlit coral sings beneath the hull.', ['scene', 'sea', 'music']],
+          entities: [['captain-vale', 'Captain Vale', 'suspicious - follows impossible currents', ['npc', 'present']], ['reef-child', 'Reef Child', 'curious - speaks in bubbles', ['npc', 'strange']]],
+          threads: [['lighthouse', 'Singing lighthouse', ['quest', 'open']], ['mutiny', 'Lantern mutiny', ['risk', 'crew']]],
+          facts: [['tide', 'Memory tide', ['world-rule']], ['songs', 'Songs are coordinates', ['navigation', 'magic']]]
+        },
+        {
+          id: 'nocturne-deep',
+          label: 'undersea route',
+          summary: 'A dive through drowned constellations beneath the Nocturne Sea.',
+          tags: ['fork', 'undersea'],
+          forkedFromTurnId: 'turn:nocturne-main:3',
+          turns: ['Sank below the moonline', 'Met the whale library', 'Borrowed a drowned map'],
+          scene: ['Whale library', 'An ancient whale carries shelves of salt-stained memory.', ['scene', 'library', 'deep']],
+          entities: [['whale', 'Cathedral Whale', 'patient - remembers extinct ports', ['entity', 'ancient']]],
+          threads: [['borrowed-map', 'Borrowed drowned map', ['quest', 'debt']]],
+          facts: [['breath', 'Breath can be banked', ['survival', 'rule']]]
+        }
+      ]
+    },
+    {
+      id: 'orchard',
+      title: 'The Iron Orchard',
+      summary: 'A frontier of clockwork trees, rust saints, and harvest machines.',
+      tags: ['frontier', 'clockwork', 'industrial-fable'],
+      branches: [
+        {
+          id: 'orchard-main',
+          label: 'main',
+          summary: 'The route into the machine-grown apple grove.',
+          tags: ['main', 'frontier'],
+          turns: ['Entered the rust gate', 'Bartered with the scarecrow engine', 'Found a ticking seed', 'Ran from the harvesters', 'Planted the impossible apple', 'Heard the saint in the gears'],
+          scene: ['Clockwork grove', 'Metal branches grind overhead while fruit ticks like pocket watches.', ['scene', 'orchard', 'machines']],
+          entities: [['scarecrow', 'Scarecrow Engine', 'merchant - sells warnings', ['npc', 'machine']], ['seed', 'Ticking Seed', 'warm - counts down to bloom', ['item', 'urgent']]],
+          threads: [['harvest', 'Harvester pursuit', ['danger', 'open']], ['saint', 'Rust saint prophecy', ['prophecy', 'mystery']]],
+          facts: [['iron-fruit', 'Iron fruit stores time', ['rule', 'time']], ['rain', 'Rain makes machines dream', ['weather', 'magic']]]
+        }
+      ]
+    },
+    {
+      id: 'violet',
+      title: 'Violet Archive',
+      summary: 'A floating library where forbidden chapters orbit like moons.',
+      tags: ['library', 'cosmic', 'secrets'],
+      branches: [
+        {
+          id: 'violet-main',
+          label: 'main',
+          summary: 'The search for the missing index star.',
+          tags: ['main', 'archive'],
+          turns: ['Docked at the quiet shelf', 'Stole a forbidden footnote', 'Chased the index star', 'Read the page that reads back'],
+          scene: ['Index atrium', 'Bookshelves curve into orbit around a violet index star.', ['scene', 'archive', 'star']],
+          entities: [['librarian', 'Violet Librarian', 'calm - dangerous - catalogues secrets', ['npc', 'keeper']], ['footnote', 'Forbidden Footnote', 'whispers alternate endings', ['item', 'secret']]],
+          threads: [['index-star', 'Missing index star', ['quest', 'open']], ['redaction', 'Living redaction', ['threat', 'text']]],
+          facts: [['chapters', 'Chapters have gravity', ['world-rule']], ['silence', 'Silence is a library tax', ['custom', 'price']]]
+        },
+        {
+          id: 'violet-redacted',
+          label: 'redacted ending',
+          summary: 'A dangerous branch where the living redaction escapes its page.',
+          tags: ['fork', 'threat'],
+          forkedFromTurnId: 'turn:violet-main:2',
+          turns: ['Unsealed the redaction', 'Lost the chapter title', 'Followed black ink through space'],
+          scene: ['Black ink corridor', 'A corridor of moving ink cuts through the archive like a wound.', ['scene', 'ink', 'escape']],
+          entities: [['redaction', 'Living Redaction', 'hungry - eats proper nouns', ['threat', 'present']]],
+          threads: [['eaten-title', 'Eaten chapter title', ['mystery', 'identity']]],
+          facts: [['black-ink', 'Black ink cuts maps', ['rule', 'archive']]]
+        }
+      ]
+    }
   ];
 
-  const links: StoryMapLink[] = [
-    link('library:ariadne', 'repo:glass', 'contains', 3),
-    link('library:ariadne', 'repo:nocturne', 'contains', 3),
-    link('repo:glass', 'branch:glass-main', 'contains', 2),
-    link('repo:glass', 'branch:glass-mirror', 'fork', 1.6),
-    link('repo:nocturne', 'branch:nocturne-main', 'contains', 2),
-    link('branch:glass-main', 'turn:glass:1', 'timeline', 1.2),
-    link('turn:glass:1', 'turn:glass:2', 'timeline', 1.2),
-    link('turn:glass:2', 'turn:glass:3', 'timeline', 1.2),
-    link('turn:glass:3', 'turn:glass:4', 'timeline', 1.2),
-    link('branch:glass-main', 'turn:glass:4', 'head', 1.9),
-    link('turn:glass:2', 'branch:glass-mirror', 'fork', 1.4),
-    link('branch:glass-mirror', 'turn:mirror:1', 'timeline', 1.1),
-    link('turn:mirror:1', 'turn:mirror:2', 'timeline', 1.1),
-    link('branch:nocturne-main', 'turn:nocturne:1', 'timeline', 1.1),
-    link('turn:nocturne:1', 'turn:nocturne:2', 'timeline', 1.1),
-    link('branch:nocturne-main', 'turn:nocturne:2', 'head', 1.6),
-    link('branch:glass-main', 'scene:glass-main', 'state', 2.1),
-    link('scene:glass-main', 'entity:player', 'present', 1.8),
-    link('scene:glass-main', 'entity:archivist', 'present', 1.7),
-    link('branch:glass-main', 'entity:lantern', 'state', 1.1),
-    link('branch:glass-main', 'thread:debt', 'state', 1.2),
-    link('turn:glass:4', 'thread:debt', 'mentions', 1),
-    link('branch:glass-main', 'fact:oath', 'state', 1),
-    link('branch:nocturne-main', 'scene:nocturne-main', 'state', 1.8),
-    link('scene:nocturne-main', 'entity:captain-vale', 'present', 1.4),
-    link('branch:nocturne-main', 'thread:lighthouse', 'state', 1.2),
-    link('branch:nocturne-main', 'fact:tide', 'state', 1)
+  const nodes: StoryMapNode[] = [
+    node('library:ariadne', 'library', 'Observable Universe', 'Every story world, branch galaxy, timeline star, and canon landmark in the player\'s current Ariadne cosmos.', null, 11, ['observable-universe', 'galaxy-mode'], { owner: 'simulated-player', scale: 'observable' })
   ];
+  const links: StoryMapLink[] = [];
+  const repos: StoryMapRepoSummary[] = [];
+
+  for (const world of worlds) {
+    const repoNodeId = `repo:${world.id}`;
+    nodes.push(node(repoNodeId, 'repo', world.title, world.summary, 'library:ariadne', 7 + world.branches.length, ['supercluster', ...world.tags], { repoId: world.id, safety: 'general', scale: 'supercluster' }, world.id));
+    links.push(link('library:ariadne', repoNodeId, 'contains', 3));
+    let turnCount = 0;
+    let entityCount = 0;
+    let threadCount = 0;
+
+    for (const branch of world.branches) {
+      const branchNodeId = `branch:${branch.id}`;
+      const headTurnId = `turn:${branch.id}:${branch.turns.length}`;
+      nodes.push(node(branchNodeId, 'branch', branch.label, branch.summary, repoNodeId, 3.2 + branch.turns.length * 0.16, ['galaxy', ...branch.tags], { branchId: branch.id, headTurnId, forkedFromTurnId: branch.forkedFromTurnId ?? null, scale: 'galactic' }, world.id, branch.id));
+      links.push(link(repoNodeId, branchNodeId, branch.forkedFromTurnId ? 'fork' : 'contains', 2));
+      if (branch.forkedFromTurnId) links.push(link(branch.forkedFromTurnId, branchNodeId, 'fork', 1.7));
+
+      let previousTurnId: string | null = null;
+      for (let i = 0; i < branch.turns.length; i += 1) {
+        const turnId = `turn:${branch.id}:${i + 1}`;
+        nodes.push(turn(turnId, branch.turns[i], world.id, branch.id, i + 1));
+        links.push(link(previousTurnId ?? branchNodeId, turnId, 'timeline', 1.2));
+        previousTurnId = turnId;
+        turnCount += 1;
+      }
+      links.push(link(branchNodeId, headTurnId, 'head', 1.9));
+
+      const sceneId = `scene:${branch.id}`;
+      nodes.push(stateNode(sceneId, 'scene', branch.scene[0], branch.scene[1], world.id, branch.id, branchNodeId, 2.7, branch.scene[2], { locationId: branch.scene[0].toLowerCase().replace(/\s+/g, '-'), scale: 'stellar' }));
+      links.push(link(branchNodeId, sceneId, 'state', 2.1));
+      for (const [id, label, summary, tags] of branch.entities) {
+        const entityId = `entity:${branch.id}:${id}`;
+        nodes.push(stateNode(entityId, 'entity', label, summary, world.id, branch.id, sceneId, 1.9, ['planet', ...tags], { present: true, scale: 'landmark' }));
+        links.push(link(sceneId, entityId, 'present', 1.4));
+        entityCount += 1;
+      }
+      for (const [id, label, tags] of branch.threads) {
+        const threadId = `thread:${branch.id}:${id}`;
+        nodes.push(stateNode(threadId, 'thread', label, `Open story thread in ${branch.label}.`, world.id, branch.id, branchNodeId, 1.5, ['signal', ...tags], { status: 'open', scale: 'landmark' }));
+        links.push(link(branchNodeId, threadId, 'state', 1.2));
+        links.push(link(headTurnId, threadId, 'mentions', 0.9));
+        threadCount += 1;
+      }
+      for (const [id, label, tags] of branch.facts) {
+        const factId = `fact:${branch.id}:${id}`;
+        nodes.push(stateNode(factId, 'fact', label, `Canon rule remembered by ${branch.label}.`, world.id, branch.id, branchNodeId, 1.1, ['moon', ...tags], { certainty: 'high', scale: 'landmark' }));
+        links.push(link(branchNodeId, factId, 'state', 1));
+      }
+    }
+
+    repos.push({
+      id: world.id,
+      title: world.title,
+      branchCount: world.branches.length,
+      turnCount,
+      entityCount,
+      threadCount,
+      updatedAt: '2026-06-17T06:30:00.000Z'
+    });
+  }
 
   return {
     generatedAt: new Date().toISOString(),
     rootId: 'library:ariadne',
     nodes,
     links,
-    repos: [
-      { id: 'glass', title: 'The Glass Labyrinth', branchCount: 2, turnCount: 6, entityCount: 3, threadCount: 1, updatedAt: '2026-06-17T06:30:00.000Z' },
-      { id: 'nocturne', title: 'Nocturne Sea', branchCount: 1, turnCount: 2, entityCount: 1, threadCount: 1, updatedAt: '2026-06-17T05:20:00.000Z' }
-    ],
+    repos,
     stats: {
-      repos: 2,
-      branches: 3,
-      turns: 8,
-      entities: 4,
-      threads: 2,
-      facts: 2,
+      repos: repos.length,
+      branches: nodes.filter(item => item.kind === 'branch').length,
+      turns: nodes.filter(item => item.kind === 'turn').length,
+      entities: nodes.filter(item => item.kind === 'entity').length,
+      threads: nodes.filter(item => item.kind === 'thread').length,
+      facts: nodes.filter(item => item.kind === 'fact').length,
       warnings: 1,
       nodes: nodes.length,
       links: links.length
     },
-    warnings: ['Simulated preview data: not persisted to the story store.']
+    warnings: ['Simulated Google Galaxy mode data: not persisted to the story store.']
   };
 }
 

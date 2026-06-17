@@ -74,11 +74,11 @@ export async function buildStoryMap(store: StoryStore, ownerUserId?: string): Pr
   builder.upsertNode({
     id: ROOT_ID,
     kind: 'library',
-    label: 'Story Library',
-    summary: 'Every saved story repo, branch, timeline turn, and current world-state landmark.',
-    weight: 8,
-    tags: ['library', 'galaxy'],
-    meta: { owner: ownerUserId ?? 'local-dev-or-public' }
+    label: 'Observable Universe',
+    summary: 'Every saved story world, branch galaxy, timeline star, and current canon landmark in one navigable cosmos.',
+    weight: 10,
+    tags: ['observable-universe', 'galaxy-mode', 'library'],
+    meta: { owner: ownerUserId ?? 'local-dev-or-public', scale: 'observable' }
   });
 
   const allRepos = await store.listRepos(ownerUserId);

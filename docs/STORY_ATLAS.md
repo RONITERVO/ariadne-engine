@@ -4,13 +4,15 @@ Ariadne Atlas is the player-facing story map. It is deliberately not a clone of 
 
 ## Product metaphor
 
-- **Galaxy**: the signed-in user's story library.
-- **Planets**: story repos/worlds.
-- **Orbits**: branches.
-- **Stars**: committed turns.
-- **Landmarks / continents**: current scene, entities, threads, and facts from canonical branch state.
+Ariadne Atlas now uses a Google Galaxy-style zoom ladder rather than a flat story graph. The backend contract stays the same, but the frontend renders the same saved story data at progressively deeper cosmic scales:
 
-This keeps the Git-like model visible to users without exposing database internals.
+- **Observable Universe**: the signed-in user's complete story library.
+- **Superclusters & Filaments**: story repos/worlds connected by canon filaments.
+- **Galaxies & Local**: branches, forks, and local timelines.
+- **Solar Systems & Stars**: current scenes and committed turns.
+- **Planets, Moons & Signals**: entities, facts, and unresolved story threads from canonical branch state.
+
+This keeps the Git-like model visible to users without exposing database internals, while making `/map` feel like a cinematic deep-space navigation product.
 
 ## Routes
 
@@ -40,6 +42,6 @@ No new stored coordinates, indexes, or map tables are required for the first rel
 2. Add pagination/query params for very large libraries.
 3. Cache layout hints per user if deterministic client layout becomes too slow.
 4. Add semantic clusters from embeddings: locations, factions, mysteries, relationships.
-5. Move rendering from SVG to Canvas/WebGL only when node counts require it.
+5. Add optional materialized galaxy tiles only when node counts outgrow a single WebGL scene.
 6. Add map actions: fork from selected turn, compare branches, replay route, and filter by unresolved threads.
 
