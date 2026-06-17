@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { IncomingHttpHeaders } from 'node:http';
+import { ACTION_TOKEN, type ActionToken } from '../domain/actionTokens.js';
 
 export const PROVIDER_KEY_HEADER = 'x-ariadne-provider-key';
 
@@ -17,9 +18,16 @@ const FORBIDDEN_BODY_SECRET_FIELDS = new Set([
 const FORBIDDEN_QUERY_SECRET_FIELDS = new Set([...FORBIDDEN_BODY_SECRET_FIELDS, 'key', 'token', 'access_token']);
 
 export class ProviderKeyError extends Error {
-  constructor(message: string, public readonly code: 'missing' | 'invalid' | 'unexpected' = 'invalid') {
+  readonly blockerTokens: ActionToken[];
+
+  constructor(
+    message: string,
+    public readonly code: 'missing' | 'invalid' | 'unexpected' = 'invalid',
+    blockerTokens?: ActionToken[]
+  ) {
     super(message);
     this.name = 'ProviderKeyError';
+    this.blockerTokens = blockerTokens ?? [providerKeyBlockerToken(code)];
   }
 }
 
@@ -108,4 +116,16 @@ function normalizeFieldName(key: string): string {
 function firstHeader(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
+}
+
+function providerKeyBlockerToken(code: ProviderKeyError['code']): ActionToken {
+  switch (code) {
+    case 'missing':
+      return ACTION_TOKEN.PROVIDER_KEY_MISSING;
+    case 'unexpected':
+      return ACTION_TOKEN.PROVIDER_KEY_UNEXPECTED;
+    case 'invalid':
+    default:
+      return ACTION_TOKEN.PROVIDER_KEY_INVALID;
+  }
 }

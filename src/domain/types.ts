@@ -1,3 +1,5 @@
+import type { ContextBudgetMode } from './contextBudget.js';
+
 export type ID = string;
 
 export type ProviderName = 'google-ai-studio' | 'mock';
@@ -156,8 +158,7 @@ export interface WorldState {
 export interface ContextBudgetState {
   estimatedTokens: number;
   safeBudgetTokens: number;
-  closureMode: boolean;
-  hardStop: boolean;
+  mode: ContextBudgetMode;
   remainingTurnBudget: number;
 }
 

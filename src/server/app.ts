@@ -16,6 +16,16 @@ import { GeminiKeyPoolError, GeminiServerKeyPool, type GeminiKeyLease } from '..
 import { calculateLiveSessionCharge, calculateTextUsageCharge, type UsageCharge } from '../billing/modelCatalog.js';
 import { BillingError, UsageBillingService, type UsageReservation } from '../billing/usageBilling.js';
 import {
+  ACTION_ID,
+  ACTION_TOKEN,
+  ActionGateError,
+  type ActionId,
+  type ActionTokenSnapshot,
+  type ActionTokenSet,
+  actionGatePayload,
+  createActionTokenSet
+} from '../domain/actionTokens.js';
+import {
   extractOptionalProviderKey,
   extractProviderKey,
   hasExplicitProviderKeyHeader,
@@ -36,7 +46,7 @@ import {
   LiveTokenBodySchema,
   StoryTurnBodySchema
 } from '../domain/validation.js';
-import type { StoryRepo } from '../domain/types.js';
+import type { BranchRef, StoryRepo } from '../domain/types.js';
 import { getBearerToken, looksLikeJwt, requireFirebaseUser } from './firebaseAuth.js';
 import { HttpError } from './httpErrors.js';
 import { registerAdminRoutes } from './adminRoutes.js';
@@ -127,7 +137,11 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
 
     const pathname = requestPathname(request);
     if (hasExplicitProviderKeyHeader(request.headers) && !PROVIDER_KEY_ALLOWED_PATHS.has(pathname)) {
-      throw new ProviderKeyError(`Provider key headers are accepted only on provider routes and story turn routes, not ${pathname}.`, 'unexpected');
+      throw new ProviderKeyError(
+        `Provider key headers are accepted only on provider routes and story turn routes, not ${pathname}.`,
+        'unexpected',
+        [ACTION_TOKEN.PROVIDER_KEY_UNEXPECTED]
+      );
     }
   });
 
@@ -138,11 +152,20 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   app.setErrorHandler((error, request, reply) => {
     request.log.warn({ err: error }, 'request failed');
 
+    if (error instanceof ActionGateError) {
+      return sendErrorWithTokens(reply, error.statusCode, error.code, error.message, error.tokens);
+    }
     if (error instanceof HttpError) {
       return reply.code(error.statusCode).send({ error: error.code, message: error.message });
     }
     if (error instanceof BillingError) {
-      return reply.code(error.statusCode).send({ error: error.code, message: error.message });
+      return sendErrorWithTokens(
+        reply,
+        error.statusCode,
+        error.code,
+        error.message,
+        actionGatePayload(actionIdFromRequest(request), [], error.blockerTokens)
+      );
     }
     if (error instanceof GeminiKeyPoolError) {
       if (error.retryAfterSeconds) reply.header('retry-after', String(error.retryAfterSeconds));
@@ -150,7 +173,13 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     }
     if (error instanceof ProviderKeyError) {
       const status = error.code === 'missing' ? 401 : 400;
-      return reply.code(status).send({ error: `provider_key_${error.code}`, message: error.message });
+      return sendErrorWithTokens(
+        reply,
+        status,
+        `provider_key_${error.code}`,
+        error.message,
+        actionGatePayload(actionIdFromRequest(request), [], error.blockerTokens)
+      );
     }
     if (error instanceof ProviderError) {
       const status = error.code === 'unauthorized' ? 401 : error.code === 'rate_limited' ? 429 : error.code === 'bad_response' ? 502 : 503;
@@ -200,46 +229,52 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   registerAdminRoutes(app, config);
 
   app.post('/v1/provider/gemini/validate-key', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.PROVIDER_VALIDATE_KEY, [ACTION_TOKEN.PROVIDER_KEY_ALLOWED_ROUTE]);
     const providerKey = extractProviderKey(request.headers);
+    tokens.add(ACTION_TOKEN.PROVIDER_BYOK_KEY);
     const provider = providers.forApiKey(providerKey);
     const result = await provider.validateKey(providerKey, config.actorModel);
+    tokens.add(ACTION_TOKEN.PROVIDER_KEY_VALIDATED);
     request.log.info({ provider: provider.name, keyFingerprint: keyFingerprint(providerKey) }, 'provider key validated');
-    return reply.send({ ...result, keyFingerprint: keyFingerprint(providerKey) });
+    return sendWithTokens(reply, { ...result, keyFingerprint: keyFingerprint(providerKey) }, tokens);
   });
 
   app.post('/v1/provider/gemini/live-token', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.PROVIDER_CREATE_LIVE_TOKEN, [ACTION_TOKEN.PROVIDER_KEY_ALLOWED_ROUTE]);
     const body = parseBody(LiveTokenBodySchema, request.body);
-    const access = await resolveProviderExecution(request, config, providers, keyPool);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const access = await resolveProviderExecution(request, config, providers, keyPool, tokens);
     let liveReservation: Awaited<ReturnType<UsageBillingService['reserveLiveSession']>> | null = null;
     let failure: unknown;
 
     try {
-      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-      const branch = await store.getBranch(body.branchId);
-      if (!branch) throw new StoreError(`branch not found: ${body.branchId}`, 'not_found');
+      const { branch } = await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config, tokens);
       const branchHeadTurnId = branch.headTurnId ?? null;
       const charge = calculateLiveSessionCharge(config.modelCatalog, config.liveModel);
       liveReservation = access.firebaseUser && config.paidUsageEnabled
         ? await billing.reserveLiveSession(access.firebaseUser.uid, {
             ...charge,
-            creditMicros: access.mode === 'paid' ? charge.creditMicros : 0
+            creditMicros: hasPaidProviderAccess(access) ? charge.creditMicros : 0
           })
         : null;
+      if (liveReservation) {
+        tokens.add(ACTION_TOKEN.LIVE_SESSION_AVAILABLE, ACTION_TOKEN.LIVE_SESSION_RESERVED, ACTION_TOKEN.BILLING_CREDITS_RESERVED);
+      }
       const result = await access.provider.createLiveToken({
         apiKey: access.providerKey,
         model: config.liveModel,
         responseModalities: body.responseModalities ?? ['AUDIO'],
-        systemInstruction: await service.buildLiveSystemInstruction({ repoId: body.repoId, branchId: body.branchId }),
+        systemInstruction: await service.buildLiveSystemInstruction({ repoId: body.repoId, branchId: body.branchId, tokens }),
         languageCodes: config.webSpeechLanguage ? [config.webSpeechLanguage] : undefined,
         voiceName: body.voiceName
       });
       await liveReservation?.settle(result.expiresAt);
-      return reply.send({
+      return sendWithTokens(reply, {
         ...result,
         model: config.liveModel,
         branchHeadTurnId,
         sessionId: liveReservation?.id ?? result.sessionId ?? null,
-        billingMode: access.mode,
+        billingMode: billingModeFromAccess(access),
         billing: liveReservation
           ? {
               provider: 'ariadne',
@@ -247,10 +282,11 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
               usedCreditMicros: charge.creditMicros
             }
           : undefined
-      });
+      }, tokens);
     } catch (error) {
       failure = error;
       await liveReservation?.release('failed').catch(releaseError => request.log.error({ err: releaseError }, 'live reservation release failed'));
+      throwTokenizedGateError(error, tokens);
       throw error;
     } finally {
       access.lease?.release(failure);
@@ -258,25 +294,31 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   });
 
   app.post('/v1/provider/gemini/live-session/end', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.PROVIDER_END_LIVE_SESSION, [ACTION_TOKEN.PROVIDER_KEY_ALLOWED_ROUTE]);
     const body = request.body as { sessionId?: unknown } | undefined;
     const sessionId = String(body?.sessionId || '').trim();
-    if (!sessionId) throw new HttpError('sessionId is required.', 400, 'validation_error');
+    if (!sessionId) throw tokens.fail('sessionId is required.', 400, 'validation_error', ACTION_TOKEN.REQUEST_BODY_INVALID);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
     const bearer = getBearerToken(request.headers.authorization);
     if (bearer && looksLikeJwt(bearer)) {
-      const user = await requireFirebaseUser(request);
+      const user = await requireFirebaseUserWithTokens(request, tokens);
       await billing.endLiveSession(user.uid, sessionId);
+      tokens.add(ACTION_TOKEN.LIVE_SESSION_ENDED);
     }
-    return { ok: true };
+    return { ok: true, tokens: tokens.snapshot() };
   });
 
   app.get('/v1/repos', async request => {
-    const user = await resolveStoryUser(request, config);
-    return { repos: await store.listRepos(user?.uid) };
+    const tokens = createActionTokenSet(ACTION_ID.STORY_LIST_REPOS);
+    const user = await resolveStoryUser(request, config, tokens);
+    return { repos: await store.listRepos(user?.uid), tokens: tokens.snapshot() };
   });
 
   app.post('/v1/repos', async (request, reply) => {
-    const user = await resolveStoryUser(request, config);
+    const tokens = createActionTokenSet(ACTION_ID.STORY_CREATE_REPO);
+    const user = await resolveStoryUser(request, config, tokens);
     const body = parseBody(CreateRepoBodySchema, request.body);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
     const result = await service.createRepo({
       title: body.title,
       description: body.description,
@@ -284,87 +326,105 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       safetyProfile: body.safetyProfile,
       ownerUserId: user?.uid
     });
-    return reply.code(201).send(result);
+    return sendWithTokens(reply, result, tokens, 201);
   });
 
   app.get('/v1/repos/:repoId', async request => {
-    const user = await resolveStoryUser(request, config);
+    const tokens = createActionTokenSet(ACTION_ID.STORY_GET_REPO);
+    const user = await resolveStoryUser(request, config, tokens);
     const { repoId } = request.params as { repoId: string };
     const repo = await store.getRepo(repoId);
-    if (!repo) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
-    assertRepoAccess(repo, user, config);
-    return { repo, branches: await store.listBranches(repoId) };
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    return { repo, branches: await store.listBranches(repoId), tokens: tokens.snapshot() };
   });
 
   app.post('/v1/branches/fork', async (request, reply) => {
-    const user = await resolveStoryUser(request, config);
+    const tokens = createActionTokenSet(ACTION_ID.STORY_FORK_BRANCH);
+    const user = await resolveStoryUser(request, config, tokens);
     const body = parseBody(ForkBranchBodySchema, request.body);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
     const repo = await store.getRepo(body.repoId);
-    if (!repo) throw new StoreError(`repo not found: ${body.repoId}`, 'not_found');
-    assertRepoAccess(repo, user, config);
+    if (!repo) throw tokens.fail(`repo not found: ${body.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
     const result = await store.forkBranch(body);
-    return reply.code(201).send(result);
+    return sendWithTokens(reply, result, tokens, 201);
   });
 
   app.get('/v1/branches/:branchId/timeline', async request => {
-    const user = await resolveStoryUser(request, config);
+    const tokens = createActionTokenSet(ACTION_ID.STORY_GET_TIMELINE);
+    const user = await resolveStoryUser(request, config, tokens);
     const { branchId } = request.params as { branchId: string };
     const branch = await store.getBranch(branchId);
-    if (!branch) throw new StoreError(`branch not found: ${branchId}`, 'not_found');
+    if (!branch) throw tokens.fail(`branch not found: ${branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
     const repo = await store.getRepo(branch.repoId);
-    if (!repo) throw new StoreError(`repo not found: ${branch.repoId}`, 'not_found');
-    assertRepoAccess(repo, user, config);
-    return { branchId, timeline: await store.getTimeline(branchId), state: await store.getState(branchId) };
+    if (!repo) throw tokens.fail(`repo not found: ${branch.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND, ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    assertRepoAccess(repo, user, config, tokens);
+    return { branchId, timeline: await store.getTimeline(branchId), state: await store.getState(branchId), tokens: tokens.snapshot() };
   });
 
   app.get('/v1/billing/me', async request => {
-    const user = await requireFirebaseUser(request);
-    return await billing.getEntitlement(user.uid);
+    const tokens = createActionTokenSet(ACTION_ID.BILLING_GET_ENTITLEMENT, [ACTION_TOKEN.AUTH_FIREBASE_REQUIRED]);
+    const user = await requireFirebaseUserWithTokens(request, tokens);
+    const entitlement = await billing.getEntitlement(user.uid);
+    return { ...entitlement, tokens: tokens.snapshot() };
   });
 
   app.post('/v1/billing/checkout-session', async request => {
-    const user = await requireFirebaseUser(request);
+    const tokens = createActionTokenSet(ACTION_ID.BILLING_CHECKOUT_SESSION, [ACTION_TOKEN.AUTH_FIREBASE_REQUIRED]);
+    const user = await requireFirebaseUserWithTokens(request, tokens);
     const body = request.body as { amountCents?: unknown } | undefined;
-    return await billing.createCheckoutSession(user, body?.amountCents);
+    const result = await billing.createCheckoutSession(user, body?.amountCents);
+    return { ...result, tokens: tokens.snapshot() };
   });
 
   app.post('/v1/webhooks/stripe', { config: { rawBody: true } }, async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.BILLING_STRIPE_WEBHOOK);
     const signature = Array.isArray(request.headers['stripe-signature'])
       ? request.headers['stripe-signature'][0]
       : request.headers['stripe-signature'];
     const raw = (request as FastifyRequest & { rawBody?: string | Buffer }).rawBody;
     const result = await billing.handleStripeWebhook(raw, signature);
-    return reply.send(result);
+    return sendWithTokens(reply, result, tokens);
   });
 
   app.post('/v1/story/turn', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_TURN, [ACTION_TOKEN.PROVIDER_KEY_ALLOWED_ROUTE]);
     const body = parseBody(StoryTurnBodySchema, request.body);
-    const access = await resolveProviderExecution(request, config, providers, keyPool);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const access = await resolveProviderExecution(request, config, providers, keyPool, tokens);
     let reservation: UsageReservation | null = null;
     let failure: unknown;
 
     try {
-      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-      reservation = access.mode === 'paid'
+      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config, tokens);
+      reservation = hasPaidProviderAccess(access)
         ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
             route: '/v1/story/turn',
             actorModel: config.actorModel,
             canonizerModel: config.canonizerModel
           })
         : null;
+      if (reservation) tokens.add(ACTION_TOKEN.BILLING_CREDITS_RESERVED);
       const result = await service.continueStory({
         repoId: body.repoId,
         branchId: body.branchId,
         expectedHeadTurnId: body.expectedHeadTurnId,
         userTranscript: body.userTranscript,
         providerKey: access.providerKey,
-        provider: access.provider
+        provider: access.provider,
+        tokens
       });
       await settleUsageReservation(reservation, calculateTextUsageCharge(config.modelCatalog, result.modelMetadata));
-      return reply.code(201).send({ ...result, billingMode: access.mode });
+      return sendWithTokens(reply, { ...result, billingMode: billingModeFromAccess(access) }, tokens, 201);
     } catch (error) {
       failure = error;
       await reservation?.release('failed').catch(releaseError => request.log.error({ err: releaseError }, 'story reservation release failed'));
+      throwTokenizedGateError(error, tokens);
       throw error;
     } finally {
       access.lease?.release(failure);
@@ -372,20 +432,23 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   });
 
   app.post('/v1/story/turn/stream', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_TURN_STREAM, [ACTION_TOKEN.PROVIDER_KEY_ALLOWED_ROUTE]);
     const body = parseBody(StoryTurnBodySchema, request.body);
-    const access = await resolveProviderExecution(request, config, providers, keyPool);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const access = await resolveProviderExecution(request, config, providers, keyPool, tokens);
     let reservation: UsageReservation | null = null;
     let failure: unknown;
 
     try {
-      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-      reservation = access.mode === 'paid'
+      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config, tokens);
+      reservation = hasPaidProviderAccess(access)
         ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
             route: '/v1/story/turn/stream',
             actorModel: config.actorModel,
             canonizerModel: config.canonizerModel
           })
         : null;
+      if (reservation) tokens.add(ACTION_TOKEN.BILLING_CREDITS_RESERVED);
       const events = billStoryStream(
         service.continueStoryStream({
           repoId: body.repoId,
@@ -393,12 +456,14 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
           expectedHeadTurnId: body.expectedHeadTurnId,
           userTranscript: body.userTranscript,
           providerKey: access.providerKey,
-          provider: access.provider
+          provider: access.provider,
+          tokens
         }),
         {
           reservation,
           access,
           config,
+          tokens,
           logError: (error, message) => request.log.error({ err: error }, message)
         }
       );
@@ -412,6 +477,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     } catch (error) {
       failure = error;
       await reservation?.release('failed').catch(releaseError => request.log.error({ err: releaseError }, 'stream reservation release failed'));
+      throwTokenizedGateError(error, tokens);
       throw error;
     } finally {
       if (failure) access.lease?.release(failure);
@@ -419,14 +485,16 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   });
 
   app.post('/v1/story/live-turn', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_LIVE_TURN, [ACTION_TOKEN.PROVIDER_KEY_ALLOWED_ROUTE]);
     const body = parseBody(LiveTurnBodySchema, request.body);
-    const access = await resolveProviderExecution(request, config, providers, keyPool);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const access = await resolveProviderExecution(request, config, providers, keyPool, tokens);
     let reservation: UsageReservation | null = null;
     let failure: unknown;
 
     try {
-      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config);
-      reservation = access.mode === 'paid'
+      await assertStoryAccess(store, body.repoId, body.branchId, access.firebaseUser ?? null, config, tokens);
+      reservation = hasPaidProviderAccess(access)
         ? await billing.reserveStoryTurn(access.firebaseUser.uid, config.turnReservationCreditMicros, {
             route: '/v1/story/live-turn',
             liveModel: config.liveModel,
@@ -434,6 +502,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
             liveSessionId: body.liveSessionId ?? null
           })
         : null;
+      if (reservation) tokens.add(ACTION_TOKEN.BILLING_CREDITS_RESERVED);
       const result = await service.commitLiveTurn({
         repoId: body.repoId,
         branchId: body.branchId,
@@ -442,13 +511,15 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
         liveSessionId: body.liveSessionId,
         expectedHeadTurnId: body.expectedHeadTurnId,
         providerKey: access.providerKey,
-        provider: access.provider
+        provider: access.provider,
+        tokens
       });
       await settleUsageReservation(reservation, calculateTextUsageCharge(config.modelCatalog, result.modelMetadata));
-      return reply.code(201).send({ ...result, billingMode: access.mode });
+      return sendWithTokens(reply, { ...result, billingMode: billingModeFromAccess(access) }, tokens, 201);
     } catch (error) {
       failure = error;
       await reservation?.release('failed').catch(releaseError => request.log.error({ err: releaseError }, 'live-turn reservation release failed'));
+      throwTokenizedGateError(error, tokens);
       throw error;
     } finally {
       access.lease?.release(failure);
@@ -468,7 +539,8 @@ async function* toNdjson(events: AsyncIterable<ContinueStoryStreamEvent>): Async
   }
 }
 
-function streamErrorPayload(error: unknown): { type: 'error'; error: string; message: string } {
+function streamErrorPayload(error: unknown): { type: 'error'; error: string; message: string; tokens?: ActionTokenSnapshot } {
+  if (error instanceof ActionGateError) return { type: 'error', error: error.code, message: error.message, tokens: error.tokens };
   if (error instanceof ProviderError) return { type: 'error', error: `provider_${error.code}`, message: error.message };
   if (error instanceof BillingError) return { type: 'error', error: error.code, message: error.message };
   if (error instanceof GeminiKeyPoolError) return { type: 'error', error: error.code, message: error.message };
@@ -482,28 +554,102 @@ function parseBody<T>(schema: ZodSchema<T>, body: unknown): T {
   return schema.parse(body);
 }
 
+function sendWithTokens<T extends object>(
+  reply: FastifyReply,
+  payload: T,
+  tokens: ActionTokenSet,
+  statusCode = 200
+): FastifyReply {
+  const snapshot = tokens.snapshot();
+  return reply
+    .code(statusCode)
+    .header('x-ariadne-active-tokens', snapshot.activeTokens.join(','))
+    .send({ ...payload, tokens: snapshot });
+}
+
+function sendErrorWithTokens(
+  reply: FastifyReply,
+  statusCode: number,
+  code: string,
+  message: string,
+  tokens: ReturnType<ActionTokenSet['snapshot']>
+): FastifyReply {
+  return reply
+    .code(statusCode)
+    .header('x-ariadne-active-tokens', tokens.activeTokens.join(','))
+    .send({ error: code, message, tokens });
+}
+
 function requestPathname(request: FastifyRequest): string {
   return new URL(request.url, 'http://ariadne.local').pathname;
 }
 
-async function resolveStoryUser(request: FastifyRequest, config: AppConfig): Promise<DecodedIdToken | null> {
-  if (config.firebaseAuthRequired) return requireFirebaseUser(request);
+function actionIdFromRequest(request: FastifyRequest): ActionId {
+  const pathname = requestPathname(request);
+  const method = request.method.toUpperCase();
+  if (method === 'POST' && pathname === '/v1/provider/gemini/validate-key') return ACTION_ID.PROVIDER_VALIDATE_KEY;
+  if (method === 'POST' && pathname === '/v1/provider/gemini/live-token') return ACTION_ID.PROVIDER_CREATE_LIVE_TOKEN;
+  if (method === 'POST' && pathname === '/v1/provider/gemini/live-session/end') return ACTION_ID.PROVIDER_END_LIVE_SESSION;
+  if (method === 'GET' && pathname === '/v1/repos') return ACTION_ID.STORY_LIST_REPOS;
+  if (method === 'POST' && pathname === '/v1/repos') return ACTION_ID.STORY_CREATE_REPO;
+  if (method === 'POST' && pathname === '/v1/branches/fork') return ACTION_ID.STORY_FORK_BRANCH;
+  if (method === 'GET' && pathname === '/v1/billing/me') return ACTION_ID.BILLING_GET_ENTITLEMENT;
+  if (method === 'POST' && pathname === '/v1/billing/checkout-session') return ACTION_ID.BILLING_CHECKOUT_SESSION;
+  if (method === 'POST' && pathname === '/v1/webhooks/stripe') return ACTION_ID.BILLING_STRIPE_WEBHOOK;
+  if (method === 'POST' && pathname === '/v1/story/turn') return ACTION_ID.STORY_TURN;
+  if (method === 'POST' && pathname === '/v1/story/turn/stream') return ACTION_ID.STORY_TURN_STREAM;
+  if (method === 'POST' && pathname === '/v1/story/live-turn') return ACTION_ID.STORY_LIVE_TURN;
+  if (method === 'GET' && /^\/v1\/repos\/[^/]+$/.test(pathname)) return ACTION_ID.STORY_GET_REPO;
+  if (method === 'GET' && /^\/v1\/branches\/[^/]+\/timeline$/.test(pathname)) return ACTION_ID.STORY_GET_TIMELINE;
+  return ACTION_ID.HTTP_REQUEST;
+}
 
+async function resolveStoryUser(
+  request: FastifyRequest,
+  config: AppConfig,
+  tokens: ActionTokenSet
+): Promise<DecodedIdToken | null> {
+  if (config.firebaseAuthRequired) {
+    tokens.add(ACTION_TOKEN.AUTH_FIREBASE_REQUIRED);
+    return requireFirebaseUserWithTokens(request, tokens);
+  }
+
+  tokens.add(ACTION_TOKEN.AUTH_FIREBASE_OPTIONAL);
   const bearer = getBearerToken(request.headers.authorization);
-  if (bearer && looksLikeJwt(bearer)) return requireFirebaseUser(request);
+  if (bearer && looksLikeJwt(bearer)) return requireFirebaseUserWithTokens(request, tokens);
   return null;
 }
 
-function assertRepoAccess(repo: StoryRepo, user: DecodedIdToken | null, config: AppConfig): void {
+async function requireFirebaseUserWithTokens(request: FastifyRequest, tokens: ActionTokenSet): Promise<DecodedIdToken> {
+  try {
+    const user = await requireFirebaseUser(request);
+    tokens.add(ACTION_TOKEN.AUTH_FIREBASE_USER);
+    return user;
+  } catch (error) {
+    if (error instanceof HttpError) {
+      throw tokens.fail(error.message, error.statusCode, error.code, ACTION_TOKEN.AUTH_FIREBASE_MISSING);
+    }
+    throw error;
+  }
+}
+
+function assertRepoAccess(repo: StoryRepo, user: DecodedIdToken | null, config: AppConfig, tokens: ActionTokenSet): void {
   if (!repo.ownerUserId) {
     if (config.firebaseAuthRequired) {
-      throw new HttpError('This story repo has no owner and cannot be opened on the hosted deployment.', 403, 'repo_owner_required');
+      throw tokens.fail(
+        'This story repo has no owner and cannot be opened on the hosted deployment.',
+        403,
+        'repo_owner_required',
+        ACTION_TOKEN.STORY_REPO_OWNER_REQUIRED
+      );
     }
+    tokens.add(ACTION_TOKEN.STORY_REPO_PUBLIC_DEV);
     return;
   }
   if (!user || repo.ownerUserId !== user.uid) {
-    throw new HttpError('You do not have access to this story repo.', 403, 'repo_access_denied');
+    throw tokens.fail('You do not have access to this story repo.', 403, 'repo_access_denied', ACTION_TOKEN.STORY_REPO_ACCESS_DENIED);
   }
+  tokens.add(ACTION_TOKEN.STORY_REPO_OWNER);
 }
 
 async function assertStoryAccess(
@@ -511,26 +657,33 @@ async function assertStoryAccess(
   repoId: string,
   branchId: string,
   user: DecodedIdToken | null,
-  config: AppConfig
-): Promise<void> {
+  config: AppConfig,
+  tokens: ActionTokenSet
+): Promise<{ repo: StoryRepo; branch: BranchRef }> {
   const repo = await store.getRepo(repoId);
-  if (!repo) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+  if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+  tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
   const branch = await store.getBranch(branchId);
-  if (!branch) throw new StoreError(`branch not found: ${branchId}`, 'not_found');
-  if (branch.repoId !== repo.id) throw new StoreError('branch does not belong to repo', 'invalid');
-  assertRepoAccess(repo, user, config);
+  if (!branch) throw tokens.fail(`branch not found: ${branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+  tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+  if (branch.repoId !== repo.id) {
+    throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+  }
+  tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+  assertRepoAccess(repo, user, config, tokens);
+  return { repo, branch };
 }
 
 type ProviderExecution =
   | {
-      mode: 'byok';
+      executionToken: typeof ACTION_TOKEN.PROVIDER_BYOK_KEY;
       providerKey: string;
       provider: StoryReasoningProvider;
       firebaseUser?: DecodedIdToken;
       lease?: undefined;
     }
   | {
-      mode: 'paid';
+      executionToken: typeof ACTION_TOKEN.PROVIDER_PAID_SERVER_KEY;
       providerKey: string;
       provider: StoryReasoningProvider;
       firebaseUser: DecodedIdToken;
@@ -541,30 +694,37 @@ async function resolveProviderExecution(
   request: FastifyRequest,
   config: AppConfig,
   providers: ProviderRegistry,
-  keyPool: GeminiServerKeyPool
+  keyPool: GeminiServerKeyPool,
+  tokens: ActionTokenSet
 ): Promise<ProviderExecution> {
-  const byokKey = extractByokProviderKey(request);
+  const byokKey = extractByokProviderKey(request, tokens);
   if (byokKey) {
-    const firebaseUser = config.firebaseAuthRequired ? await requireFirebaseUser(request) : undefined;
+    tokens.add(ACTION_TOKEN.PROVIDER_BYOK_KEY);
+    const firebaseUser = await resolveStoryUser(request, config, tokens);
     return {
-      mode: 'byok',
+      executionToken: ACTION_TOKEN.PROVIDER_BYOK_KEY,
       providerKey: byokKey,
       provider: providers.forApiKey(byokKey),
-      firebaseUser
+      firebaseUser: firebaseUser ?? undefined
     };
   }
 
   if (!config.paidUsageEnabled) {
-    throw new ProviderKeyError(
+    throw tokens.fail(
       'Missing provider API key. Send x-ariadne-provider-key or sign in on a paid Ariadne deployment.',
-      'missing'
+      401,
+      'provider_key_missing',
+      ACTION_TOKEN.PROVIDER_KEY_MISSING,
+      ACTION_TOKEN.BILLING_PAID_USAGE_DISABLED
     );
   }
+  tokens.add(ACTION_TOKEN.BILLING_PAID_USAGE_ENABLED);
 
-  const firebaseUser = await requireFirebaseUser(request);
+  const firebaseUser = await requireFirebaseUserWithTokens(request, tokens);
   const lease = keyPool.lease(firebaseUser.uid);
+  tokens.add(ACTION_TOKEN.PROVIDER_PAID_SERVER_KEY);
   return {
-    mode: 'paid',
+    executionToken: ACTION_TOKEN.PROVIDER_PAID_SERVER_KEY,
     providerKey: lease.apiKey,
     provider: providers.forApiKey(lease.apiKey),
     firebaseUser,
@@ -572,8 +732,34 @@ async function resolveProviderExecution(
   };
 }
 
-function extractByokProviderKey(request: FastifyRequest): string | undefined {
-  return extractOptionalProviderKey(request.headers);
+function extractByokProviderKey(request: FastifyRequest, tokens: ActionTokenSet): string | undefined {
+  try {
+    return extractOptionalProviderKey(request.headers);
+  } catch (error) {
+    if (error instanceof ProviderKeyError) {
+      throw tokens.fail(error.message, error.code === 'missing' ? 401 : 400, `provider_key_${error.code}`, ...error.blockerTokens);
+    }
+    throw error;
+  }
+}
+
+function hasPaidProviderAccess(
+  access: ProviderExecution
+): access is Extract<ProviderExecution, { executionToken: typeof ACTION_TOKEN.PROVIDER_PAID_SERVER_KEY }> {
+  return access.executionToken === ACTION_TOKEN.PROVIDER_PAID_SERVER_KEY;
+}
+
+function billingModeFromAccess(access: ProviderExecution): 'byok' | 'paid' {
+  return access.executionToken === ACTION_TOKEN.PROVIDER_PAID_SERVER_KEY ? 'paid' : 'byok';
+}
+
+function throwTokenizedGateError(error: unknown, tokens: ActionTokenSet): void {
+  if (error instanceof BillingError && error.blockerTokens.length) {
+    throw tokens.fail(error.message, error.statusCode, error.code, ...error.blockerTokens);
+  }
+  if (error instanceof ProviderKeyError && error.blockerTokens.length) {
+    throw tokens.fail(error.message, error.code === 'missing' ? 401 : 400, `provider_key_${error.code}`, ...error.blockerTokens);
+  }
 }
 
 async function settleUsageReservation(reservation: UsageReservation | null, charge: UsageCharge): Promise<void> {
@@ -587,6 +773,7 @@ async function* billStoryStream(
     reservation: UsageReservation | null;
     access: ProviderExecution;
     config: AppConfig;
+    tokens: ActionTokenSet;
     logError(error: unknown, message: string): void;
   }
 ): AsyncIterable<ContinueStoryStreamEvent> {
@@ -598,11 +785,14 @@ async function* billStoryStream(
         const charge = calculateTextUsageCharge(options.config.modelCatalog, event.modelMetadata);
         await settleUsageReservation(options.reservation, charge);
         completed = true;
+        yield { ...event, tokens: options.tokens.snapshot() };
+        continue;
       }
       yield event;
     }
   } catch (error) {
     failure = error;
+    throwTokenizedGateError(error, options.tokens);
     throw error;
   } finally {
     if (!completed) {

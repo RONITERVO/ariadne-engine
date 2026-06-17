@@ -1,3 +1,4 @@
+import { CONTEXT_BUDGET_MODE, type ContextBudgetMode } from './contextBudget.js';
 import type { WorldState, TurnCommit } from './types.js';
 
 export interface ContextCapsule {
@@ -7,8 +8,7 @@ export interface ContextCapsule {
   hardFacts: string[];
   activeThreads: string[];
   recentTurns: Array<Pick<TurnCommit, 'userTranscript' | 'assistantTranscript' | 'turnIndex'>>;
-  closureMode: boolean;
-  hardStop: boolean;
+  contextBudgetMode: ContextBudgetMode;
   remainingTurnBudget: number;
 }
 
@@ -29,8 +29,7 @@ export function buildContextCapsule(state: WorldState, recentTurns: TurnCommit[]
       userTranscript: t.userTranscript,
       assistantTranscript: t.assistantTranscript
     })),
-    closureMode: state.contextBudget?.closureMode ?? false,
-    hardStop: state.contextBudget?.hardStop ?? false,
+    contextBudgetMode: state.contextBudget?.mode ?? CONTEXT_BUDGET_MODE.STABLE,
     remainingTurnBudget: state.contextBudget?.remainingTurnBudget ?? 12
   };
 }

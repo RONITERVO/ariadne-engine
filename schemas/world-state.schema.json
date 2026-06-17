@@ -35,10 +35,11 @@
     "threads": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
     "contextBudget": {
       "type": "object",
+      "required": ["estimatedTokens", "safeBudgetTokens", "mode", "remainingTurnBudget"],
       "properties": {
         "estimatedTokens": { "type": "integer" },
         "safeBudgetTokens": { "type": "integer" },
-        "closureMode": { "type": "boolean" },
+        "mode": { "type": "string", "enum": ["stable", "closure", "hard-stop"] },
         "remainingTurnBudget": { "type": "integer" }
       }
     }

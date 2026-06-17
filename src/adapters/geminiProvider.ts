@@ -4,7 +4,7 @@ import {
   CANONIZER_PROMPT_VERSION,
   CANONIZER_SYSTEM_PROMPT
 } from '../prompts.js';
-import { estimateTokensRoughly } from '../domain/contextBudget.js';
+import { estimateTokensRoughly, isContextBudgetClosureMode, isContextBudgetHardStop } from '../domain/contextBudget.js';
 import { StoryEventPatchSchema } from '../domain/validation.js';
 import { canonicalJson, sha256Text } from '../domain/stateHash.js';
 import type { ModelInvocationMetadata, StoryEventPatch } from '../domain/types.js';
@@ -258,10 +258,11 @@ export class GeminiStoryProvider implements StoryReasoningProvider {
 }
 
 function actorGenerationConfig(input: ActorTurnInput): Record<string, unknown> {
+  const mode = input.capsule.contextBudgetMode;
   return {
     systemInstruction: ACTOR_SYSTEM_PROMPT,
-    temperature: input.capsule.closureMode ? 0.65 : 0.85,
-    maxOutputTokens: input.capsule.hardStop ? 650 : 1100
+    temperature: isContextBudgetClosureMode(mode) ? 0.65 : 0.85,
+    maxOutputTokens: isContextBudgetHardStop(mode) ? 650 : 1100
   };
 }
 
@@ -291,8 +292,7 @@ function buildActorPrompt(input: ActorTurnInput): string {
       task: 'Continue the spoken interactive story from the current branch state.',
       user_transcript: input.userTranscript,
       default_style: input.style ?? undefined,
-      closure_mode: input.capsule.closureMode,
-      hard_stop: input.capsule.hardStop,
+      context_budget_mode: input.capsule.contextBudgetMode,
       remaining_turn_budget: input.capsule.remainingTurnBudget,
       context_capsule: input.capsule,
       output_contract:

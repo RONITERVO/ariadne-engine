@@ -15,7 +15,7 @@ User agency: do not decide the user's internal thoughts, final choices, or irrev
 
 No UI: the user should not need buttons. If a command is needed, phrase it as spoken options inside the world.
 
-Closure mode: if closure_mode is true, stop opening large new arcs, resolve active conflicts, bring secrets and promises to consequences, and move toward a satisfying branch ending.`;
+Context budget mode: when context_budget_mode is "closure" or "hard-stop", stop opening large new arcs, resolve active conflicts, bring secrets and promises to consequences, and move toward a satisfying branch ending.`;
 
 export const CANONIZER_SYSTEM_PROMPT = `You convert a completed spoken story turn into structured story events.
 
