@@ -16,9 +16,11 @@ STRIPE_SECRET_KEY=...
 STRIPE_WEBHOOK_SECRET=...
 STRIPE_PRODUCT_ID=prod_...
 APP_URL=https://your-app.example
+ARIADNE_AUDIO_GCS_BUCKET=your-private-audio-bucket
+ARIADNE_AUDIO_GCS_PREFIX=live-audio
 ```
 
-`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, and missing server Gemini keys.
+`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, missing server Gemini keys, missing Stripe config, and missing `ARIADNE_AUDIO_GCS_BUCKET`.
 
 ## Firebase Release Shape
 
@@ -46,6 +48,63 @@ Create these Secret Manager secrets before deploying `cloudbuild.api.yaml`:
 - `gemini-api-keys`
 - `stripe-secret-key`
 - `stripe-webhook-secret`
+
+## GCS Audio Storage
+
+GCS is the production audio source store. It is a good fit for gigabytes of private audio because browsers upload directly to object storage through short-lived signed URLs; Cloud Run signs URLs, verifies uploaded object metadata, and stores only manifests in Firestore.
+
+The public deployment uses `gs://ariadne-engine-rt-audio` with the `live-audio/` prefix:
+
+```bash
+gcloud storage buckets create gs://ariadne-engine-rt-audio \
+  --project ariadne-engine-rt \
+  --location=europe-west1 \
+  --uniform-bucket-level-access
+gcloud storage buckets update gs://ariadne-engine-rt-audio --public-access-prevention
+```
+
+Set CORS so Firebase Hosting can upload signed `PUT` requests:
+
+```bash
+gcloud storage buckets update gs://ariadne-engine-rt-audio --cors-file=gcs.audio.cors.json
+```
+
+```json
+[
+  {
+    "origin": [
+      "https://ariadne-engine-rt.firebaseapp.com",
+      "https://ariadne-engine-rt.web.app"
+    ],
+    "method": ["PUT", "OPTIONS"],
+    "responseHeader": [
+      "content-type",
+      "x-goog-meta-ariadne-repo-id",
+      "x-goog-meta-ariadne-branch-id",
+      "x-goog-meta-ariadne-role",
+      "x-goog-meta-ariadne-sha256",
+      "x-goog-meta-ariadne-codec",
+      "x-goog-meta-ariadne-container"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+Cloud Run signs upload URLs with its service account and verifies objects before registering manifests. The runtime service account needs object access to the bucket and URL-signing permission:
+
+```bash
+gcloud storage buckets add-iam-policy-binding gs://ariadne-engine-rt-audio \
+  --member=serviceAccount:234362703129-compute@developer.gserviceaccount.com \
+  --role=roles/storage.objectAdmin
+gcloud iam service-accounts add-iam-policy-binding \
+  234362703129-compute@developer.gserviceaccount.com \
+  --project ariadne-engine-rt \
+  --member=serviceAccount:234362703129-compute@developer.gserviceaccount.com \
+  --role=roles/iam.serviceAccountTokenCreator
+```
+
+Use lifecycle rules to manage retention and cost. If Ariadne later needs global low-latency playback, streaming derivatives, or transcription alignment, add a media pipeline on top of GCS while keeping GCS as the durable source.
 
 Firestore stores durable state in the v2 user-rooted, repo-centered schema:
 
@@ -90,6 +149,8 @@ npm run dev:web
 ```
 
 The frontend API base defaults to `http://localhost:3000` when Vite serves on port 5173. Override with `VITE_ARIADNE_API_BASE`, `VITE_API_BASE_URL`, or `?api=https://your-api.example`.
+
+When `audioStorageEnabled` is true in `/v1/config`, the hosted frontend archives the per-turn microphone audio sent to Gemini Live and assistant audio returned by Gemini. It packages PCM as WAV, requests signed GCS upload URLs from `/v1/audio-assets/upload-url`, uploads directly to GCS, registers manifests through `/v1/audio-assets`, and sends the returned asset IDs with `/v1/story/live-turn`.
 
 For a production-style single-process deployment, run `npm run build`; the Fastify API serves the built transcript shell from `/` and immutable Vite assets from `/assets/*`. The Docker image copies `web/dist` for this path.
 

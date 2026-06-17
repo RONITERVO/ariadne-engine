@@ -36,6 +36,7 @@ import {
 } from '../security/providerKeys.js';
 import { FirestoreStoryStore } from '../storage/firestoreStoryStore.js';
 import { InMemoryStoryStore } from '../storage/inMemoryStoryStore.js';
+import { createAudioObjectStore, type AudioObjectStore } from '../storage/audioObjectStore.js';
 import type { StoryStore } from '../storage/storyStore.js';
 import { StoreError } from '../storage/storyStore.js';
 import { StoryService, type ContinueStoryStreamEvent } from '../application/storyService.js';
@@ -49,6 +50,7 @@ import {
 } from '../application/storyReleaseService.js';
 import {
   AudioAssetBodySchema,
+  AudioUploadUrlBodySchema,
   BranchCompareQuerySchema,
   CreateRepoBodySchema,
   ForkBranchBodySchema,
@@ -68,6 +70,7 @@ export interface AppDeps {
   providers?: ProviderRegistry;
   billing?: UsageBillingService;
   keyPool?: GeminiServerKeyPool;
+  audioObjects?: AudioObjectStore;
 }
 
 const PROVIDER_KEY_ALLOWED_PATHS = new Set([
@@ -121,6 +124,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   const providers = deps.providers ?? new ProviderRegistry(config.allowMockProvider);
   const billing = deps.billing ?? new UsageBillingService(config.billing);
   const keyPool = deps.keyPool ?? new GeminiServerKeyPool(config.geminiServerKeys, config.geminiKeyPool);
+  const audioObjects = deps.audioObjects ?? createAudioObjectStore(config.audioStorage);
   const service = new StoryService(store, config);
 
   await app.register(helmet, {
@@ -240,7 +244,9 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     billingCurrency: config.billing.currency,
     defaultCheckoutAmountCents: config.billing.defaultCheckoutAmountCents,
     minCheckoutAmountCents: config.billing.minCheckoutAmountCents,
-    liveBillableSeconds: calculateLiveSessionCharge(config.modelCatalog, config.liveModel).billableSeconds
+    liveBillableSeconds: calculateLiveSessionCharge(config.modelCatalog, config.liveModel).billableSeconds,
+    audioStorageEnabled: audioObjects.isEnabled(),
+    audioMaxBytes: config.audioStorage.maxBytes
   }));
   registerAdminRoutes(app, config);
 
@@ -411,6 +417,33 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     return sendWithTokens(reply, { ok: true, deletedRepoId: repoId }, tokens);
   });
 
+  app.post('/v1/audio-assets/upload-url', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_CREATE_AUDIO_UPLOAD);
+    const user = await resolveStoryUser(request, config, tokens);
+    const body = parseBody(AudioUploadUrlBodySchema, request.body);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    if (!audioObjects.isEnabled()) {
+      throw tokens.fail('Audio object storage is not configured for this deployment.', 503, 'audio_storage_disabled', ACTION_TOKEN.AUDIO_STORAGE_DISABLED);
+    }
+    tokens.add(ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+    const repo = await store.getRepo(body.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${body.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    if (body.branchId) {
+      const branch = await store.getBranch(body.branchId);
+      if (!branch) throw tokens.fail(`branch not found: ${body.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+      if (branch.repoId !== repo.id) {
+        throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+      }
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    }
+    const audioUpload = await audioObjects.prepareUpload(body);
+    tokens.add(ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED);
+    return sendWithTokens(reply, { audioUpload }, tokens, 201);
+  });
+
   app.post('/v1/audio-assets', async (request, reply) => {
     const tokens = createActionTokenSet(ACTION_ID.STORY_REGISTER_AUDIO_ASSET);
     const user = await resolveStoryUser(request, config, tokens);
@@ -428,6 +461,11 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
         throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
       }
       tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    }
+    if (audioObjects.isEnabled()) {
+      tokens.add(ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+      await audioObjects.verifyUploadedAsset(body);
+      tokens.add(ACTION_TOKEN.AUDIO_OBJECT_VERIFIED);
     }
     const audioAsset = await store.saveAudioAsset(body);
     return sendWithTokens(reply, { audioAsset }, tokens, 201);
@@ -767,6 +805,7 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'GET' && pathname === '/v1/story-map') return ACTION_ID.STORY_GET_MAP;
   if (method === 'GET' && pathname === '/v1/story-search') return ACTION_ID.STORY_SEARCH;
   if (method === 'GET' && pathname === '/v1/branches/compare') return ACTION_ID.STORY_COMPARE_BRANCHES;
+  if (method === 'POST' && pathname === '/v1/audio-assets/upload-url') return ACTION_ID.STORY_CREATE_AUDIO_UPLOAD;
   if (method === 'POST' && pathname === '/v1/audio-assets') return ACTION_ID.STORY_REGISTER_AUDIO_ASSET;
   if (method === 'POST' && pathname === '/v1/repos') return ACTION_ID.STORY_CREATE_REPO;
   if (method === 'POST' && pathname === '/v1/branches/fork') return ACTION_ID.STORY_FORK_BRANCH;

@@ -13,6 +13,7 @@
 - [x] `/v1/story-search` supports time-machine search over transcripts and canon landmarks.
 - [x] `/v1/repos/:repoId/export` supports JSON and Markdown archives.
 - [x] `/v1/repos/:repoId` deletion removes the repo and related local/Firestore story records.
+- [x] `/v1/audio-assets/upload-url` creates signed GCS upload URLs.
 - [x] `/v1/audio-assets` and `/v1/repos/:repoId/audio-assets` support preserved-audio manifests.
 - [x] Tests cover search/export/audio/canon/compare/delete release routes.
 - [x] Voice-native branch commands are explicitly marked as v1.1.
@@ -29,6 +30,7 @@
 - [ ] Configure Firebase Google Auth for the hosted frontend and confirm anonymous Auth is disabled.
 - [ ] Set `GEMINI_API_KEYS` and server-key rotation limits.
 - [ ] Configure Stripe Checkout, `STRIPE_WEBHOOK_SECRET`, and dashboard-managed `STRIPE_PRODUCT_ID`.
+- [ ] Create the private GCS audio bucket, CORS policy, lifecycle policy, and service-account IAM bindings.
 - [ ] Confirm `/v1/webhooks/stripe` subscribes to `payment_intent.succeeded` and `checkout.session.completed`, then grants credits idempotently.
 - [ ] Confirm overlapping turn requests on the same branch return conflict instead of creating competing heads.
 - [ ] Confirm Live turns include `expectedHeadTurnId` and stale Live commits are rejected.
@@ -45,7 +47,6 @@
 
 - [ ] Voice branch commands: list, fork, checkout, replay, summarize, finish.
 - [ ] Voice confirmation before semantic rewind forks.
-- [ ] Direct browser-to-object-storage audio upload UX.
 - [ ] Transcript spans and audio alignment.
 - [ ] Timeline audio replay and audible branch recaps.
 

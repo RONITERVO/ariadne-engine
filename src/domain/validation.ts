@@ -119,6 +119,21 @@ export const AudioAssetBodySchema = z.object({
   encryptionKeyRef: z.string().trim().max(512).nullable().optional()
 });
 
+export const AudioUploadUrlBodySchema = z.object({
+  repoId: z.string().min(1),
+  branchId: z.string().min(1).nullable().optional(),
+  role: z.enum(['user', 'assistant', 'system']),
+  contentType: z.string().trim().min(3).max(120).refine(value => value.startsWith('audio/'), {
+    message: 'contentType must be an audio MIME type'
+  }),
+  sha256: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  codec: z.string().trim().min(1).max(80),
+  container: z.string().trim().min(1).max(80),
+  sampleRate: z.number().int().min(1).max(384000).optional(),
+  durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
+  byteLength: z.number().int().min(1).max(10 * 1024 * 1024 * 1024)
+});
+
 export const StorySearchQuerySchema = z.object({
   q: z.string().trim().min(1).max(500),
   repoId: z.string().trim().min(1).optional(),

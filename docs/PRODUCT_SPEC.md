@@ -15,12 +15,12 @@ Implemented in 1.0:
 - Gemini Live token flow and Live transcript commits.
 - Context capsules, canonization, deterministic state reduction, and closure-budget tracking.
 - User-data export/delete workflows.
-- Audio asset registration and turn-level audio metadata links.
+- Signed GCS audio uploads, audio asset registration, and turn-level audio metadata links.
 
 Reserved for v1.1:
 
 - Voice-native branch commands such as “fork here,” “show my branches,” and “take me back before the betrayal.”
-- Direct browser-to-object-storage upload UX and transcript/audio timestamp alignment.
+- Transcript/audio timestamp alignment.
 - Fully audible branch recaps and timeline audio replay.
 
 ## User experience
@@ -32,7 +32,7 @@ The default experience has a short setup gate: sign in for prepaid credits or pa
 3. User speaks a line or action.
 4. Browser speech recognition detects speech start; it is not the transcript authority.
 5. Gemini Live receives the user's audio and returns user transcript, model transcript, and model audio.
-6. Ariadne commits the Live transcripts, optionally links registered audio assets, canonizes the turn, and resumes listening.
+6. Ariadne uploads preserved per-turn user/model audio to GCS, commits the Live transcripts with audio asset links, canonizes the turn, and resumes listening.
 7. The user can open `/map` to navigate the story galaxy, search memory, fork timelines, replay branches, compare branches, export archives, or delete a story world.
 
 ## Story-control flows
@@ -69,7 +69,7 @@ The AI proposes a patch. The deterministic state compiler applies only valid sta
 
 ### Audio has a release-safe storage contract
 
-1.0 supports audio manifests through `/v1/audio-assets` and optional turn-level `userAudioAssetId` / `assistantAudioAssetId` links. Production deployments should store the raw audio objects in encrypted object storage and register only metadata, checksums, storage URIs, codec/container data, and key references in Ariadne.
+1.0 supports direct browser-to-GCS uploads through `/v1/audio-assets/upload-url`, audio manifests through `/v1/audio-assets`, and turn-level `userAudioAssetId` / `assistantAudioAssetId` links. Ariadne stores only metadata, checksums, GCS URIs, codec/container data, and key references in Firestore.
 
 ### Export and deletion are product features
 

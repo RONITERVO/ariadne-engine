@@ -13,7 +13,7 @@ test('production config rejects unsafe public defaults', () => {
         ARIADNE_PAID_USAGE_ENABLED: 'false',
         ARIADNE_FIREBASE_AUTH_REQUIRED: 'false'
       } as NodeJS.ProcessEnv),
-    /ARIADNE_STORAGE=firestore.*CORS_ORIGINS=\*.*ARIADNE_ALLOW_MOCK_PROVIDER=true.*ARIADNE_PAID_USAGE_ENABLED=true.*ARIADNE_FIREBASE_AUTH_REQUIRED=true.*GEMINI_API_KEYS.*APP_URL.*STRIPE_SECRET_KEY.*STRIPE_WEBHOOK_SECRET.*STRIPE_PRODUCT_ID/
+    /ARIADNE_STORAGE=firestore.*CORS_ORIGINS=\*.*ARIADNE_ALLOW_MOCK_PROVIDER=true.*ARIADNE_PAID_USAGE_ENABLED=true.*ARIADNE_FIREBASE_AUTH_REQUIRED=true.*GEMINI_API_KEYS.*APP_URL.*STRIPE_SECRET_KEY.*STRIPE_WEBHOOK_SECRET.*STRIPE_PRODUCT_ID.*ARIADNE_AUDIO_GCS_BUCKET/
   );
 });
 
@@ -27,6 +27,7 @@ test('production config accepts firestore plus strict CORS, server keys, and Str
     STRIPE_SECRET_KEY: 'sk_test_example',
     STRIPE_WEBHOOK_SECRET: 'whsec_example',
     STRIPE_PRODUCT_ID: 'prod_example',
+    ARIADNE_AUDIO_GCS_BUCKET: 'ariadne-audio-test',
     ARIADNE_ADMIN_EMAILS: 'Owner@Example.com, ops@example.com '
   } as NodeJS.ProcessEnv);
 
@@ -36,6 +37,7 @@ test('production config accepts firestore plus strict CORS, server keys, and Str
   assert.equal(config.paidUsageEnabled, true);
   assert.equal(config.firebaseAuthRequired, true);
   assert.equal(config.billing.stripeProductId, 'prod_example');
+  assert.equal(config.audioStorage.gcsBucket, 'ariadne-audio-test');
   assert.deepEqual(config.adminEmails, ['owner@example.com', 'ops@example.com']);
 });
 
@@ -50,7 +52,8 @@ test('production config rejects whitespace-only required secrets and URLs', () =
         APP_URL: ' ',
         STRIPE_SECRET_KEY: '\t',
         STRIPE_WEBHOOK_SECRET: '  ',
-        STRIPE_PRODUCT_ID: '\n'
+        STRIPE_PRODUCT_ID: '\n',
+        ARIADNE_AUDIO_GCS_BUCKET: 'ariadne-audio-test'
       } as NodeJS.ProcessEnv),
     /APP_URL.*STRIPE_SECRET_KEY.*STRIPE_WEBHOOK_SECRET.*STRIPE_PRODUCT_ID/
   );

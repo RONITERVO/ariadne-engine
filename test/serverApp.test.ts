@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
 import { ACTION_TOKEN } from '../src/domain/actionTokens.js';
+import type { RegisterAudioAssetInput } from '../src/domain/types.js';
 import { buildApp } from '../src/server/app.js';
+import type { AudioObjectStore, PreparedAudioUpload, PrepareAudioUploadInput } from '../src/storage/audioObjectStore.js';
 
 function testConfig() {
   return loadConfig({
@@ -59,6 +61,73 @@ test('admin users route is not public', async t => {
 
   assert.equal(response.statusCode, 401);
   assert.equal(response.json().error, 'firebase_auth_required');
+});
+
+test('audio upload URLs register verified GCS manifests and link live turns', async t => {
+  const audioObjects = new FakeAudioObjectStore();
+  const app = await buildApp(testConfig(), { audioObjects });
+  t.after(() => app.close());
+
+  const config = await app.inject({ method: 'GET', url: '/v1/config' });
+  assert.equal(config.statusCode, 200);
+  assert.equal(config.json().audioStorageEnabled, true);
+
+  const created = await app.inject({
+    method: 'POST',
+    url: '/v1/repos',
+    payload: { title: 'Audio Upload Test' }
+  });
+  assert.equal(created.statusCode, 201);
+  const repo = created.json() as { repo: { id: string }; branch: { id: string } };
+
+  const upload = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets/upload-url',
+    payload: {
+      repoId: repo.repo.id,
+      branchId: repo.branch.id,
+      role: 'user',
+      contentType: 'audio/wav',
+      sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      codec: 'pcm_s16le',
+      container: 'wav',
+      sampleRate: 48000,
+      durationMs: 250,
+      byteLength: 24000
+    }
+  });
+  assert.equal(upload.statusCode, 201);
+  const uploadPayload = upload.json() as { audioUpload: PreparedAudioUpload; tokens: { activeTokens: string[] } };
+  assert.equal(uploadPayload.audioUpload.method, 'PUT');
+  assert.equal(uploadPayload.audioUpload.asset.storageUri, `gs://fake-audio/${repo.repo.id}/user.wav`);
+  assert.equal(uploadPayload.audioUpload.headers['content-type'], 'audio/wav');
+  assert.ok(uploadPayload.tokens.activeTokens.includes(ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED));
+
+  const registered = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets',
+    payload: uploadPayload.audioUpload.asset
+  });
+  assert.equal(registered.statusCode, 201);
+  assert.equal(audioObjects.verified.length, 1);
+  const audioAsset = (registered.json() as { audioAsset: { id: string; storageUri: string }; tokens: { activeTokens: string[] } }).audioAsset;
+  assert.equal(audioAsset.storageUri, uploadPayload.audioUpload.asset.storageUri);
+
+  const liveTurn = await app.inject({
+    method: 'POST',
+    url: '/v1/story/live-turn',
+    headers: { 'x-ariadne-provider-key': 'mock-local-dev-key' },
+    payload: {
+      repoId: repo.repo.id,
+      branchId: repo.branch.id,
+      expectedHeadTurnId: null,
+      userTranscript: 'Archive this user audio.',
+      assistantTranscript: 'The audio is now part of the branch.',
+      userAudioAssetId: audioAsset.id
+    }
+  });
+  assert.equal(liveTurn.statusCode, 201);
+  assert.equal((liveTurn.json() as { turn: { userAudioAssetId: string } }).turn.userAudioAssetId, audioAsset.id);
 });
 
 
@@ -271,3 +340,47 @@ test('1.0 release routes support search, archive export, audio manifests, canon 
   const afterDelete = await app.inject({ method: 'GET', url: `/v1/repos/${encodeURIComponent(repo.repo.id)}` });
   assert.equal(afterDelete.statusCode, 404);
 });
+
+class FakeAudioObjectStore implements AudioObjectStore {
+  readonly verified: RegisterAudioAssetInput[] = [];
+
+  isEnabled(): boolean {
+    return true;
+  }
+
+  async prepareUpload(input: PrepareAudioUploadInput): Promise<PreparedAudioUpload> {
+    const storageUri = `gs://fake-audio/${input.repoId}/${input.role}.${input.container}`;
+    return {
+      method: 'PUT',
+      uploadUrl: `https://storage.example/upload/${input.repoId}/${input.role}`,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      maxBytes: 10 * 1024 * 1024,
+      headers: {
+        'content-type': input.contentType,
+        'x-goog-meta-ariadne-repo-id': input.repoId,
+        'x-goog-meta-ariadne-branch-id': input.branchId ?? '',
+        'x-goog-meta-ariadne-role': input.role,
+        'x-goog-meta-ariadne-sha256': input.sha256,
+        'x-goog-meta-ariadne-codec': input.codec,
+        'x-goog-meta-ariadne-container': input.container
+      },
+      asset: {
+        repoId: input.repoId,
+        branchId: input.branchId ?? null,
+        role: input.role,
+        storageUri,
+        sha256: input.sha256,
+        codec: input.codec,
+        container: input.container,
+        sampleRate: input.sampleRate,
+        durationMs: input.durationMs,
+        byteLength: input.byteLength,
+        encryptionKeyRef: null
+      }
+    };
+  }
+
+  async verifyUploadedAsset(input: RegisterAudioAssetInput): Promise<void> {
+    this.verified.push(input);
+  }
+}

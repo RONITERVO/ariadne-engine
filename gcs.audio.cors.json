@@ -1,0 +1,19 @@
+[
+  {
+    "origin": [
+      "https://ariadne-engine-rt.firebaseapp.com",
+      "https://ariadne-engine-rt.web.app"
+    ],
+    "method": ["PUT", "OPTIONS"],
+    "responseHeader": [
+      "content-type",
+      "x-goog-meta-ariadne-repo-id",
+      "x-goog-meta-ariadne-branch-id",
+      "x-goog-meta-ariadne-role",
+      "x-goog-meta-ariadne-sha256",
+      "x-goog-meta-ariadne-codec",
+      "x-goog-meta-ariadne-container"
+    ],
+    "maxAgeSeconds": 3600
+  }
+]

@@ -46,7 +46,9 @@ Returns frontend-safe public configuration. It never returns provider keys or se
   "paidUsageEnabled": true,
   "firebaseAuthRequired": true,
   "billingCurrency": "usd",
-  "liveBillableSeconds": 30
+  "liveBillableSeconds": 30,
+  "audioStorageEnabled": true,
+  "audioMaxBytes": 10737418240
 }
 ```
 
@@ -193,9 +195,60 @@ Deletes the repo and its branches, turns, snapshots, branch locks, and audio man
 { "ok": true, "deletedRepoId": "..." }
 ```
 
+### `POST /v1/audio-assets/upload-url`
+
+Creates a short-lived signed GCS `PUT` URL for a preserved audio object. The browser uploads the audio bytes directly to GCS with the returned headers, then registers the returned `asset` payload through `POST /v1/audio-assets`.
+
+```json
+{
+  "repoId": "...",
+  "branchId": "...",
+  "role": "user",
+  "contentType": "audio/wav",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "codec": "pcm_s16le",
+  "container": "wav",
+  "sampleRate": 48000,
+  "durationMs": 1800,
+  "byteLength": 172844
+}
+```
+
+Response:
+
+```json
+{
+  "audioUpload": {
+    "method": "PUT",
+    "uploadUrl": "https://storage.googleapis.com/...",
+    "expiresAt": "2026-06-17T12:15:00.000Z",
+    "headers": {
+      "content-type": "audio/wav",
+      "x-goog-meta-ariadne-repo-id": "...",
+      "x-goog-meta-ariadne-branch-id": "...",
+      "x-goog-meta-ariadne-role": "user",
+      "x-goog-meta-ariadne-sha256": "..."
+    },
+    "asset": {
+      "repoId": "...",
+      "branchId": "...",
+      "role": "user",
+      "storageUri": "gs://bucket/live-audio/repos/.../user/2026-06-17/object.wav",
+      "sha256": "...",
+      "codec": "pcm_s16le",
+      "container": "wav",
+      "sampleRate": 48000,
+      "durationMs": 1800,
+      "byteLength": 172844,
+      "encryptionKeyRef": null
+    }
+  }
+}
+```
+
 ### `POST /v1/audio-assets`
 
-Registers an audio object that was stored by the client or deployment-specific upload service. Ariadne saves metadata and can link the returned asset ID to Live turns.
+Registers an audio object that was stored by the client. In GCS-backed production, Ariadne verifies that the object exists in the configured bucket and that signed metadata matches the manifest before saving it. Ariadne saves metadata only and can link the returned asset ID to Live turns.
 
 ```json
 {

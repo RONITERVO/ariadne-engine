@@ -31,6 +31,7 @@
 - [x] repo deletion workflow
 - [x] audio asset manifest registration and listing
 - [x] optional audio asset links on Live turn commits
+- [x] direct browser-to-GCS audio upload UX through signed URLs
 - [x] release tests for search/export/audio/canon/compare/delete
 
 ## v1.1: voice-native control layer
@@ -39,7 +40,6 @@
 - [ ] Voice confirmation for time-machine forks
 - [ ] Audible branch recaps
 - [ ] Branch library voice navigation
-- [ ] Direct browser-to-object-storage audio upload UX
 - [ ] Transcript spans and audio timestamp alignment
 - [ ] Timeline audio replay
 

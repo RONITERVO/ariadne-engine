@@ -14,7 +14,7 @@ The hosted release supports Firebase Google sign-in with prepaid Ariadne credits
 - Paid usage ledger for prepaid credits, normal model token usage, and fixed 30-second Gemini Live sessions with one active paid Live session per user.
 - Server-side Gemini key rotation with per-key concurrency, minute/day limits, and cooldowns.
 - Per-branch mutation leases and expected-head checks so overlapping turns cannot corrupt branch history.
-- Transcript-only Gemini Live browser loop. Browser STT only detects speech start; Gemini Live supplies user/model transcripts and model audio. Live commits can link preserved user/model audio asset manifests to turn commits.
+- Transcript-only Gemini Live browser loop. Browser STT only detects speech start; Gemini Live supplies user/model transcripts and model audio. Live commits upload preserved user/model audio to GCS and link audio asset manifests to turn commits.
 - Player-facing **Ariadne Atlas** at `/map`: a Google Galaxy-style story universe where repos are galaxies, branches are orbits, turns are stars, canon state becomes landmarks, and users can search, rewind, fork, replay, compare, export, or delete from the map.
 - Server-side provider-key guardrails. BYOK keys are accepted only in `x-ariadne-provider-key`, rejected from query/body fields, redacted from logs, and never saved.
 - Production config safety checks. `NODE_ENV=production` requires Firestore, Firebase auth, paid usage, strict CORS, server Gemini keys, and no mock provider.
@@ -121,7 +121,7 @@ For any public deployment:
 5. Keep `ARIADNE_ALLOW_MOCK_PROVIDER=false`.
 6. Set `ARIADNE_PAID_USAGE_ENABLED=true`, `ARIADNE_FIREBASE_AUTH_REQUIRED=true`, `GEMINI_API_KEYS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRODUCT_ID`, and `APP_URL`.
 7. Do not log request bodies containing transcripts unless users have explicitly opted in.
-8. Store audio in encrypted object storage and save only object metadata in Firestore.
+8. Store audio in a private GCS bucket through signed direct browser uploads and save only object metadata in Firestore.
 9. Keep provider keys in `x-ariadne-provider-key`; `Authorization: Bearer` is reserved for Firebase ID tokens.
 10. Update `ARIADNE_MODEL_CATALOG_JSON` whenever enforced Gemini models or prices change.
 
@@ -142,6 +142,7 @@ Transcript-only browser
   |-- validates BYOK keys through Ariadne backend
   |-- auto-creates/continues a branch
   |-- sends Live audio to Gemini after speech is detected
+  |-- uploads preserved turn audio directly to GCS through short-lived signed URLs
   `-- renders Gemini user/model transcripts
 
 Ariadne API
@@ -174,7 +175,8 @@ Firestore + object storage
 | `GET /v1/story-search` | lexical/semantic rewind search across transcripts and canon landmarks |
 | `GET /v1/repos/:repoId/export` | downloadable JSON or Markdown story archive |
 | `DELETE /v1/repos/:repoId` | user data deletion for a story world |
-| `POST /v1/audio-assets` | registers preserved audio object metadata for a repo/branch |
+| `POST /v1/audio-assets/upload-url` | creates a short-lived signed GCS upload URL for preserved turn audio |
+| `POST /v1/audio-assets` | registers verified preserved audio object metadata for a repo/branch |
 | `GET /v1/repos/:repoId/audio-assets` | lists preserved audio manifests |
 | `GET /v1/branches/compare` | compares two branches and state divergence |
 | `GET /v1/branches/:branchId/canon` | canon debugger payload with compiled branch state |
@@ -207,7 +209,7 @@ docs/             architecture, BYOK, story atlas, security, release docs
 
 ## 1.0 boundary
 
-This release is a complete non-voice-control 1.0: branchable story commits, the Google Galaxy map, visual fork/rewind/compare/replay controls, user export/delete workflows, canon debugger routes, billing hooks, Gemini Live token flow, and audio asset manifests are implemented. BYOK keys are not persisted. Voice-native branch commands are intentionally marked as v1.1. Direct browser upload of raw audio to your object-storage bucket is deployment-specific; 1.0 provides the API/schema to register encrypted audio objects and link them to turns.
+This release is a complete non-voice-control 1.0: branchable story commits, the Google Galaxy map, visual fork/rewind/compare/replay controls, user export/delete workflows, canon debugger routes, billing hooks, Gemini Live token flow, signed GCS audio uploads, and audio asset manifests are implemented. BYOK keys are not persisted. Voice-native branch commands are intentionally marked as v1.1. Timeline audio replay and transcript/audio timestamp alignment remain v1.1 work.
 
 ## License
 
