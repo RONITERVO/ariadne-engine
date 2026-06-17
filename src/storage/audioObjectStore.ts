@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Storage } from '@google-cloud/storage';
 import type { AudioStorageConfig } from '../config.js';
-import type { AudioRole, RegisterAudioAssetInput } from '../domain/types.js';
+import type { AudioObjectVerification, AudioRole, AudioUploadIntent, RegisterAudioAssetInput } from '../domain/types.js';
 import { StoreError } from './storyStore.js';
 
 export interface PrepareAudioUploadInput {
@@ -10,6 +10,7 @@ export interface PrepareAudioUploadInput {
   role: AudioRole;
   contentType: string;
   sha256: string;
+  crc32c?: string | null;
   codec: string;
   container: string;
   sampleRate?: number;
@@ -20,6 +21,7 @@ export interface PrepareAudioUploadInput {
 export interface PreparedAudioUpload {
   method: 'PUT';
   uploadUrl: string;
+  uploadId: string;
   expiresAt: string;
   headers: Record<string, string>;
   asset: RegisterAudioAssetInput;
@@ -29,7 +31,8 @@ export interface PreparedAudioUpload {
 export interface AudioObjectStore {
   isEnabled(): boolean;
   prepareUpload(input: PrepareAudioUploadInput): Promise<PreparedAudioUpload>;
-  verifyUploadedAsset(input: RegisterAudioAssetInput): Promise<void>;
+  verifyUploadedAsset(input: RegisterAudioAssetInput, intent?: AudioUploadIntent): Promise<AudioObjectVerification>;
+  deleteRepoObjects(repoId: string): Promise<void>;
 }
 
 export class DisabledAudioObjectStore implements AudioObjectStore {
@@ -41,8 +44,20 @@ export class DisabledAudioObjectStore implements AudioObjectStore {
     throw new StoreError('audio object storage is not configured', 'unavailable');
   }
 
-  async verifyUploadedAsset(_input: RegisterAudioAssetInput): Promise<void> {
-    return;
+  async verifyUploadedAsset(input: RegisterAudioAssetInput): Promise<AudioObjectVerification> {
+    return {
+      byteLength: input.byteLength ?? 0,
+      contentType: input.contentType ?? null,
+      crc32c: input.crc32c ?? null,
+      md5Hash: input.md5Hash ?? null,
+      generation: input.gcsGeneration ?? null,
+      metageneration: input.gcsMetageneration ?? null,
+      updatedAt: input.uploadedAt ?? null
+    };
+  }
+
+  async deleteRepoObjects(_repoId: string): Promise<void> {
+    // No-op for local/dev deployments that only keep external manifests.
   }
 }
 
@@ -66,11 +81,12 @@ export class GcsAudioObjectStore implements AudioObjectStore {
       throw new StoreError(`audio object exceeds the configured ${this.config.maxBytes} byte limit`, 'invalid');
     }
 
-    const objectName = this.objectNameFor(input);
+    const uploadId = randomUUID();
+    const objectName = this.objectNameFor(input, uploadId);
     const storageUri = `gs://${this.bucketName}/${objectName}`;
     const expiresAtMs = Date.now() + this.config.signedUrlTtlSeconds * 1000;
     const expiresAt = new Date(expiresAtMs).toISOString();
-    const headers = uploadHeaders(input);
+    const headers = uploadHeaders(input, uploadId);
     const [uploadUrl] = await this.storage.bucket(this.bucketName).file(objectName).getSignedUrl({
       action: 'write',
       version: 'v4',
@@ -82,15 +98,20 @@ export class GcsAudioObjectStore implements AudioObjectStore {
     return {
       method: 'PUT',
       uploadUrl,
+      uploadId,
       expiresAt,
       headers,
       maxBytes: this.config.maxBytes,
       asset: {
+        uploadId,
         repoId: input.repoId,
         branchId: input.branchId ?? null,
         role: input.role,
+        storageProvider: 'gcs',
         storageUri,
+        contentType: input.contentType,
         sha256: input.sha256,
+        crc32c: input.crc32c ?? null,
         codec: input.codec,
         container: input.container,
         sampleRate: input.sampleRate,
@@ -101,9 +122,10 @@ export class GcsAudioObjectStore implements AudioObjectStore {
     };
   }
 
-  async verifyUploadedAsset(input: RegisterAudioAssetInput): Promise<void> {
-    if (!this.bucketName) return;
-    const parsed = parseGcsUri(input.storageUri);
+  async verifyUploadedAsset(input: RegisterAudioAssetInput, intent?: AudioUploadIntent): Promise<AudioObjectVerification> {
+    if (!this.bucketName) return new DisabledAudioObjectStore().verifyUploadedAsset(input);
+    const expected = expectedManifest(input, intent);
+    const parsed = parseGcsUri(expected.storageUri);
     if (!parsed) throw new StoreError('audio storageUri must be a gs:// URI', 'invalid');
     if (parsed.bucket !== this.bucketName) {
       throw new StoreError('audio object is not in the configured GCS bucket', 'invalid');
@@ -118,31 +140,65 @@ export class GcsAudioObjectStore implements AudioObjectStore {
 
     const [metadata] = await file.getMetadata();
     const custom = metadata.metadata ?? {};
-    assertMetadata(custom, 'ariadne-repo-id', input.repoId);
-    assertMetadata(custom, 'ariadne-branch-id', input.branchId ?? '');
-    assertMetadata(custom, 'ariadne-role', input.role);
-    assertMetadata(custom, 'ariadne-sha256', input.sha256);
-    assertMetadata(custom, 'ariadne-codec', input.codec);
-    assertMetadata(custom, 'ariadne-container', input.container);
-    if (input.byteLength !== undefined && Number(metadata.size ?? 0) !== input.byteLength) {
-      throw new StoreError('audio object byte length does not match manifest', 'invalid');
+    if (expected.uploadId) assertMetadata(custom, 'ariadne-upload-id', expected.uploadId);
+    assertMetadata(custom, 'ariadne-repo-id', expected.repoId);
+    assertMetadata(custom, 'ariadne-branch-id', expected.branchId ?? '');
+    assertMetadata(custom, 'ariadne-role', expected.role);
+    assertMetadata(custom, 'ariadne-sha256', expected.sha256);
+    if (expected.crc32c) assertMetadata(custom, 'ariadne-crc32c', expected.crc32c);
+    assertMetadata(custom, 'ariadne-codec', expected.codec);
+    assertMetadata(custom, 'ariadne-container', expected.container);
+    assertMetadata(custom, 'ariadne-byte-length', String(expected.byteLength ?? ''));
+    assertMetadata(custom, 'ariadne-content-type', expected.contentType ?? '');
+
+    const actualByteLength = Number(metadata.size ?? 0);
+    if (expected.byteLength !== undefined && actualByteLength !== expected.byteLength) {
+      throw new StoreError('audio object byte length does not match upload intent', 'invalid');
     }
+    const actualContentType = stringValue(metadata.contentType);
+    if (expected.contentType && actualContentType && actualContentType !== expected.contentType) {
+      throw new StoreError('audio object content type does not match upload intent', 'invalid');
+    }
+    const actualCrc32c = stringValue(metadata.crc32c);
+    if (expected.crc32c && actualCrc32c && actualCrc32c !== expected.crc32c) {
+      throw new StoreError('audio object CRC32C does not match upload intent', 'invalid');
+    }
+    await assertObjectSha256(file, expected.sha256);
+
+    return {
+      byteLength: actualByteLength,
+      contentType: actualContentType || expected.contentType || null,
+      crc32c: actualCrc32c || expected.crc32c || null,
+      md5Hash: stringValue(metadata.md5Hash) || null,
+      generation: stringValue(metadata.generation) || null,
+      metageneration: stringValue(metadata.metageneration) || null,
+      updatedAt: stringValue(metadata.updated) || stringValue(metadata.timeCreated) || null
+    };
   }
 
-  private objectNameFor(input: PrepareAudioUploadInput): string {
+
+  async deleteRepoObjects(repoId: string): Promise<void> {
+    if (!this.bucketName) return;
+    const prefix = this.repoPrefixFor(repoId);
+    await this.storage.bucket(this.bucketName).deleteFiles({ prefix, force: true });
+  }
+
+  private objectNameFor(input: PrepareAudioUploadInput, uploadId: string): string {
     const date = new Date().toISOString().slice(0, 10);
-    const filename = `${Date.now()}-${randomUUID()}.${extensionFor(input.container, input.contentType)}`;
-    const parts = [
-      this.objectPrefix,
-      'repos',
-      safeObjectSegment(input.repoId),
+    const filename = `${safeObjectSegment(uploadId)}.${extensionFor(input.container, input.contentType)}`;
+    return [
+      this.repoPrefixFor(input.repoId),
       'branches',
       safeObjectSegment(input.branchId || '_repo'),
       input.role,
       date,
+      'uploads',
       filename
-    ].filter(Boolean);
-    return parts.join('/');
+    ].filter(Boolean).join('/');
+  }
+
+  private repoPrefixFor(repoId: string): string {
+    return [this.objectPrefix, 'repos', safeObjectSegment(repoId)].filter(Boolean).join('/') + '/';
   }
 }
 
@@ -150,16 +206,27 @@ export function createAudioObjectStore(config: AudioStorageConfig): AudioObjectS
   return config.gcsBucket ? new GcsAudioObjectStore(config) : new DisabledAudioObjectStore();
 }
 
-function uploadHeaders(input: PrepareAudioUploadInput): Record<string, string> {
-  return {
+function uploadHeaders(input: PrepareAudioUploadInput, uploadId: string): Record<string, string> {
+  const headers: Record<string, string> = {
     'content-type': input.contentType,
+    'x-goog-if-generation-match': '0',
+    'x-goog-meta-ariadne-upload-id': uploadId,
     'x-goog-meta-ariadne-repo-id': input.repoId,
     'x-goog-meta-ariadne-branch-id': input.branchId ?? '',
     'x-goog-meta-ariadne-role': input.role,
     'x-goog-meta-ariadne-sha256': input.sha256,
     'x-goog-meta-ariadne-codec': input.codec,
-    'x-goog-meta-ariadne-container': input.container
+    'x-goog-meta-ariadne-container': input.container,
+    'x-goog-meta-ariadne-byte-length': String(input.byteLength),
+    'x-goog-meta-ariadne-content-type': input.contentType
   };
+  if (input.crc32c) {
+    headers['x-goog-hash'] = `crc32c=${input.crc32c}`;
+    headers['x-goog-meta-ariadne-crc32c'] = input.crc32c;
+  }
+  if (input.sampleRate !== undefined) headers['x-goog-meta-ariadne-sample-rate'] = String(input.sampleRate);
+  if (input.durationMs !== undefined) headers['x-goog-meta-ariadne-duration-ms'] = String(input.durationMs);
+  return headers;
 }
 
 function signedExtensionHeaders(headers: Record<string, string>): Record<string, string> {
@@ -167,10 +234,49 @@ function signedExtensionHeaders(headers: Record<string, string>): Record<string,
   return extensionHeaders;
 }
 
+function expectedManifest(input: RegisterAudioAssetInput, intent?: AudioUploadIntent): RegisterAudioAssetInput {
+  if (!intent) return input;
+  return {
+    uploadId: intent.id,
+    repoId: intent.repoId,
+    branchId: intent.branchId ?? null,
+    role: intent.role,
+    storageProvider: intent.storageProvider,
+    storageUri: intent.storageUri,
+    contentType: intent.contentType,
+    sha256: intent.sha256,
+    crc32c: intent.crc32c ?? null,
+    codec: intent.codec,
+    container: intent.container,
+    sampleRate: intent.sampleRate,
+    durationMs: intent.durationMs,
+    byteLength: intent.byteLength,
+    encryptionKeyRef: intent.encryptionKeyRef ?? null
+  };
+}
+
+
+async function assertObjectSha256(file: { createReadStream(): NodeJS.ReadableStream }, expectedSha256: string): Promise<void> {
+  const actualSha256 = await hashReadable(file.createReadStream());
+  if (actualSha256 !== expectedSha256.toLowerCase()) {
+    throw new StoreError('audio object SHA-256 does not match upload intent', 'invalid');
+  }
+}
+
+async function hashReadable(stream: NodeJS.ReadableStream): Promise<string> {
+  const hash = createHash('sha256');
+  await new Promise<void>((resolve, reject) => {
+    stream.on('data', chunk => hash.update(chunk));
+    stream.once('error', reject);
+    stream.once('end', resolve);
+  });
+  return hash.digest('hex');
+}
+
 function assertMetadata(metadata: Record<string, unknown>, key: string, expected: string): void {
   const actual = metadata[key] ?? metadata[key.toLowerCase()];
   if (actual !== expected) {
-    throw new StoreError(`audio object metadata ${key} does not match manifest`, 'invalid');
+    throw new StoreError(`audio object metadata ${key} does not match upload intent`, 'invalid');
   }
 }
 
@@ -182,6 +288,10 @@ function parseGcsUri(uri: string): { bucket: string; objectName: string } | null
 
 function safeObjectSegment(value: string): string {
   return value.replace(/[^A-Za-z0-9._=-]/g, '_').slice(0, 160) || '_';
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function extensionFor(container: string, contentType: string): string {

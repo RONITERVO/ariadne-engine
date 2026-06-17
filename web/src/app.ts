@@ -163,6 +163,7 @@ type AudioUploadAsset = {
   role: 'user' | 'assistant' | 'system';
   storageUri: string;
   sha256: string;
+  crc32c?: string | null;
   codec: string;
   container: string;
   sampleRate?: number;
@@ -175,6 +176,7 @@ type AudioUploadResponse = {
   audioUpload: {
     method: 'PUT';
     uploadUrl: string;
+    uploadId: string;
     expiresAt: string;
     headers: Record<string, string>;
     asset: AudioUploadAsset;
@@ -1960,7 +1962,7 @@ async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedA
     throw new Error(`${role} audio is too large to archive.`);
   }
 
-  const sha256 = await sha256Blob(archive.blob);
+  const checksums = await audioChecksums(archive.blob);
   const audioUpload = await authorizedFetch<AudioUploadResponse>('/v1/audio-assets/upload-url', {
     method: 'POST',
     body: {
@@ -1968,7 +1970,8 @@ async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedA
       branchId: state.branchId,
       role,
       contentType: archive.contentType,
-      sha256,
+      sha256: checksums.sha256,
+      crc32c: checksums.crc32c,
       codec: archive.codec,
       container: archive.container,
       sampleRate: archive.sampleRate,
@@ -1989,7 +1992,10 @@ async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedA
 
   const registered = await authorizedFetch<AudioAssetResponse>('/v1/audio-assets', {
     method: 'POST',
-    body: upload.asset
+    body: {
+      repoId: state.repoId,
+      uploadId: upload.uploadId
+    }
   });
   return registered.audioAsset.id;
 }
@@ -2070,9 +2076,43 @@ function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-async function sha256Blob(blob: Blob): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', await blob.arrayBuffer());
-  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+async function audioChecksums(blob: Blob): Promise<{ sha256: string; crc32c: string }> {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const digest = await crypto.subtle.digest('SHA-256', buffer.slice(0));
+  return {
+    sha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join(''),
+    crc32c: crc32cBase64(bytes)
+  };
+}
+
+const CRC32C_TABLE = buildCrc32cTable();
+
+function buildCrc32cTable(): Uint32Array {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < table.length; i += 1) {
+    let crc = i;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) ? (0x82f63b78 ^ (crc >>> 1)) : (crc >>> 1);
+    }
+    table[i] = crc >>> 0;
+  }
+  return table;
+}
+
+function crc32cBase64(bytes: Uint8Array): string {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32C_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  crc = (crc ^ 0xffffffff) >>> 0;
+  const out = new Uint8Array([
+    (crc >>> 24) & 0xff,
+    (crc >>> 16) & 0xff,
+    (crc >>> 8) & 0xff,
+    crc & 0xff
+  ]);
+  return btoa(String.fromCharCode(...out));
 }
 
 function codecFromMimeType(contentType: string): string {

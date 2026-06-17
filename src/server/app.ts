@@ -60,7 +60,7 @@ import {
   StorySearchQuerySchema,
   StoryTurnBodySchema
 } from '../domain/validation.js';
-import type { BranchRef, StoryRepo } from '../domain/types.js';
+import type { AudioUploadIntent, BranchRef, RegisterAudioAssetInput, StoryRepo } from '../domain/types.js';
 import { getBearerToken, looksLikeJwt, requireFirebaseUser } from './firebaseAuth.js';
 import { HttpError } from './httpErrors.js';
 import { registerAdminRoutes } from './adminRoutes.js';
@@ -413,6 +413,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
     tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
     assertRepoAccess(repo, user, config, tokens);
+    await audioObjects.deleteRepoObjects(repoId);
     await store.deleteRepo(repoId);
     return sendWithTokens(reply, { ok: true, deletedRepoId: repoId }, tokens);
   });
@@ -440,6 +441,25 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
     }
     const audioUpload = await audioObjects.prepareUpload(body);
+    await store.createAudioUploadIntent({
+      uploadId: audioUpload.uploadId,
+      repoId: body.repoId,
+      branchId: body.branchId ?? null,
+      ownerUserId: repo.ownerUserId ?? user?.uid ?? null,
+      role: body.role,
+      storageProvider: 'gcs',
+      storageUri: audioUpload.asset.storageUri,
+      contentType: body.contentType,
+      sha256: body.sha256,
+      crc32c: body.crc32c ?? null,
+      codec: body.codec,
+      container: body.container,
+      sampleRate: body.sampleRate,
+      durationMs: body.durationMs,
+      byteLength: body.byteLength,
+      encryptionKeyRef: audioUpload.asset.encryptionKeyRef ?? null,
+      expiresAt: audioUpload.expiresAt
+    });
     tokens.add(ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED);
     return sendWithTokens(reply, { audioUpload }, tokens, 201);
   });
@@ -449,6 +469,40 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     const user = await resolveStoryUser(request, config, tokens);
     const body = parseBody(AudioAssetBodySchema, request.body);
     tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+
+    if (body.uploadId) {
+      if (!audioObjects.isEnabled()) {
+        throw tokens.fail('Audio upload tickets require configured object storage.', 503, 'audio_storage_disabled', ACTION_TOKEN.AUDIO_STORAGE_DISABLED);
+      }
+      tokens.add(ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+      const intent = await store.getAudioUploadIntent(body.repoId, body.uploadId);
+      if (!intent) throw tokens.fail(`audio upload not found: ${body.uploadId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      const repo = await store.getRepo(intent.repoId);
+      if (!repo) throw tokens.fail(`repo not found: ${intent.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+      assertRepoAccess(repo, user, config, tokens);
+      if (intent.branchId) {
+        const branch = await store.getBranch(intent.branchId);
+        if (!branch) throw tokens.fail(`branch not found: ${intent.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+        tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+        if (branch.repoId !== repo.id) {
+          throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+        }
+        tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+      }
+      const verification = await audioObjects.verifyUploadedAsset(audioManifestFromIntent(intent), intent);
+      tokens.add(ACTION_TOKEN.AUDIO_OBJECT_VERIFIED);
+      const audioAsset = await store.completeAudioUploadIntent({ repoId: intent.repoId, uploadId: intent.id, verification });
+      return sendWithTokens(reply, { audioAsset }, tokens, 201);
+    }
+
+    if (audioObjects.isEnabled()) {
+      throw tokens.fail('GCS audio registration requires a server-issued uploadId.', 400, 'audio_upload_id_required', ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+    }
+    if (!('storageUri' in body)) {
+      throw tokens.fail('Audio manifest registration requires audio metadata.', 400, 'audio_manifest_required', ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    }
+
     const repo = await store.getRepo(body.repoId);
     if (!repo) throw tokens.fail(`repo not found: ${body.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
     tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
@@ -461,11 +515,6 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
         throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
       }
       tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
-    }
-    if (audioObjects.isEnabled()) {
-      tokens.add(ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
-      await audioObjects.verifyUploadedAsset(body);
-      tokens.add(ACTION_TOKEN.AUDIO_OBJECT_VERIFIED);
     }
     const audioAsset = await store.saveAudioAsset(body);
     return sendWithTokens(reply, { audioAsset }, tokens, 201);
@@ -781,6 +830,26 @@ function sendErrorWithTokens(
     .code(statusCode)
     .header('x-ariadne-active-tokens', tokens.activeTokens.join(','))
     .send({ error: code, message, tokens });
+}
+
+function audioManifestFromIntent(intent: AudioUploadIntent): RegisterAudioAssetInput {
+  return {
+    uploadId: intent.id,
+    repoId: intent.repoId,
+    branchId: intent.branchId ?? null,
+    role: intent.role,
+    storageProvider: intent.storageProvider,
+    storageUri: intent.storageUri,
+    contentType: intent.contentType,
+    sha256: intent.sha256,
+    crc32c: intent.crc32c ?? null,
+    codec: intent.codec,
+    container: intent.container,
+    sampleRate: intent.sampleRate,
+    durationMs: intent.durationMs,
+    byteLength: intent.byteLength,
+    encryptionKeyRef: intent.encryptionKeyRef ?? null
+  };
 }
 
 function downloadName(value: string): string {

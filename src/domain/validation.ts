@@ -105,19 +105,41 @@ export const LiveTokenBodySchema = z.object({
 });
 
 
-export const AudioAssetBodySchema = z.object({
+const Crc32cSchema = z.string().trim().regex(/^[A-Za-z0-9+/]{6}==$/, {
+  message: 'crc32c must be base64-encoded big-endian CRC32C'
+});
+
+const AudioManifestBodySchema = z.object({
+  uploadId: z.string().trim().min(1).max(160).nullable().optional(),
   repoId: z.string().min(1),
   branchId: z.string().min(1).nullable().optional(),
   role: z.enum(['user', 'assistant', 'system']),
+  storageProvider: z.enum(['gcs', 'external']).nullable().optional(),
   storageUri: z.string().trim().min(3).max(2048),
-  sha256: z.string().trim().min(16).max(128),
+  contentType: z.string().trim().min(3).max(120).refine(value => value.startsWith('audio/'), {
+    message: 'contentType must be an audio MIME type'
+  }).nullable().optional(),
+  sha256: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  crc32c: Crc32cSchema.nullable().optional(),
+  md5Hash: z.string().trim().min(16).max(64).nullable().optional(),
+  gcsGeneration: z.string().trim().max(80).nullable().optional(),
+  gcsMetageneration: z.string().trim().max(80).nullable().optional(),
   codec: z.string().trim().min(1).max(80),
   container: z.string().trim().min(1).max(80),
   sampleRate: z.number().int().min(1).max(384000).optional(),
   durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
   byteLength: z.number().int().min(0).max(10 * 1024 * 1024 * 1024).optional(),
-  encryptionKeyRef: z.string().trim().max(512).nullable().optional()
+  encryptionKeyRef: z.string().trim().max(512).nullable().optional(),
+  uploadedAt: z.string().trim().max(80).nullable().optional(),
+  verifiedAt: z.string().trim().max(80).nullable().optional()
 });
+
+const AudioUploadRegistrationBodySchema = z.object({
+  uploadId: z.string().trim().min(1).max(160),
+  repoId: z.string().min(1)
+});
+
+export const AudioAssetBodySchema = z.union([AudioUploadRegistrationBodySchema, AudioManifestBodySchema]);
 
 export const AudioUploadUrlBodySchema = z.object({
   repoId: z.string().min(1),
@@ -127,6 +149,7 @@ export const AudioUploadUrlBodySchema = z.object({
     message: 'contentType must be an audio MIME type'
   }),
   sha256: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  crc32c: Crc32cSchema,
   codec: z.string().trim().min(1).max(80),
   container: z.string().trim().min(1).max(80),
   sampleRate: z.number().int().min(1).max(384000).optional(),

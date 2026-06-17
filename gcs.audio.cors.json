@@ -7,12 +7,20 @@
     "method": ["PUT", "OPTIONS"],
     "responseHeader": [
       "content-type",
+      "x-goog-hash",
+      "x-goog-if-generation-match",
+      "x-goog-meta-ariadne-upload-id",
       "x-goog-meta-ariadne-repo-id",
       "x-goog-meta-ariadne-branch-id",
       "x-goog-meta-ariadne-role",
       "x-goog-meta-ariadne-sha256",
+      "x-goog-meta-ariadne-crc32c",
       "x-goog-meta-ariadne-codec",
-      "x-goog-meta-ariadne-container"
+      "x-goog-meta-ariadne-container",
+      "x-goog-meta-ariadne-byte-length",
+      "x-goog-meta-ariadne-content-type",
+      "x-goog-meta-ariadne-sample-rate",
+      "x-goog-meta-ariadne-duration-ms"
     ],
     "maxAgeSeconds": 3600
   }

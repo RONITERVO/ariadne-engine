@@ -13,8 +13,10 @@
 - [x] `/v1/story-search` supports time-machine search over transcripts and canon landmarks.
 - [x] `/v1/repos/:repoId/export` supports JSON and Markdown archives.
 - [x] `/v1/repos/:repoId` deletion removes the repo and related local/Firestore story records.
-- [x] `/v1/audio-assets/upload-url` creates signed GCS upload URLs.
-- [x] `/v1/audio-assets` and `/v1/repos/:repoId/audio-assets` support preserved-audio manifests.
+- [x] `/v1/audio-assets/upload-url` creates server-issued GCS upload intents with required CRC32C, signed object preconditions, and server-side SHA-256 verification.
+- [x] `/v1/audio-assets` completes one-time GCS upload tickets and stores verified preserved-audio manifests.
+- [x] Repo deletion removes stored GCS audio objects under the repo prefix before deleting story records.
+- [x] `/v1/repos/:repoId/audio-assets` lists preserved-audio manifests.
 - [x] Tests cover search/export/audio/canon/compare/delete release routes.
 - [x] Voice-native branch commands are explicitly marked as v1.1.
 

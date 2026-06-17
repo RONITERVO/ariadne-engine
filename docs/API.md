@@ -48,7 +48,7 @@ Returns frontend-safe public configuration. It never returns provider keys or se
   "billingCurrency": "usd",
   "liveBillableSeconds": 30,
   "audioStorageEnabled": true,
-  "audioMaxBytes": 10737418240
+  "audioMaxBytes": 104857600
 }
 ```
 
@@ -197,7 +197,7 @@ Deletes the repo and its branches, turns, snapshots, branch locks, and audio man
 
 ### `POST /v1/audio-assets/upload-url`
 
-Creates a short-lived signed GCS `PUT` URL for a preserved audio object. The browser uploads the audio bytes directly to GCS with the returned headers, then registers the returned `asset` payload through `POST /v1/audio-assets`.
+Creates a short-lived, server-issued GCS upload intent and a signed `PUT` URL for one preserved audio object. The browser computes SHA-256 and CRC32C before calling this route, uploads the bytes directly to GCS using **all** returned headers, then completes the ticket through `POST /v1/audio-assets`.
 
 ```json
 {
@@ -206,6 +206,7 @@ Creates a short-lived signed GCS `PUT` URL for a preserved audio object. The bro
   "role": "user",
   "contentType": "audio/wav",
   "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "crc32c": "AAAAAA==",
   "codec": "pcm_s16le",
   "container": "wav",
   "sampleRate": 48000,
@@ -221,20 +222,29 @@ Response:
   "audioUpload": {
     "method": "PUT",
     "uploadUrl": "https://storage.googleapis.com/...",
+    "uploadId": "server-issued-one-time-ticket",
     "expiresAt": "2026-06-17T12:15:00.000Z",
     "headers": {
       "content-type": "audio/wav",
+      "x-goog-if-generation-match": "0",
+      "x-goog-hash": "crc32c=AAAAAA==",
+      "x-goog-meta-ariadne-upload-id": "server-issued-one-time-ticket",
       "x-goog-meta-ariadne-repo-id": "...",
       "x-goog-meta-ariadne-branch-id": "...",
       "x-goog-meta-ariadne-role": "user",
-      "x-goog-meta-ariadne-sha256": "..."
+      "x-goog-meta-ariadne-sha256": "...",
+      "x-goog-meta-ariadne-crc32c": "AAAAAA=="
     },
     "asset": {
+      "uploadId": "server-issued-one-time-ticket",
       "repoId": "...",
       "branchId": "...",
       "role": "user",
-      "storageUri": "gs://bucket/live-audio/repos/.../user/2026-06-17/object.wav",
+      "storageProvider": "gcs",
+      "storageUri": "gs://bucket/live-audio/repos/.../branches/.../user/2026-06-17/uploads/object.wav",
+      "contentType": "audio/wav",
       "sha256": "...",
+      "crc32c": "AAAAAA==",
       "codec": "pcm_s16le",
       "container": "wav",
       "sampleRate": 48000,
@@ -248,15 +258,27 @@ Response:
 
 ### `POST /v1/audio-assets`
 
-Registers an audio object that was stored by the client. In GCS-backed production, Ariadne verifies that the object exists in the configured bucket and that signed metadata matches the manifest before saving it. Ariadne saves metadata only and can link the returned asset ID to Live turns.
+Completes an uploaded GCS audio intent. In production, the client sends only the repo ID and upload ID. Ariadne loads the stored upload intent, verifies that the GCS object exists in the configured bucket/prefix, checks the server-signed metadata, byte length, MIME type, CRC32C, server-streamed SHA-256, generation, and metageneration, then writes the durable audio manifest. The completion call is idempotent after a ticket has already been verified.
+
+```json
+{
+  "repoId": "...",
+  "uploadId": "server-issued-one-time-ticket"
+}
+```
+
+When GCS audio storage is disabled for local development, this route also accepts a full external manifest so tests and offline demos can save audio metadata without object storage.
 
 ```json
 {
   "repoId": "...",
   "branchId": "...",
   "role": "user",
+  "storageProvider": "external",
   "storageUri": "gs://bucket/path/user-turn-1.webm",
-  "sha256": "0123456789abcdef0123456789abcdef",
+  "contentType": "audio/webm",
+  "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "crc32c": "AAAAAA==",
   "codec": "opus",
   "container": "webm",
   "sampleRate": 48000,

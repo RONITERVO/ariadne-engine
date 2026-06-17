@@ -23,6 +23,7 @@ const COLLECTIONS = {
   continuityWarnings: 'continuityWarnings',
   branchMutationLocks: 'mutationLocks',
   audioAssets: 'audioAssets',
+  audioUploads: 'audioUploads',
   billingAccounts: 'billingAccounts',
   defaultBillingAccount: 'default',
   liveSessions: 'liveSessions',
@@ -75,6 +76,7 @@ interface RepoAdminCollections {
   continuityWarnings: AdminDocument[];
   branchMutationLocks: AdminDocument[];
   audioAssets: AdminDocument[];
+  audioUploads: AdminDocument[];
 }
 
 export function registerAdminRoutes(app: FastifyInstance, config: AppConfig): void {
@@ -187,6 +189,7 @@ async function getAdminUserDetail(db: Firestore, uid: string) {
       continuityWarnings: flatten(repoCollections.map(item => item.continuityWarnings)),
       branchMutationLocks: flatten(repoCollections.map(item => item.branchMutationLocks)),
       audioAssets: flatten(repoCollections.map(item => item.audioAssets)),
+      audioUploads: flatten(repoCollections.map(item => item.audioUploads)),
       repoIndexes,
       branchIndexes,
       turnIndexes,
@@ -197,7 +200,7 @@ async function getAdminUserDetail(db: Firestore, uid: string) {
 
 async function loadRepoAdminCollections(db: Firestore, repo: AdminDocument): Promise<RepoAdminCollections> {
   const repoRef = db.doc(repo.path);
-  const [branches, turns, branchStates, branchSnapshots, eventPatches, continuityWarnings, branchMutationLocks, audioAssets] = await Promise.all([
+  const [branches, turns, branchStates, branchSnapshots, eventPatches, continuityWarnings, branchMutationLocks, audioAssets, audioUploads] = await Promise.all([
     docsFromQuery(repoRef.collection(COLLECTIONS.branches)),
     docsFromQuery(repoRef.collection(COLLECTIONS.turns)),
     docsFromQuery(repoRef.collection(COLLECTIONS.branchStates)),
@@ -205,9 +208,10 @@ async function loadRepoAdminCollections(db: Firestore, repo: AdminDocument): Pro
     docsFromQuery(repoRef.collection(COLLECTIONS.eventPatches)),
     docsFromQuery(repoRef.collection(COLLECTIONS.continuityWarnings)),
     docsFromQuery(repoRef.collection(COLLECTIONS.branchMutationLocks)),
-    docsFromQuery(repoRef.collection(COLLECTIONS.audioAssets))
+    docsFromQuery(repoRef.collection(COLLECTIONS.audioAssets)),
+    docsFromQuery(repoRef.collection(COLLECTIONS.audioUploads))
   ]);
-  return { branches, turns, branchStates, branchSnapshots, eventPatches, continuityWarnings, branchMutationLocks, audioAssets };
+  return { branches, turns, branchStates, branchSnapshots, eventPatches, continuityWarnings, branchMutationLocks, audioAssets, audioUploads };
 }
 
 function userDoc(db: Firestore, uid: string): FirestoreDocRef {

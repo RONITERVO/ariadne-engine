@@ -18,9 +18,10 @@ STRIPE_PRODUCT_ID=prod_...
 APP_URL=https://your-app.example
 ARIADNE_AUDIO_GCS_BUCKET=your-private-audio-bucket
 ARIADNE_AUDIO_GCS_PREFIX=live-audio
+ARIADNE_AUDIO_MAX_BYTES=104857600
 ```
 
-`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, missing server Gemini keys, missing Stripe config, and missing `ARIADNE_AUDIO_GCS_BUCKET`.
+`NODE_ENV=production` rejects unsafe public defaults: non-Firestore storage, `CORS_ORIGINS=*`, mock provider, disabled paid usage/auth, missing server Gemini keys, missing Stripe config, and missing `ARIADNE_AUDIO_GCS_BUCKET`. The default per-object audio cap is 100 MiB so completion can stream and verify SHA-256 within normal API timeouts; raise `ARIADNE_AUDIO_MAX_BYTES` only when Cloud Run timeout, memory, and billing limits are also adjusted.
 
 ## Firebase Release Shape
 
@@ -51,7 +52,7 @@ Create these Secret Manager secrets before deploying `cloudbuild.api.yaml`:
 
 ## GCS Audio Storage
 
-GCS is the production audio source store. It is a good fit for gigabytes of private audio because browsers upload directly to object storage through short-lived signed URLs; Cloud Run signs URLs, verifies uploaded object metadata, and stores only manifests in Firestore.
+GCS is the production audio source store. Ariadne uses a server-issued upload intent rather than trusting client-supplied manifests: Cloud Run creates a one-time upload ticket, signs a short-lived browser `PUT` URL, signs the required GCS headers, and persists a pending `audioUploads/{uploadId}` document. The browser computes SHA-256 and CRC32C, uploads directly to GCS with the returned headers, then completes the ticket. The API verifies bucket, prefix, signed metadata, byte length, MIME type, CRC32C, server-streamed SHA-256, generation, and metageneration before saving the durable `audioAssets/{assetId}` manifest.
 
 The public deployment uses `gs://ariadne-engine-rt-audio` with the `live-audio/` prefix:
 
@@ -79,19 +80,27 @@ gcloud storage buckets update gs://ariadne-engine-rt-audio --cors-file=gcs.audio
     "method": ["PUT", "OPTIONS"],
     "responseHeader": [
       "content-type",
+      "x-goog-hash",
+      "x-goog-if-generation-match",
+      "x-goog-meta-ariadne-upload-id",
       "x-goog-meta-ariadne-repo-id",
       "x-goog-meta-ariadne-branch-id",
       "x-goog-meta-ariadne-role",
       "x-goog-meta-ariadne-sha256",
+      "x-goog-meta-ariadne-crc32c",
       "x-goog-meta-ariadne-codec",
-      "x-goog-meta-ariadne-container"
+      "x-goog-meta-ariadne-container",
+      "x-goog-meta-ariadne-byte-length",
+      "x-goog-meta-ariadne-content-type",
+      "x-goog-meta-ariadne-sample-rate",
+      "x-goog-meta-ariadne-duration-ms"
     ],
     "maxAgeSeconds": 3600
   }
 ]
 ```
 
-Cloud Run signs upload URLs with its service account and verifies objects before registering manifests. The runtime service account needs object access to the bucket and URL-signing permission:
+Cloud Run signs upload intents with its service account and verifies objects before registering manifests. The runtime service account needs object access to the bucket and URL-signing permission:
 
 ```bash
 gcloud storage buckets add-iam-policy-binding gs://ariadne-engine-rt-audio \
@@ -104,7 +113,7 @@ gcloud iam service-accounts add-iam-policy-binding \
   --role=roles/iam.serviceAccountTokenCreator
 ```
 
-Use lifecycle rules to manage retention and cost. If Ariadne later needs global low-latency playback, streaming derivatives, or transcription alignment, add a media pipeline on top of GCS while keeping GCS as the durable source.
+Use lifecycle rules to manage retention and cost. Pending upload tickets expire after the signed URL TTL and should be inspected in `audioUploads` during operations. Repo deletion calls the object store before removing Firestore documents, deleting all GCS objects under the repo prefix so private raw audio is not left behind after a user deletes a story world. If Ariadne later needs global low-latency playback, streaming derivatives, or transcription alignment, add a media pipeline on top of GCS while keeping GCS as the durable source.
 
 Firestore stores durable state in the v2 user-rooted, repo-centered schema:
 
@@ -116,6 +125,8 @@ Firestore stores durable state in the v2 user-rooted, repo-centered schema:
 - `users/{uid}/storyRepos/{repoId}/stateSnapshots/{turnId}`
 - `users/{uid}/storyRepos/{repoId}/canonPatches/{patchId}`
 - `users/{uid}/storyRepos/{repoId}/continuityWarnings/{warningId}`
+- `users/{uid}/storyRepos/{repoId}/audioAssets/{assetId}`
+- `users/{uid}/storyRepos/{repoId}/audioUploads/{uploadId}`
 - `users/{uid}/billingAccounts/default`
 - `users/{uid}/billingAccounts/default/storyTurns/{id}`
 - `users/{uid}/billingAccounts/default/liveSessions/{id}`
@@ -150,7 +161,7 @@ npm run dev:web
 
 The frontend API base defaults to `http://localhost:3000` when Vite serves on port 5173. Override with `VITE_ARIADNE_API_BASE`, `VITE_API_BASE_URL`, or `?api=https://your-api.example`.
 
-When `audioStorageEnabled` is true in `/v1/config`, the hosted frontend archives the per-turn microphone audio sent to Gemini Live and assistant audio returned by Gemini. It packages PCM as WAV, requests signed GCS upload URLs from `/v1/audio-assets/upload-url`, uploads directly to GCS, registers manifests through `/v1/audio-assets`, and sends the returned asset IDs with `/v1/story/live-turn`.
+When `audioStorageEnabled` is true in `/v1/config`, the hosted frontend archives the per-turn microphone audio sent to Gemini Live and assistant audio returned by Gemini. It packages PCM as WAV, computes SHA-256 and CRC32C in the browser, requests signed GCS upload intents from `/v1/audio-assets/upload-url`, uploads directly to GCS with the returned signed headers, completes each ticket through `/v1/audio-assets`, and sends the returned asset IDs with `/v1/story/live-turn`.
 
 For a production-style single-process deployment, run `npm run build`; the Fastify API serves the built transcript shell from `/` and immutable Vite assets from `/assets/*`. The Docker image copies `web/dist` for this path.
 

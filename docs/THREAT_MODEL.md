@@ -28,7 +28,7 @@ Controls:
 
 - Request body logging should remain disabled.
 - Model invocation table stores hashes and usage metadata by default; only store full prompts/responses behind an explicit debug flag.
-- Audio storage should be encrypted and access-controlled.
+- Audio storage should be encrypted, access-controlled, written only through server-issued upload intents, integrity-checked with CRC32C and server-side SHA-256, and deleted from GCS on repo deletion.
 - Export/share features must require explicit user action.
 
 ### Prompt injection through user story text

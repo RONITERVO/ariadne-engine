@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
 import { ACTION_TOKEN } from '../src/domain/actionTokens.js';
-import type { RegisterAudioAssetInput } from '../src/domain/types.js';
+import type { AudioObjectVerification, AudioUploadIntent, RegisterAudioAssetInput } from '../src/domain/types.js';
 import { buildApp } from '../src/server/app.js';
 import type { AudioObjectStore, PreparedAudioUpload, PrepareAudioUploadInput } from '../src/storage/audioObjectStore.js';
 
@@ -89,6 +89,7 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
       role: 'user',
       contentType: 'audio/wav',
       sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      crc32c: 'AAAAAA==',
       codec: 'pcm_s16le',
       container: 'wav',
       sampleRate: 48000,
@@ -106,12 +107,14 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
   const registered = await app.inject({
     method: 'POST',
     url: '/v1/audio-assets',
-    payload: uploadPayload.audioUpload.asset
+    payload: { repoId: repo.repo.id, uploadId: uploadPayload.audioUpload.uploadId }
   });
   assert.equal(registered.statusCode, 201);
   assert.equal(audioObjects.verified.length, 1);
-  const audioAsset = (registered.json() as { audioAsset: { id: string; storageUri: string }; tokens: { activeTokens: string[] } }).audioAsset;
+  const audioAsset = (registered.json() as { audioAsset: { id: string; storageUri: string; uploadId: string; crc32c?: string }; tokens: { activeTokens: string[] } }).audioAsset;
   assert.equal(audioAsset.storageUri, uploadPayload.audioUpload.asset.storageUri);
+  assert.equal(audioAsset.uploadId, uploadPayload.audioUpload.uploadId);
+  assert.equal(audioAsset.crc32c, 'AAAAAA==');
 
   const liveTurn = await app.inject({
     method: 'POST',
@@ -128,6 +131,10 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
   });
   assert.equal(liveTurn.statusCode, 201);
   assert.equal((liveTurn.json() as { turn: { userAudioAssetId: string } }).turn.userAudioAssetId, audioAsset.id);
+
+  const deleted = await app.inject({ method: 'DELETE', url: `/v1/repos/${encodeURIComponent(repo.repo.id)}` });
+  assert.equal(deleted.statusCode, 200);
+  assert.deepEqual(audioObjects.deletedRepoIds, [repo.repo.id]);
 });
 
 
@@ -252,7 +259,7 @@ test('1.0 release routes support search, archive export, audio manifests, canon 
       branchId: repo.branch.id,
       role: 'user',
       storageUri: 'gs://ariadne-test/release-1-user.webm',
-      sha256: '0123456789abcdef0123456789abcdef',
+      sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       codec: 'opus',
       container: 'webm',
       sampleRate: 48000,
@@ -343,33 +350,46 @@ test('1.0 release routes support search, archive export, audio manifests, canon 
 
 class FakeAudioObjectStore implements AudioObjectStore {
   readonly verified: RegisterAudioAssetInput[] = [];
+  readonly deletedRepoIds: string[] = [];
 
   isEnabled(): boolean {
     return true;
   }
 
   async prepareUpload(input: PrepareAudioUploadInput): Promise<PreparedAudioUpload> {
+    const uploadId = `fake-upload-${this.verified.length + 1}`;
     const storageUri = `gs://fake-audio/${input.repoId}/${input.role}.${input.container}`;
     return {
       method: 'PUT',
       uploadUrl: `https://storage.example/upload/${input.repoId}/${input.role}`,
+      uploadId,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       maxBytes: 10 * 1024 * 1024,
       headers: {
         'content-type': input.contentType,
+        'x-goog-if-generation-match': '0',
+        'x-goog-hash': input.crc32c ? `crc32c=${input.crc32c}` : '',
+        'x-goog-meta-ariadne-upload-id': uploadId,
         'x-goog-meta-ariadne-repo-id': input.repoId,
         'x-goog-meta-ariadne-branch-id': input.branchId ?? '',
         'x-goog-meta-ariadne-role': input.role,
         'x-goog-meta-ariadne-sha256': input.sha256,
+        'x-goog-meta-ariadne-crc32c': input.crc32c ?? '',
         'x-goog-meta-ariadne-codec': input.codec,
-        'x-goog-meta-ariadne-container': input.container
+        'x-goog-meta-ariadne-container': input.container,
+        'x-goog-meta-ariadne-byte-length': String(input.byteLength),
+        'x-goog-meta-ariadne-content-type': input.contentType
       },
       asset: {
+        uploadId,
         repoId: input.repoId,
         branchId: input.branchId ?? null,
         role: input.role,
+        storageProvider: 'gcs',
         storageUri,
+        contentType: input.contentType,
         sha256: input.sha256,
+        crc32c: input.crc32c ?? null,
         codec: input.codec,
         container: input.container,
         sampleRate: input.sampleRate,
@@ -380,7 +400,22 @@ class FakeAudioObjectStore implements AudioObjectStore {
     };
   }
 
-  async verifyUploadedAsset(input: RegisterAudioAssetInput): Promise<void> {
-    this.verified.push(input);
+  async verifyUploadedAsset(input: RegisterAudioAssetInput, intent?: AudioUploadIntent): Promise<AudioObjectVerification> {
+    const verified = intent ? { ...input, uploadId: intent.id } : input;
+    this.verified.push(verified);
+    return {
+      byteLength: intent?.byteLength ?? input.byteLength ?? 0,
+      contentType: intent?.contentType ?? input.contentType ?? null,
+      crc32c: intent?.crc32c ?? input.crc32c ?? null,
+      md5Hash: null,
+      generation: 'fake-generation-1',
+      metageneration: '1',
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  async deleteRepoObjects(repoId: string): Promise<void> {
+    this.deletedRepoIds.push(repoId);
   }
 }
+

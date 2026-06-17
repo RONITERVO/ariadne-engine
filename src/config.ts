@@ -86,7 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     gcsBucket: readOptionalTrimmed(env.ARIADNE_AUDIO_GCS_BUCKET),
     objectPrefix: normalizeObjectPrefix(env.ARIADNE_AUDIO_GCS_PREFIX ?? 'audio'),
     signedUrlTtlSeconds: readInt(env.ARIADNE_AUDIO_UPLOAD_URL_TTL_SECONDS, 15 * 60, { min: 60, max: 60 * 60 }),
-    maxBytes: readInt(env.ARIADNE_AUDIO_MAX_BYTES, 10 * 1024 * 1024 * 1024, { min: 1024, max: 10 * 1024 * 1024 * 1024 })
+    maxBytes: readInt(env.ARIADNE_AUDIO_MAX_BYTES, 100 * 1024 * 1024, { min: 1024, max: 10 * 1024 * 1024 * 1024 })
   };
 
   if (appEnv === 'production') {
