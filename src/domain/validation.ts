@@ -84,7 +84,9 @@ export const LiveTurnBodySchema = z.object({
   liveSessionId: z.string().trim().min(1).max(160).optional(),
   expectedHeadTurnId: z.string().min(1).nullable(),
   userTranscript: z.string().trim().min(1),
-  assistantTranscript: z.string().trim().min(1)
+  assistantTranscript: z.string().trim().min(1),
+  userAudioAssetId: z.string().trim().min(1).max(160).nullable().optional(),
+  assistantAudioAssetId: z.string().trim().min(1).max(160).nullable().optional()
 });
 
 export const ForkBranchBodySchema = z.object({
@@ -100,4 +102,35 @@ export const LiveTokenBodySchema = z.object({
   model: z.string().trim().min(1).max(160).optional(),
   responseModalities: z.array(z.enum(['AUDIO', 'TEXT'])).min(1).max(2).optional(),
   voiceName: z.string().trim().min(1).max(120).optional()
+});
+
+
+export const AudioAssetBodySchema = z.object({
+  repoId: z.string().min(1),
+  branchId: z.string().min(1).nullable().optional(),
+  role: z.enum(['user', 'assistant', 'system']),
+  storageUri: z.string().trim().min(3).max(2048),
+  sha256: z.string().trim().min(16).max(128),
+  codec: z.string().trim().min(1).max(80),
+  container: z.string().trim().min(1).max(80),
+  sampleRate: z.number().int().min(1).max(384000).optional(),
+  durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
+  byteLength: z.number().int().min(0).max(10 * 1024 * 1024 * 1024).optional(),
+  encryptionKeyRef: z.string().trim().max(512).nullable().optional()
+});
+
+export const StorySearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(500),
+  repoId: z.string().trim().min(1).optional(),
+  branchId: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional()
+});
+
+export const BranchCompareQuerySchema = z.object({
+  leftBranchId: z.string().trim().min(1),
+  rightBranchId: z.string().trim().min(1)
+});
+
+export const RepoExportQuerySchema = z.object({
+  format: z.enum(['json', 'markdown']).optional()
 });

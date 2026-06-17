@@ -419,6 +419,7 @@ function renderAdminDetail(container: HTMLElement, payload: AdminUserDetailRespo
     'eventPatches',
     'continuityWarnings',
     'branchMutationLocks',
+    'audioAssets',
     'liveSessions',
     'storyTurns',
     'billingEvents',
@@ -528,6 +529,7 @@ function buildStoriesMapNode(payload: AdminUserDetailResponse): AdminMapNode {
   const eventPatches = adminDocs(payload, 'eventPatches');
   const continuityWarnings = adminDocs(payload, 'continuityWarnings');
   const branchMutationLocks = adminDocs(payload, 'branchMutationLocks');
+  const audioAssets = adminDocs(payload, 'audioAssets');
   const turnById = indexDocsByEntityId(turns);
   const repoChildren = repos.map(repo => buildRepoMapNode(repo, {
     branches,

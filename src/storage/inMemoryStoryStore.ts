@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createInitialWorldState } from '../domain/initialState.js';
 import { sha256Json } from '../domain/stateHash.js';
-import type { BranchRef, CreateRepoInput, ForkBranchInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
+import type { AudioAsset, BranchRef, CreateRepoInput, ForkBranchInput, RegisterAudioAssetInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
 import type {
   ApplyCanonPatchInput,
   BranchMutationLease,
@@ -17,6 +17,7 @@ export class InMemoryStoryStore implements StoryStore {
   private readonly branches = new Map<string, BranchRef>();
   private readonly turns = new Map<string, TurnCommit>();
   private readonly states = new Map<string, WorldState>();
+  private readonly audioAssets = new Map<string, AudioAsset>();
   private readonly snapshotsByTurn = new Map<string, WorldState>();
   private readonly patchesByTurn = new Map<string, unknown>();
   private readonly branchMutationLeases = new Map<string, BranchMutationLease>();
@@ -124,6 +125,62 @@ export class InMemoryStoryStore implements StoryStore {
     this.states.set(branchId, state);
 
     return { branch: structuredClone(branch), state: structuredClone(state) };
+  }
+
+  async deleteRepo(repoId: string): Promise<void> {
+    if (!this.repos.has(repoId)) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    const branchIds = [...this.branches.values()].filter(branch => branch.repoId === repoId).map(branch => branch.id);
+    const turnIds = [...this.turns.values()].filter(turn => turn.repoId === repoId).map(turn => turn.id);
+
+    this.repos.delete(repoId);
+    for (const branchId of branchIds) {
+      this.branches.delete(branchId);
+      this.states.delete(branchId);
+      this.branchMutationLeases.delete(branchId);
+    }
+    for (const turnId of turnIds) {
+      this.turns.delete(turnId);
+      this.snapshotsByTurn.delete(turnId);
+      this.patchesByTurn.delete(turnId);
+    }
+    for (const [assetId, asset] of this.audioAssets.entries()) {
+      if (asset.repoId === repoId) this.audioAssets.delete(assetId);
+    }
+  }
+
+  async saveAudioAsset(input: RegisterAudioAssetInput): Promise<AudioAsset> {
+    const repo = this.repos.get(input.repoId);
+    if (!repo) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+    if (input.branchId) {
+      const branch = this.branches.get(input.branchId);
+      if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+      if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+    }
+    const asset: AudioAsset = {
+      id: randomUUID(),
+      repoId: input.repoId,
+      branchId: input.branchId ?? null,
+      role: input.role,
+      storageUri: input.storageUri,
+      sha256: input.sha256,
+      codec: input.codec,
+      container: input.container,
+      sampleRate: input.sampleRate,
+      durationMs: input.durationMs,
+      byteLength: input.byteLength,
+      encryptionKeyRef: input.encryptionKeyRef ?? null,
+      createdAt: new Date().toISOString()
+    };
+    this.audioAssets.set(asset.id, asset);
+    return structuredClone(asset);
+  }
+
+  async listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]> {
+    if (!this.repos.has(repoId)) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    return [...this.audioAssets.values()]
+      .filter(asset => asset.repoId === repoId && (branchId === undefined || asset.branchId === branchId))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map(asset => structuredClone(asset));
   }
 
   async acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease> {

@@ -23,7 +23,7 @@ Returns deployment metadata.
 {
   "ok": true,
   "name": "ariadne-engine",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "storage": "memory",
   "provider": "google-ai-studio"
 }
@@ -173,6 +173,50 @@ Response:
 
 Returns a repo and its branches.
 
+
+### `GET /v1/repos/:repoId/export`
+
+Exports the complete story world in a stable offline archive. The default format is JSON; `?format=markdown` returns a readable transcript and canon summary.
+
+```bash
+curl http://localhost:3000/v1/repos/REPO_ID/export
+curl http://localhost:3000/v1/repos/REPO_ID/export?format=markdown
+```
+
+The JSON payload contains `schemaVersion`, `repo`, `branches`, timelines, compiled states, and audio manifests. The response also sets `Content-Disposition` so browsers download it as an archive file.
+
+### `DELETE /v1/repos/:repoId`
+
+Deletes the repo and its branches, turns, snapshots, branch locks, and audio manifests from the configured story store.
+
+```json
+{ "ok": true, "deletedRepoId": "..." }
+```
+
+### `POST /v1/audio-assets`
+
+Registers an audio object that was stored by the client or deployment-specific upload service. Ariadne saves metadata and can link the returned asset ID to Live turns.
+
+```json
+{
+  "repoId": "...",
+  "branchId": "...",
+  "role": "user",
+  "storageUri": "gs://bucket/path/user-turn-1.webm",
+  "sha256": "0123456789abcdef0123456789abcdef",
+  "codec": "opus",
+  "container": "webm",
+  "sampleRate": 48000,
+  "durationMs": 1800,
+  "byteLength": 4096,
+  "encryptionKeyRef": "kms-key-or-null"
+}
+```
+
+### `GET /v1/repos/:repoId/audio-assets`
+
+Lists audio manifests for a repo. Add `?branchId=...` to narrow the list to one branch.
+
 ## Story turns
 
 ### `POST /v1/story/turn`
@@ -253,11 +297,13 @@ Commits a Gemini Live turn after the browser receives Gemini Live user and model
   "liveSessionId": "...",
   "expectedHeadTurnId": null,
   "userTranscript": "I open the silver door.",
-  "assistantTranscript": "The silver door exhales moonlit dust."
+  "assistantTranscript": "The silver door exhales moonlit dust.",
+  "userAudioAssetId": "optional-audio-id",
+  "assistantAudioAssetId": "optional-audio-id"
 }
 ```
 
-Use the `branchHeadTurnId` returned by `/v1/provider/gemini/live-token` as `expectedHeadTurnId`. If the branch moves before the Live turn commits, the backend rejects the stale commit.
+Use the `branchHeadTurnId` returned by `/v1/provider/gemini/live-token` as `expectedHeadTurnId`. If the branch moves before the Live turn commits, the backend rejects the stale commit. Audio asset IDs are optional links to metadata previously registered through `/v1/audio-assets`.
 
 ## Branching
 
@@ -279,3 +325,43 @@ Request:
 ### `GET /v1/branches/:branchId/timeline`
 
 Returns the timeline reachable from the branch head plus the current branch state.
+
+
+## Atlas, rewind, compare, and canon inspection
+
+### `GET /map`
+
+Serves the Google Galaxy-style Ariadne Atlas. Use `/map?demo=1` to preview the cinematic simulated galaxy without saved data.
+
+### `GET /v1/story-map`
+
+Returns the compact graph payload used by `/map`. It is derived from repos, branches, committed turns, and compiled branch state.
+
+### `GET /v1/story-search`
+
+Searches transcripts and canon landmarks. This powers time-machine flows such as “before the betrayal at the inn.”
+
+Query params:
+
+| Param | Purpose |
+|---|---|
+| `q` | required search phrase |
+| `repoId` | optional repo scope |
+| `branchId` | optional branch scope |
+| `limit` | optional result cap, 1-50 |
+
+Response results include `rewindMode`, `turnId`, and `forkSourceTurnId` when Ariadne can safely fork from the matched point.
+
+### `GET /v1/branches/compare`
+
+Compares two branches from the same repo.
+
+```bash
+curl "http://localhost:3000/v1/branches/compare?leftBranchId=MAIN&rightBranchId=FORK"
+```
+
+The response includes the common ancestor, unique turns on each side, and scene/entity/fact/thread state differences.
+
+### `GET /v1/branches/:branchId/canon`
+
+Returns the canon debugger payload for a branch: compiled world state, latest turn summary, unresolved threads, audio manifests, and state statistics.

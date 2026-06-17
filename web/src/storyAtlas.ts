@@ -71,7 +71,117 @@ type StoryMapResponse = {
   warnings: string[];
 };
 
+type TimelineTurn = {
+  id: string;
+  turnIndex?: number;
+  userTranscript?: string;
+  assistantTranscript?: string;
+  createdAt?: string;
+  committedAt?: string | null;
+  stateStatus?: string;
+};
+
+type BranchTimelineResponse = {
+  branchId: string;
+  timeline: TimelineTurn[];
+  state?: unknown;
+};
+
+type ForkBranchResponse = {
+  branch: {
+    id: string;
+    repoId: string;
+    name: string;
+    headTurnId?: string | null;
+  };
+};
+
+type StorySearchResult = {
+  id: string;
+  kind: StoryMapNodeKind;
+  repoId: string;
+  repoTitle: string;
+  branchId?: string;
+  branchName?: string;
+  turnId?: string;
+  turnIndex?: number;
+  label: string;
+  excerpt: string;
+  score: number;
+  matchedTerms: string[];
+  rewindMode: 'before' | 'at';
+  forkSourceTurnId?: string | null;
+  forkLabel?: string;
+  createdAt?: string | null;
+};
+
+type StorySearchResponse = {
+  query: string;
+  generatedAt: string;
+  results: StorySearchResult[];
+};
+
+type TimelineTurnSummary = {
+  id: string;
+  turnIndex: number;
+  userTranscript: string;
+  assistantTranscript: string;
+  stateStatus: string;
+  parentTurnId?: string | null;
+  createdAt: string;
+};
+
+type BranchCompareResponse = {
+  generatedAt: string;
+  repoId: string;
+  commonAncestorTurnId: string | null;
+  commonAncestorTurnIndex: number | null;
+  left: {
+    branch: { id: string; name: string; headTurnId?: string | null };
+    totalTurns: number;
+    uniqueTurns: TimelineTurnSummary[];
+    sceneSummary?: string | null;
+  };
+  right: {
+    branch: { id: string; name: string; headTurnId?: string | null };
+    totalTurns: number;
+    uniqueTurns: TimelineTurnSummary[];
+    sceneSummary?: string | null;
+  };
+  stateDiff: {
+    sceneChanged: boolean;
+    entities: { leftOnly: string[]; rightOnly: string[]; changed: Array<{ id: string }> };
+    facts: { leftOnly: unknown[]; rightOnly: unknown[] };
+    threads: { leftOnly: unknown[]; rightOnly: unknown[]; changed: Array<{ id: string }> };
+  };
+};
+
+type CanonDebugResponse = {
+  generatedAt: string;
+  branch: { id: string; name: string; headTurnId?: string | null };
+  state: {
+    scene?: { summary?: string; locationId?: string; presentEntityIds?: string[]; tone?: string };
+    entities?: Record<string, unknown>;
+    facts?: unknown[];
+    threads?: Array<{ threadId?: string; status?: string; summary?: string; priority?: number }>;
+    contextBudget?: { mode?: string; estimatedTokens?: number; safeBudgetTokens?: number; remainingTurnBudget?: number };
+  } | null;
+  latestTurn: TimelineTurnSummary | null;
+  stats: {
+    turns: number;
+    entities: number;
+    facts: number;
+    threads: number;
+    openThreads: number;
+    resolvedThreads: number;
+    audioAssets: number;
+  };
+  openThreads: Array<{ threadId?: string; status?: string; summary?: string; priority?: number }>;
+  audioAssets: unknown[];
+};
+
 type CosmicScaleKey = 'observable' | 'supercluster' | 'galactic' | 'stellar' | 'landmark';
+type AtlasFilterKey = 'all' | 'current-branch' | 'heads' | 'open-threads' | 'canon';
 
 type CosmicScale = {
   key: CosmicScaleKey;
@@ -193,6 +303,14 @@ const COSMIC_SCALES: CosmicScale[] = [
   }
 ];
 
+const ATLAS_FILTERS: Array<{ key: AtlasFilterKey; label: string; hint: string }> = [
+  { key: 'all', label: 'All', hint: 'Show the whole story universe.' },
+  { key: 'current-branch', label: 'Current branch', hint: 'Highlight the active branch route and its canon.' },
+  { key: 'heads', label: 'Branch heads', hint: 'Highlight each live branch endpoint.' },
+  { key: 'open-threads', label: 'Open threads', hint: 'Highlight unresolved signals and their branches.' },
+  { key: 'canon', label: 'Canon', hint: 'Highlight scenes, entities, facts, and story threads.' }
+];
+
 const STORAGE = {
   repoId: 'ariadne.repoId',
   branchId: 'ariadne.branchId'
@@ -231,6 +349,8 @@ const atlasState: {
   view: ViewState;
   targetView: ViewState;
   hitSet: Set<string>;
+  filterSet: Set<string>;
+  filter: AtlasFilterKey;
   scale: CosmicScaleKey;
   tourStep: number;
 } = {
@@ -246,6 +366,8 @@ const atlasState: {
   view: copyView(DEFAULT_VIEW),
   targetView: copyView(DEFAULT_VIEW),
   hitSet: new Set(),
+  filterSet: new Set(),
+  filter: 'all',
   scale: 'observable',
   tourStep: 0
 };
@@ -253,6 +375,7 @@ const atlasState: {
 let renderer: GalaxyRenderer | null = null;
 let scaleRenderSignature = '';
 let tourTimerId: number | null = null;
+let replayTimerId: number | null = null;
 
 export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   atlasState.apiBase = options.apiBase.replace(/\/$/, '');
@@ -295,6 +418,20 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
             <button id="atlas-reset" type="button">Reset</button>
             <button id="atlas-zoom-in" type="button" aria-label="Zoom in">+</button>
           </div>
+          <nav id="atlas-filter-nav" class="atlas-filter-nav" aria-label="Atlas story filters"></nav>
+          <details class="atlas-time-machine">
+            <summary>Time-machine</summary>
+            <label>
+              <span>Semantic rewind</span>
+              <input id="atlas-rewind" type="search" placeholder="e.g. before the betrayal at the inn" autocomplete="off" />
+            </label>
+            <button id="atlas-rewind-search" type="button">Find rewind point</button>
+            <div id="atlas-rewind-results" class="atlas-rewind-results" aria-live="polite"></div>
+          </details>
+          <details class="atlas-help">
+            <summary>Controls</summary>
+            <p>Drag to orbit, right-drag to pan, wheel or pinch to zoom. Use 1-5 for cosmic scale, + / - for zoom, R to reset, T for tour. Timeline panels can replay a branch star by star.</p>
+          </details>
           <div id="atlas-results" class="atlas-results" aria-live="polite"></div>
         </div>
 
@@ -316,12 +453,20 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   els.refresh.addEventListener('click', () => void loadAtlas());
   els.tour.addEventListener('click', () => toggleTour());
   renderScaleNav();
+  renderFilterNav();
   renderLegend();
   window.addEventListener('keydown', handleAtlasKeydown);
   els.search.addEventListener('input', () => {
     atlasState.query = els.search.value.trim().toLowerCase();
     updateSearchHighlight();
     renderSearchResults();
+  });
+  els.rewindSearch.addEventListener('click', () => void runTimeMachineSearch());
+  els.rewind.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      void runTimeMachineSearch();
+    }
   });
   els.zoomIn.addEventListener('click', () => zoomAtlas(1.3));
   els.zoomOut.addEventListener('click', () => zoomAtlas(1 / 1.3));
@@ -354,12 +499,16 @@ async function loadAtlas(): Promise<void> {
     atlasState.selectedId = graph.rootId;
     atlasState.hoveredId = null;
     atlasState.hitSet.clear();
+    atlasState.filterSet.clear();
     atlasState.query = atlasEls().search.value.trim().toLowerCase();
+    atlasState.filter = 'all';
     atlasState.scale = 'observable';
     atlasState.tourStep = 0;
     updateSearchHighlight();
+    updateFilterHighlight();
     renderAtlasStats(graph);
     renderScaleNav(true);
+    renderFilterNav(true);
     renderLegend();
     renderA11yLayer(graph);
     renderSearchResults();
@@ -390,6 +539,46 @@ async function atlasFetch<T>(path: string): Promise<T> {
   const payload = await response.json().catch(() => ({})) as { message?: unknown; error?: unknown };
   if (!response.ok) throw new Error(String(payload.message ?? payload.error ?? `Request failed with ${response.status}`));
   return payload as T;
+}
+
+async function atlasPost<T>(path: string, body: unknown): Promise<T> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const token = await getFirebaseIdToken().catch(() => '');
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const response = await fetch(`${atlasState.apiBase}${path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body)
+  });
+  const payload = await response.json().catch(() => ({})) as { message?: unknown; error?: unknown };
+  if (!response.ok) throw new Error(String(payload.message ?? payload.error ?? `Request failed with ${response.status}`));
+  return payload as T;
+}
+
+async function atlasDelete<T>(path: string): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = await getFirebaseIdToken().catch(() => '');
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const response = await fetch(`${atlasState.apiBase}${path}`, { method: 'DELETE', headers });
+  const payload = await response.json().catch(() => ({})) as { message?: unknown; error?: unknown };
+  if (!response.ok) throw new Error(String(payload.message ?? payload.error ?? `Request failed with ${response.status}`));
+  return payload as T;
+}
+
+async function atlasDownload(path: string): Promise<{ blob: Blob; filename: string }> {
+  const headers: Record<string, string> = {};
+  const token = await getFirebaseIdToken().catch(() => '');
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const response = await fetch(`${atlasState.apiBase}${path}`, { method: 'GET', headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({})) as { message?: unknown; error?: unknown };
+    throw new Error(String(payload.message ?? payload.error ?? `Request failed with ${response.status}`));
+  }
+  const disposition = response.headers.get('content-disposition') ?? '';
+  return { blob: await response.blob(), filename: filenameFromDisposition(disposition) ?? 'ariadne-story-archive' };
 }
 
 class GalaxyRenderer {
@@ -779,6 +968,7 @@ class GalaxyRenderer {
     const connected = connectedNodeIds();
     const hasInteraction = Boolean(atlasState.hoveredId);
     const isSearching = atlasState.query.length > 0;
+    const isFiltering = atlasState.filter !== 'all';
 
     for (const node of atlasState.positioned.values()) {
       const group = this.nodeObjects.get(node.id);
@@ -787,12 +977,13 @@ class GalaxyRenderer {
       const hovered = atlasState.hoveredId === node.id;
       const active = selected || hovered || connected.has(node.id);
       const hit = isSearching && atlasState.hitSet.has(node.id);
-      const dim = (isSearching && !hit) || (hasInteraction && !active);
+      const filterHit = isFiltering && atlasState.filterSet.has(node.id);
+      const dim = (isSearching && !hit) || (isFiltering && !filterHit) || (hasInteraction && !active);
       const pulse = 1 + Math.sin(this.time * node.orbitSpeed + node.angle) * 0.035;
       group.scale.setScalar((selected || hovered || hit ? 1.12 : 1) * pulse);
 
       for (const child of group.children) {
-        if (child.userData.role === 'selection') child.visible = selected || hovered || hit;
+        if (child.userData.role === 'selection') child.visible = selected || hovered || hit || filterHit;
         if (child.userData.role === 'spiral') child.rotation.z += (child.userData.spin as number | undefined ?? 0.0025);
         if (child.userData.role === 'halo') {
           child.rotation.x += 0.0012;
@@ -807,12 +998,12 @@ class GalaxyRenderer {
         }
         if (child.userData.role === 'glow') {
           const material = (child as THREE.Sprite).material as THREE.SpriteMaterial;
-          material.opacity = dim ? 0.08 : selected || hovered || hit ? 0.9 : 0.38;
+          material.opacity = dim ? 0.08 : selected || hovered || hit || filterHit ? 0.9 : 0.38;
         }
         if (child.userData.role === 'body') {
           const material = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
           material.opacity = dim ? 0.22 : 1;
-          material.emissiveIntensity = selected || hovered || hit ? 1.2 : node.kind === 'library' ? 0.9 : 0.34;
+          material.emissiveIntensity = selected || hovered || hit || filterHit ? 1.2 : node.kind === 'library' ? 0.9 : 0.34;
         }
       }
 
@@ -826,12 +1017,13 @@ class GalaxyRenderer {
         const texture = (label.material as THREE.SpriteMaterial).map;
         const image = texture?.image as HTMLCanvasElement | undefined;
         const aspect = image ? image.width / image.height : 3;
-        const labelHeight = clamp(distanceToCamera * 0.026, 9, selected || hovered || hit ? 22 : 18);
+        const labelHeight = clamp(distanceToCamera * 0.026, 9, selected || hovered || hit || filterHit ? 22 : 18);
         label.scale.set(labelHeight * aspect, labelHeight, 1);
         label.position.y = node.r + labelHeight * 1.15;
         label.visible = selected
           || hovered
           || hit
+          || filterHit
           || primary
           || (structural && node.labelVisible && atlasState.view.distance < 760)
           || (node.labelVisible && atlasState.view.distance < 420);
@@ -847,9 +1039,10 @@ class GalaxyRenderer {
       const material = (child as THREE.Line).material as THREE.LineBasicMaterial;
       const active = hasInteraction && (source === atlasState.hoveredId || target === atlasState.hoveredId);
       const hit = isSearching && (atlasState.hitSet.has(source) || atlasState.hitSet.has(target));
-      material.opacity = (isSearching && !hit) || (hasInteraction && !active && !connected.has(source) && !connected.has(target))
+      const filterHit = isFiltering && atlasState.filterSet.has(source) && atlasState.filterSet.has(target);
+      material.opacity = (isSearching && !hit) || (isFiltering && !filterHit) || (hasInteraction && !active && !connected.has(source) && !connected.has(target))
         ? 0.08
-        : active || hit
+        : active || hit || filterHit
           ? 0.9
           : 0.38;
     }
@@ -1507,7 +1700,9 @@ function selectNode(nodeId: string, center: boolean): void {
   if (!atlasState.graph || !node) return;
   atlasState.selectedId = nodeId;
   atlasState.scale = node.scale;
+  if (atlasState.filter === 'current-branch') updateFilterHighlight();
   renderScaleNav();
+  renderFilterNav();
   renderDetail(nodeId);
   if (center) centerOnNode(nodeId);
 }
@@ -1766,6 +1961,97 @@ function updateSearchHighlight(): void {
   }
 }
 
+function setAtlasFilter(key: AtlasFilterKey): void {
+  stopTour();
+  atlasState.filter = key;
+  updateFilterHighlight();
+  renderFilterNav(true);
+  const filter = ATLAS_FILTERS.find(item => item.key === key);
+  setAtlasStatus(filter ? `Filter: ${filter.label}. ${filter.hint}` : 'Filter updated.');
+}
+
+function updateFilterHighlight(): void {
+  atlasState.filterSet.clear();
+  const graph = atlasState.graph;
+  if (!graph || atlasState.filter === 'all') return;
+  const addWithAncestors = (id: string): void => {
+    const node = graph.nodes.find(item => item.id === id);
+    if (!node) return;
+    atlasState.filterSet.add(node.id);
+    if (node.parentId) addWithAncestors(node.parentId);
+    if (node.branchId) {
+      const branch = graph.nodes.find(item => item.kind === 'branch' && item.branchId === node.branchId);
+      if (branch) atlasState.filterSet.add(branch.id);
+    }
+    if (node.repoId) {
+      const repo = graph.nodes.find(item => item.kind === 'repo' && item.repoId === node.repoId);
+      if (repo) atlasState.filterSet.add(repo.id);
+    }
+    atlasState.filterSet.add(graph.rootId);
+  };
+
+  if (atlasState.filter === 'current-branch') {
+    const branchId = activeBranchId(graph);
+    for (const node of graph.nodes) {
+      if (node.branchId === branchId || (node.kind === 'branch' && node.branchId === branchId)) addWithAncestors(node.id);
+    }
+    return;
+  }
+
+  if (atlasState.filter === 'heads') {
+    for (const branch of graph.nodes.filter(node => node.kind === 'branch')) {
+      addWithAncestors(branch.id);
+      const headTurnId = stringFrom(branch.meta?.headTurnId);
+      const head = headTurnId ? graph.nodes.find(node => node.kind === 'turn' && (node.turnId === headTurnId || node.meta?.turnId === headTurnId || node.id === `turn:${headTurnId}` || node.id === headTurnId)) : null;
+      if (head) addWithAncestors(head.id);
+    }
+    return;
+  }
+
+  if (atlasState.filter === 'open-threads') {
+    for (const node of graph.nodes) {
+      if (node.kind === 'thread' && isOpenThread(node)) addWithAncestors(node.id);
+    }
+    return;
+  }
+
+  if (atlasState.filter === 'canon') {
+    for (const node of graph.nodes) {
+      if (['scene', 'entity', 'thread', 'fact'].includes(node.kind)) addWithAncestors(node.id);
+    }
+  }
+}
+
+function activeBranchId(graph: StoryMapResponse): string | null {
+  const selected = atlasState.positioned.get(atlasState.selectedId);
+  if (selected?.branchId) return selected.branchId;
+  const stored = sessionStorage.getItem(STORAGE.branchId);
+  if (stored && graph.nodes.some(node => node.branchId === stored)) return stored;
+  return graph.nodes.find(node => node.kind === 'branch')?.branchId ?? null;
+}
+
+function isOpenThread(node: StoryMapNode): boolean {
+  const status = `${node.status ?? ''} ${node.tags.join(' ')} ${Object.values(node.meta ?? {}).join(' ')}`.toLowerCase();
+  return ['open', 'unresolved', 'active', 'quest', 'mystery', 'danger', 'risk'].some(word => status.includes(word));
+}
+
+function renderFilterNav(force = false): void {
+  const nav = document.getElementById('atlas-filter-nav');
+  if (!nav) return;
+  const signature = `${atlasState.filter}:${atlasState.graph?.stats.nodes ?? 0}:${atlasState.selectedId}`;
+  if (!force && nav.dataset.signature === signature) return;
+  nav.dataset.signature = signature;
+  nav.replaceChildren(...ATLAS_FILTERS.map(filter => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = filter.label;
+    button.title = filter.hint;
+    button.setAttribute('aria-pressed', String(atlasState.filter === filter.key));
+    button.addEventListener('click', () => setAtlasFilter(filter.key));
+    return button;
+  }));
+}
+
 function renderA11yLayer(graph: StoryMapResponse | null): void {
   const nav = byId<HTMLElement>('atlas-a11y');
   nav.replaceChildren();
@@ -1846,15 +2132,8 @@ function renderDetail(nodeId: string): void {
   const meta = metaList(node);
   if (meta) body.append(meta);
 
-  const continueTarget = continueTargetFor(node, graph);
-  if (continueTarget) {
-    const action = document.createElement('button');
-    action.type = 'button';
-    action.className = 'atlas-primary-action';
-    action.textContent = 'Continue this branch';
-    action.addEventListener('click', () => continueBranch(continueTarget.repoId, continueTarget.branchId));
-    body.append(action);
-  }
+  const actions = actionList(node, graph);
+  if (actions) body.append(actions);
 
   const neighbors = neighborList(node, graph);
   if (neighbors) body.append(neighbors);
@@ -1908,6 +2187,76 @@ function branchTitle(branchId: string, graph: StoryMapResponse): string {
   return graph.nodes.find(node => node.kind === 'branch' && node.branchId === branchId)?.label ?? branchId;
 }
 
+function actionList(node: StoryMapNode, graph: StoryMapResponse): HTMLElement | null {
+  const actions = document.createElement('div');
+  actions.className = 'atlas-action-stack';
+
+  const continueTarget = continueTargetFor(node, graph);
+  if (continueTarget) {
+    appendAction(actions, 'Continue this branch', 'atlas-primary-action', () => continueBranch(continueTarget.repoId, continueTarget.branchId));
+  }
+
+  const branchId = branchIdForNode(node, graph);
+  if (branchId) {
+    appendAction(actions, 'Show timeline route', 'atlas-secondary-action', () => void showTimelineRoute(branchId));
+    appendAction(actions, 'Open canon debugger', 'atlas-secondary-action', () => void showCanonDebug(branchId));
+    const active = activeBranchId(graph);
+    if (active && active !== branchId) {
+      appendAction(actions, 'Compare with active branch', 'atlas-secondary-action', () => void showBranchCompare(active, branchId));
+    }
+  }
+
+  const forkTarget = forkTargetFor(node);
+  if (forkTarget) {
+    appendAction(
+      actions,
+      node.kind === 'branch' ? 'Fork from branch head' : 'Fork from this star',
+      'atlas-secondary-action atlas-fork-action',
+      () => void forkFromTurn(forkTarget.repoId, forkTarget.sourceTurnId, node.label)
+    );
+  }
+
+  if (node.repoId && (node.kind === 'repo' || node.kind === 'branch')) {
+    appendAction(actions, 'Export offline archive', 'atlas-secondary-action', () => void exportRepoArchive(node.repoId!, 'json'));
+    appendAction(actions, 'Export readable story', 'atlas-secondary-action', () => void exportRepoArchive(node.repoId!, 'markdown'));
+  }
+
+  if (node.kind === 'repo' && node.repoId) {
+    appendAction(actions, 'Delete story world', 'atlas-secondary-action atlas-danger-action', () => void deleteRepoFromAtlas(node.repoId!, node.label));
+  }
+
+  return actions.childElementCount ? actions : null;
+}
+
+function appendAction(parent: HTMLElement, label: string, className: string, onClick: () => void): HTMLButtonElement {
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = className;
+  action.textContent = label;
+  action.addEventListener('click', onClick);
+  parent.append(action);
+  return action;
+}
+
+function branchIdForNode(node: StoryMapNode, graph: StoryMapResponse): string | null {
+  if (node.branchId) return node.branchId;
+  if (node.kind === 'repo' && node.repoId) return continueTargetFor(node, graph)?.branchId ?? null;
+  return null;
+}
+
+function forkTargetFor(node: StoryMapNode): { repoId: string; sourceTurnId: string } | null {
+  if (!node.repoId) return null;
+  if (node.kind === 'turn') {
+    const sourceTurnId = stringFrom(node.turnId ?? node.meta?.turnId ?? node.id);
+    return sourceTurnId ? { repoId: node.repoId, sourceTurnId } : null;
+  }
+  if (node.kind === 'branch') {
+    const sourceTurnId = stringFrom(node.meta?.headTurnId);
+    return sourceTurnId ? { repoId: node.repoId, sourceTurnId } : null;
+  }
+  return null;
+}
+
 function continueTargetFor(node: StoryMapNode, graph: StoryMapResponse): { repoId: string; branchId: string } | null {
   if (node.repoId && node.branchId) return { repoId: node.repoId, branchId: node.branchId };
   if (node.kind === 'repo' && node.repoId) {
@@ -1923,6 +2272,409 @@ function continueBranch(repoId: string, branchId: string): void {
   sessionStorage.setItem(STORAGE.repoId, repoId);
   sessionStorage.setItem(STORAGE.branchId, branchId);
   window.location.href = '/';
+}
+
+async function forkFromTurn(repoId: string, sourceTurnId: string, selectedLabel: string): Promise<void> {
+  if (atlasState.simulated) {
+    setAtlasStatus('Demo galaxy cannot create persisted forks. Open a real story map to fork from a star.');
+    return;
+  }
+  const fallbackName = `fork-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')}`;
+  const name = window.prompt(`Name the new branch from ${selectedLabel}`, fallbackName)?.trim();
+  if (!name) return;
+  const forkReason = window.prompt('Optional fork reason', 'Explore this moment differently')?.trim() || undefined;
+  setAtlasStatus(`Creating branch ${name}...`);
+  try {
+    const result = await atlasPost<ForkBranchResponse>('/v1/branches/fork', { repoId, sourceTurnId, name, forkReason });
+    sessionStorage.setItem(STORAGE.repoId, result.branch.repoId);
+    sessionStorage.setItem(STORAGE.branchId, result.branch.id);
+    setAtlasStatus(`Forked ${result.branch.name}. Opening the new branch.`);
+    window.location.href = '/';
+  } catch (error) {
+    setAtlasStatus(messageFrom(error));
+  }
+}
+
+async function exportRepoArchive(repoId: string, format: 'json' | 'markdown'): Promise<void> {
+  if (atlasState.simulated) {
+    setAtlasStatus('Demo galaxy cannot export persisted archives. Open a real story map to download an archive.');
+    return;
+  }
+  setAtlasStatus(format === 'markdown' ? 'Preparing readable story export...' : 'Preparing offline archive...');
+  try {
+    const { blob, filename } = await atlasDownload(`/v1/repos/${encodeURIComponent(repoId)}/export?format=${format}`);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setAtlasStatus('Archive downloaded.');
+  } catch (error) {
+    setAtlasStatus(messageFrom(error));
+  }
+}
+
+async function deleteRepoFromAtlas(repoId: string, label: string): Promise<void> {
+  if (atlasState.simulated) {
+    setAtlasStatus('Demo galaxy cannot delete persisted story worlds.');
+    return;
+  }
+  const confirmation = window.prompt(`Type DELETE to permanently delete ${label}. Export first if you need an archive.`)?.trim();
+  if (confirmation !== 'DELETE') return;
+  setAtlasStatus(`Deleting ${label}...`);
+  try {
+    await atlasDelete<{ ok: boolean }>(`/v1/repos/${encodeURIComponent(repoId)}`);
+    setAtlasStatus(`${label} deleted.`);
+    await loadAtlas();
+  } catch (error) {
+    setAtlasStatus(messageFrom(error));
+  }
+}
+
+async function showTimelineRoute(branchId: string): Promise<void> {
+  const body = atlasEls().detail.querySelector('.atlas-detail-body');
+  if (!body) return;
+  body.querySelector('.atlas-timeline-panel')?.remove();
+  const panel = document.createElement('section');
+  panel.className = 'atlas-timeline-panel';
+  panel.innerHTML = '<h3>Timeline route</h3><p>Loading committed turns...</p>';
+  body.append(panel);
+  try {
+    const turns = atlasState.simulated
+      ? timelineTurnsFromGraph(branchId)
+      : (await atlasFetch<BranchTimelineResponse>(`/v1/branches/${encodeURIComponent(branchId)}/timeline`)).timeline;
+    renderTimelinePanel(panel, branchId, turns);
+  } catch (error) {
+    panel.replaceChildren(timelineHeading(), paragraph(messageFrom(error)));
+  }
+}
+
+function renderTimelinePanel(panel: HTMLElement, branchId: string, turns: TimelineTurn[]): void {
+  const heading = timelineHeading();
+  if (!turns.length) {
+    panel.replaceChildren(heading, paragraph('No committed turns on this branch yet.'));
+    return;
+  }
+  const controls = document.createElement('div');
+  controls.className = 'atlas-timeline-controls';
+  const replay = document.createElement('button');
+  replay.type = 'button';
+  replay.textContent = 'Replay branch';
+  replay.addEventListener('click', () => startBranchReplay(branchId, turns));
+  const stop = document.createElement('button');
+  stop.type = 'button';
+  stop.textContent = 'Stop replay';
+  stop.addEventListener('click', () => stopReplay('Replay stopped.'));
+  controls.append(replay, stop);
+
+  const list = document.createElement('ol');
+  for (const turn of turns.slice(-24)) {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `Turn ${turn.turnIndex ?? '?'} · ${clipText(turn.userTranscript || turn.assistantTranscript || turn.id, 96)}`;
+    const nodeId = turnNodeIdInGraph(turn.id, branchId);
+    if (nodeId) button.addEventListener('click', () => selectNode(nodeId, true));
+    else button.disabled = true;
+    item.append(button);
+    list.append(item);
+  }
+  panel.replaceChildren(heading, controls, list);
+}
+
+function startBranchReplay(branchId: string, turns: TimelineTurn[]): void {
+  const replayTurns = turns
+    .map(turn => ({ turn, nodeId: turnNodeIdInGraph(turn.id, branchId) }))
+    .filter((item): item is { turn: TimelineTurn; nodeId: string } => Boolean(item.nodeId));
+  if (!replayTurns.length) {
+    setAtlasStatus('No visible timeline stars are available to replay.');
+    return;
+  }
+  stopTour();
+  stopReplay();
+  let index = 0;
+  const step = () => {
+    const item = replayTurns[index];
+    if (!item) {
+      stopReplay('Replay complete.');
+      return;
+    }
+    selectNode(item.nodeId, true);
+    setAtlasStatus(`Replaying turn ${item.turn.turnIndex ?? index + 1} of ${replayTurns.length}.`);
+    index += 1;
+    replayTimerId = window.setTimeout(step, 1450);
+  };
+  step();
+}
+
+function stopReplay(status?: string): void {
+  if (replayTimerId !== null) {
+    window.clearTimeout(replayTimerId);
+    replayTimerId = null;
+  }
+  if (status) setAtlasStatus(status);
+}
+
+async function showBranchCompare(leftBranchId: string, rightBranchId: string): Promise<void> {
+  const body = atlasEls().detail.querySelector('.atlas-detail-body');
+  if (!body) return;
+  body.querySelector('.atlas-compare-panel')?.remove();
+  const panel = document.createElement('section');
+  panel.className = 'atlas-compare-panel';
+  panel.innerHTML = '<h3>Branch compare</h3><p>Calculating divergence...</p>';
+  body.append(panel);
+  try {
+    const data = atlasState.simulated
+      ? simulatedBranchCompare(leftBranchId, rightBranchId)
+      : await atlasFetch<BranchCompareResponse>(`/v1/branches/compare?leftBranchId=${encodeURIComponent(leftBranchId)}&rightBranchId=${encodeURIComponent(rightBranchId)}`);
+    renderBranchComparePanel(panel, data);
+  } catch (error) {
+    panel.replaceChildren(panelHeading('Branch compare'), paragraph(messageFrom(error)));
+  }
+}
+
+function renderBranchComparePanel(panel: HTMLElement, data: BranchCompareResponse): void {
+  const heading = panelHeading('Branch compare');
+  const summary = document.createElement('div');
+  summary.className = 'atlas-mini-grid';
+  summary.append(
+    miniStat('Common ancestor', data.commonAncestorTurnIndex ? `Turn ${data.commonAncestorTurnIndex}` : 'Root or none'),
+    miniStat(`${data.left.branch.name} unique`, data.left.uniqueTurns.length),
+    miniStat(`${data.right.branch.name} unique`, data.right.uniqueTurns.length),
+    miniStat('Scene changed', data.stateDiff.sceneChanged ? 'Yes' : 'No')
+  );
+
+  const columns = document.createElement('div');
+  columns.className = 'atlas-compare-columns';
+  columns.append(compareSideBlock('Active branch', data.left, data.left.branch.id), compareSideBlock('Selected branch', data.right, data.right.branch.id));
+
+  const diff = document.createElement('div');
+  diff.className = 'atlas-diff-summary';
+  diff.append(
+    paragraph(`Entities: ${data.stateDiff.entities.leftOnly.length} only on active, ${data.stateDiff.entities.rightOnly.length} only on selected, ${data.stateDiff.entities.changed.length} changed.`),
+    paragraph(`Threads: ${data.stateDiff.threads.leftOnly.length} only on active, ${data.stateDiff.threads.rightOnly.length} only on selected, ${data.stateDiff.threads.changed.length} changed.`),
+    paragraph(`Facts: ${data.stateDiff.facts.leftOnly.length} only on active, ${data.stateDiff.facts.rightOnly.length} only on selected.`)
+  );
+
+  panel.replaceChildren(heading, summary, columns, diff);
+}
+
+function compareSideBlock(label: string, side: BranchCompareResponse['left'], branchId: string): HTMLElement {
+  const block = document.createElement('section');
+  const title = document.createElement('h4');
+  title.textContent = `${label}: ${side.branch.name}`;
+  const copy = paragraph(`${side.totalTurns} total turns${side.sceneSummary ? ` · ${clipText(side.sceneSummary, 80)}` : ''}`);
+  const list = document.createElement('ol');
+  for (const turn of side.uniqueTurns.slice(0, 8)) {
+    const item = document.createElement('li');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `Turn ${turn.turnIndex}: ${clipText(turn.userTranscript || turn.assistantTranscript || turn.id, 76)}`;
+    const nodeId = turnNodeIdInGraph(turn.id, branchId);
+    if (nodeId) button.addEventListener('click', () => selectNode(nodeId, true));
+    else button.disabled = true;
+    item.append(button);
+    list.append(item);
+  }
+  if (!side.uniqueTurns.length) {
+    const item = document.createElement('li');
+    item.append(paragraph('No unique turns after the common ancestor.'));
+    list.append(item);
+  }
+  block.append(title, copy, list);
+  return block;
+}
+
+async function showCanonDebug(branchId: string): Promise<void> {
+  const body = atlasEls().detail.querySelector('.atlas-detail-body');
+  if (!body) return;
+  body.querySelector('.atlas-canon-panel')?.remove();
+  const panel = document.createElement('section');
+  panel.className = 'atlas-canon-panel';
+  panel.innerHTML = '<h3>Canon debugger</h3><p>Loading compiled state...</p>';
+  body.append(panel);
+  try {
+    const data = atlasState.simulated
+      ? simulatedCanonDebug(branchId)
+      : await atlasFetch<CanonDebugResponse>(`/v1/branches/${encodeURIComponent(branchId)}/canon`);
+    renderCanonDebugPanel(panel, data);
+  } catch (error) {
+    panel.replaceChildren(panelHeading('Canon debugger'), paragraph(messageFrom(error)));
+  }
+}
+
+function renderCanonDebugPanel(panel: HTMLElement, data: CanonDebugResponse): void {
+  const heading = panelHeading('Canon debugger');
+  const stats = document.createElement('div');
+  stats.className = 'atlas-mini-grid';
+  stats.append(
+    miniStat('Turns', data.stats.turns),
+    miniStat('Entities', data.stats.entities),
+    miniStat('Open threads', data.stats.openThreads),
+    miniStat('Audio assets', data.stats.audioAssets)
+  );
+
+  const scene = document.createElement('div');
+  scene.className = 'atlas-debug-card';
+  const sceneTitle = document.createElement('h4');
+  sceneTitle.textContent = 'Scene';
+  scene.append(sceneTitle, paragraph(data.state?.scene?.summary || 'No compiled scene summary yet.'));
+  if (data.state?.contextBudget) {
+    scene.append(paragraph(`Context: ${data.state.contextBudget.mode ?? 'unknown'} · ${data.state.contextBudget.estimatedTokens ?? 0}/${data.state.contextBudget.safeBudgetTokens ?? 0} tokens · ~${data.state.contextBudget.remainingTurnBudget ?? 0} turns left.`));
+  }
+
+  const threads = document.createElement('div');
+  threads.className = 'atlas-debug-card';
+  const threadTitle = document.createElement('h4');
+  threadTitle.textContent = 'Open story threads';
+  threads.append(threadTitle);
+  if (data.openThreads.length) {
+    const list = document.createElement('ul');
+    for (const thread of data.openThreads.slice(0, 8)) {
+      const item = document.createElement('li');
+      item.textContent = `${thread.priority ? `P${thread.priority} · ` : ''}${thread.summary ?? thread.threadId ?? 'Open thread'}`;
+      list.append(item);
+    }
+    threads.append(list);
+  } else {
+    threads.append(paragraph('No open or advanced threads.'));
+  }
+
+  const raw = document.createElement('details');
+  raw.className = 'atlas-debug-json';
+  const rawSummary = document.createElement('summary');
+  rawSummary.textContent = 'Compiled state JSON';
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(data.state ?? {}, null, 2);
+  raw.append(rawSummary, pre);
+
+  panel.replaceChildren(heading, stats, scene, threads, raw);
+}
+
+function simulatedBranchCompare(leftBranchId: string, rightBranchId: string): BranchCompareResponse {
+  const left = timelineTurnsFromGraph(leftBranchId).map(simulatedTurnSummary);
+  const right = timelineTurnsFromGraph(rightBranchId).map(simulatedTurnSummary);
+  const common = left.find(turn => right.some(other => other.id === turn.id)) ?? null;
+  return {
+    generatedAt: new Date().toISOString(),
+    repoId: branchRepoId(leftBranchId) ?? 'demo',
+    commonAncestorTurnId: common?.id ?? null,
+    commonAncestorTurnIndex: common?.turnIndex ?? null,
+    left: {
+      branch: { id: leftBranchId, name: branchTitle(leftBranchId, atlasState.graph!) },
+      totalTurns: left.length,
+      uniqueTurns: left,
+      sceneSummary: ''
+    },
+    right: {
+      branch: { id: rightBranchId, name: branchTitle(rightBranchId, atlasState.graph!) },
+      totalTurns: right.length,
+      uniqueTurns: right,
+      sceneSummary: ''
+    },
+    stateDiff: {
+      sceneChanged: leftBranchId !== rightBranchId,
+      entities: { leftOnly: [], rightOnly: [], changed: [] },
+      facts: { leftOnly: [], rightOnly: [] },
+      threads: { leftOnly: [], rightOnly: [], changed: [] }
+    }
+  };
+}
+
+function simulatedTurnSummary(turn: TimelineTurn): TimelineTurnSummary {
+  return {
+    id: turn.id,
+    turnIndex: turn.turnIndex ?? 0,
+    userTranscript: turn.userTranscript ?? '',
+    assistantTranscript: turn.assistantTranscript ?? '',
+    stateStatus: turn.stateStatus ?? 'canonized',
+    parentTurnId: null,
+    createdAt: turn.createdAt ?? new Date().toISOString()
+  };
+}
+
+function simulatedCanonDebug(branchId: string): CanonDebugResponse {
+  const graph = atlasState.graph;
+  const nodes = graph?.nodes.filter(node => node.branchId === branchId) ?? [];
+  const threads = nodes.filter(node => node.kind === 'thread').map(node => ({ summary: node.summary ?? node.label, status: node.status ?? 'open' }));
+  return {
+    generatedAt: new Date().toISOString(),
+    branch: { id: branchId, name: graph ? branchTitle(branchId, graph) : branchId },
+    state: {
+      scene: { summary: nodes.find(node => node.kind === 'scene')?.summary ?? 'Simulated scene', presentEntityIds: [] },
+      entities: Object.fromEntries(nodes.filter(node => node.kind === 'entity').map(node => [node.id, { label: node.label, status: node.status }])),
+      facts: nodes.filter(node => node.kind === 'fact').map(node => ({ label: node.label, summary: node.summary })),
+      threads
+    },
+    latestTurn: timelineTurnsFromGraph(branchId).map(simulatedTurnSummary).at(-1) ?? null,
+    stats: {
+      turns: nodes.filter(node => node.kind === 'turn').length,
+      entities: nodes.filter(node => node.kind === 'entity').length,
+      facts: nodes.filter(node => node.kind === 'fact').length,
+      threads: threads.length,
+      openThreads: threads.filter(thread => thread.status === 'open' || thread.status === 'advanced').length,
+      resolvedThreads: threads.filter(thread => thread.status === 'resolved').length,
+      audioAssets: 0
+    },
+    openThreads: threads.filter(thread => thread.status === 'open' || thread.status === 'advanced'),
+    audioAssets: []
+  };
+}
+
+function branchRepoId(branchId: string): string | null {
+  return atlasState.graph?.nodes.find(node => node.kind === 'branch' && node.branchId === branchId)?.repoId ?? null;
+}
+
+function panelHeading(text: string): HTMLElement {
+  const heading = document.createElement('h3');
+  heading.textContent = text;
+  return heading;
+}
+
+function miniStat(label: string, value: string | number): HTMLElement {
+  const item = document.createElement('div');
+  const strong = document.createElement('strong');
+  strong.textContent = String(value);
+  const span = document.createElement('span');
+  span.textContent = label;
+  item.append(strong, span);
+  return item;
+}
+
+function timelineTurnsFromGraph(branchId: string): TimelineTurn[] {
+  const graph = atlasState.graph;
+  if (!graph) return [];
+  return graph.nodes
+    .filter(node => node.kind === 'turn' && node.branchId === branchId)
+    .sort((a, b) => numberFrom(a.meta?.turnIndex) - numberFrom(b.meta?.turnIndex))
+    .map(node => ({
+      id: stringFrom(node.turnId ?? node.meta?.turnId ?? node.id),
+      turnIndex: numberFrom(node.meta?.turnIndex),
+      userTranscript: node.summary ?? node.label,
+      assistantTranscript: '',
+      createdAt: node.createdAt ?? undefined
+    }));
+}
+
+function turnNodeIdInGraph(turnId: string, branchId: string): string | null {
+  const graph = atlasState.graph;
+  if (!graph) return null;
+  return graph.nodes.find(node => (node.turnId === turnId || node.meta?.turnId === turnId || node.id === turnId) && node.branchId === branchId)?.id ?? null;
+}
+
+function timelineHeading(): HTMLElement {
+  const heading = document.createElement('h3');
+  heading.textContent = 'Timeline route';
+  return heading;
+}
+
+function paragraph(text: string): HTMLElement {
+  const p = document.createElement('p');
+  p.textContent = text;
+  return p;
 }
 
 function tagList(tags: string[]): HTMLElement {
@@ -2024,6 +2776,138 @@ function renderSearchResults(): void {
   results.replaceChildren(list);
 }
 
+async function runTimeMachineSearch(): Promise<void> {
+  const els = atlasEls();
+  const query = els.rewind.value.trim();
+  if (!query) {
+    els.rewindResults.replaceChildren(paragraph('Describe the moment you want to find, like “before the betrayal at the inn.”'));
+    return;
+  }
+  setAtlasStatus('Searching story memory...');
+  els.rewindResults.replaceChildren(paragraph('Searching committed timelines and canon landmarks...'));
+  try {
+    const selected = atlasState.graph?.nodes.find(node => node.id === atlasState.selectedId) ?? null;
+    const params = new URLSearchParams({ q: query, limit: '12' });
+    if (selected?.repoId) params.set('repoId', selected.repoId);
+    if (selected?.branchId) params.set('branchId', selected.branchId);
+    const response = atlasState.simulated
+      ? { query, generatedAt: new Date().toISOString(), results: simulatedStorySearch(query) }
+      : await atlasFetch<StorySearchResponse>(`/v1/story-search?${params.toString()}`);
+    renderTimeMachineResults(response.results, query);
+    setAtlasStatus(response.results.length ? `Found ${response.results.length} rewind candidate${response.results.length === 1 ? '' : 's'}.` : 'No rewind candidates found.');
+  } catch (error) {
+    els.rewindResults.replaceChildren(paragraph(messageFrom(error)));
+    setAtlasStatus(messageFrom(error));
+  }
+}
+
+function renderTimeMachineResults(results: StorySearchResult[], query: string): void {
+  const target = atlasEls().rewindResults;
+  if (!results.length) {
+    target.replaceChildren(paragraph(`No memory matched “${query}”. Try a character, place, object, or phrase from the scene.`));
+    return;
+  }
+  const list = document.createElement('div');
+  list.className = 'atlas-rewind-list';
+  for (const result of results.slice(0, 12)) {
+    const item = document.createElement('article');
+    const title = document.createElement('button');
+    title.type = 'button';
+    title.className = 'atlas-rewind-select';
+    title.innerHTML = '<strong></strong><span></span><small></small>';
+    title.querySelector('strong')!.textContent = result.label;
+    title.querySelector('span')!.textContent = `${result.repoTitle}${result.branchName ? ` / ${result.branchName}` : ''}${result.turnIndex ? ` / turn ${result.turnIndex}` : ''}`;
+    title.querySelector('small')!.textContent = clipText(result.excerpt || result.kind, 180);
+    title.addEventListener('click', () => selectSearchResult(result));
+    item.append(title);
+
+    if (result.forkSourceTurnId && result.repoId) {
+      const fork = document.createElement('button');
+      fork.type = 'button';
+      fork.className = 'atlas-rewind-fork';
+      fork.textContent = result.rewindMode === 'before' ? 'Fork before this' : 'Fork here';
+      fork.disabled = atlasState.simulated;
+      fork.addEventListener('click', () => void forkFromTurn(result.repoId, result.forkSourceTurnId!, result.label));
+      item.append(fork);
+    }
+    list.append(item);
+  }
+  target.replaceChildren(list);
+}
+
+function selectSearchResult(result: StorySearchResult): void {
+  const node = nodeForSearchResult(result);
+  if (!node) {
+    setAtlasStatus('This memory exists in the archive but is outside the current visible graph cap.');
+    return;
+  }
+  selectNode(node.id, true);
+}
+
+function nodeForSearchResult(result: StorySearchResult): StoryMapNode | null {
+  const graph = atlasState.graph;
+  if (!graph) return null;
+  if (result.turnId && result.branchId) {
+    const turnNode = graph.nodes.find(node => (node.turnId === result.turnId || node.meta?.turnId === result.turnId || node.id === `turn:${result.turnId}`) && node.branchId === result.branchId);
+    if (turnNode) return turnNode;
+  }
+  return graph.nodes.find(node => node.id === result.id)
+    ?? graph.nodes.find(node => node.kind === result.kind && node.branchId === result.branchId && node.label === result.label)
+    ?? graph.nodes.find(node => node.kind === result.kind && node.repoId === result.repoId && node.label === result.label)
+    ?? null;
+}
+
+function simulatedStorySearch(query: string): StorySearchResult[] {
+  const graph = atlasState.graph;
+  if (!graph) return [];
+  const terms = simpleQueryTerms(query);
+  return graph.nodes
+    .filter(node => node.kind !== 'library')
+    .map(node => ({ node, score: simpleNodeScore(node, terms, query) }))
+    .filter(hit => hit.score > 0)
+    .sort((a, b) => b.score - a.score || searchRank(a.node) - searchRank(b.node))
+    .slice(0, 12)
+    .map(({ node, score }) => {
+      const turnId = stringFrom(node.turnId ?? node.meta?.turnId);
+      const headTurnId = stringFrom(node.meta?.headTurnId);
+      return {
+        id: node.id,
+        kind: node.kind,
+        repoId: node.repoId ?? '',
+        repoTitle: node.repoId && graph ? repoTitle(node.repoId, graph) : 'Demo world',
+        branchId: node.branchId ?? undefined,
+        branchName: node.branchId && graph ? branchTitle(node.branchId, graph) : undefined,
+        turnId: turnId || undefined,
+        turnIndex: numberFrom(node.meta?.turnIndex) || undefined,
+        label: node.label,
+        excerpt: node.summary ?? node.tags.join(' · '),
+        score,
+        matchedTerms: terms.slice(0, 6),
+        rewindMode: /\b(before|rewind|back|prior|earlier)\b/i.test(query) ? 'before' as const : 'at' as const,
+        forkSourceTurnId: node.kind === 'turn' ? turnId || null : headTurnId || null,
+        forkLabel: node.kind === 'turn' ? 'Fork from this demo star' : undefined,
+        createdAt: node.createdAt ?? null
+      };
+    });
+}
+
+function simpleQueryTerms(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(term => term.length > 2 && !['the', 'and', 'before', 'after', 'back', 'where', 'when'].includes(term));
+}
+
+function simpleNodeScore(node: StoryMapNode, terms: string[], query: string): number {
+  const haystack = [node.label, node.summary ?? '', node.kind, node.status ?? '', ...node.tags, ...Object.values(node.meta ?? {}).map(String)].join(' ').toLowerCase();
+  let score = haystack.includes(query.toLowerCase()) ? 20 : 0;
+  for (const term of terms) {
+    if (haystack.includes(term)) score += node.label.toLowerCase().includes(term) ? 8 : 3;
+  }
+  if (node.kind === 'turn') score += 2;
+  return score;
+}
+
 function nodeMatches(node: StoryMapNode, query: string): boolean {
   const haystack = [node.id, node.kind, node.label, node.summary ?? '', node.status ?? '', ...node.tags, ...Object.values(node.meta ?? {}).map(String)]
     .join(' ')
@@ -2071,6 +2955,9 @@ function atlasEls(): {
   refresh: HTMLButtonElement;
   tour: HTMLButtonElement;
   search: HTMLInputElement;
+  rewind: HTMLInputElement;
+  rewindSearch: HTMLButtonElement;
+  rewindResults: HTMLElement;
   zoomIn: HTMLButtonElement;
   zoomOut: HTMLButtonElement;
   reset: HTMLButtonElement;
@@ -2080,6 +2967,7 @@ function atlasEls(): {
   results: HTMLElement;
   detail: HTMLElement;
   scaleNav: HTMLElement;
+  filterNav: HTMLElement;
   legend: HTMLElement;
 } {
   return {
@@ -2088,6 +2976,9 @@ function atlasEls(): {
     refresh: byId<HTMLButtonElement>('atlas-refresh'),
     tour: byId<HTMLButtonElement>('atlas-tour'),
     search: byId<HTMLInputElement>('atlas-search'),
+    rewind: byId<HTMLInputElement>('atlas-rewind'),
+    rewindSearch: byId<HTMLButtonElement>('atlas-rewind-search'),
+    rewindResults: byId<HTMLElement>('atlas-rewind-results'),
     zoomIn: byId<HTMLButtonElement>('atlas-zoom-in'),
     zoomOut: byId<HTMLButtonElement>('atlas-zoom-out'),
     reset: byId<HTMLButtonElement>('atlas-reset'),
@@ -2097,6 +2988,7 @@ function atlasEls(): {
     results: byId<HTMLElement>('atlas-results'),
     detail: byId<HTMLElement>('atlas-detail'),
     scaleNav: byId<HTMLElement>('atlas-scale-nav'),
+    filterNav: byId<HTMLElement>('atlas-filter-nav'),
     legend: byId<HTMLElement>('atlas-legend')
   };
 }
@@ -2409,6 +3301,14 @@ function stateKindRank(kind: StoryMapNodeKind): number {
   return 9;
 }
 
+function stringFrom(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function clipText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 1))}…` : value;
+}
+
 function numberFrom(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -2473,6 +3373,20 @@ function formatDate(value: unknown): string {
   if (!value || typeof value !== 'string') return '-';
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value;
+}
+
+function filenameFromDisposition(disposition: string | null): string | null {
+  if (!disposition) return null;
+  const utfMatch = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  if (utfMatch?.[1]) {
+    try {
+      return decodeURIComponent(utfMatch[1].replace(/^\"|\"$/g, ''));
+    } catch {
+      return utfMatch[1].replace(/^\"|\"$/g, '');
+    }
+  }
+  const plainMatch = /filename=\"?([^\";]+)\"?/i.exec(disposition);
+  return plainMatch?.[1]?.trim() || null;
 }
 
 function messageFrom(error: unknown): string {

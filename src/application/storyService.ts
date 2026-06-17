@@ -22,6 +22,8 @@ export interface ContinueStoryInput {
   provider: StoryReasoningProvider;
   userTranscript: string;
   expectedHeadTurnId: string | null;
+  userAudioAssetId?: string | null;
+  assistantAudioAssetId?: string | null;
   actorModel?: string;
   canonizerModel?: string;
   tokens?: ActionTokenSet;
@@ -36,6 +38,8 @@ export interface CommitLiveTurnInput {
   assistantTranscript: string;
   liveSessionId?: string;
   expectedHeadTurnId: string | null;
+  userAudioAssetId?: string | null;
+  assistantAudioAssetId?: string | null;
   liveModel?: string;
   canonizerModel?: string;
   tokens?: ActionTokenSet;
@@ -273,6 +277,8 @@ export class StoryService {
       expectedHeadTurnId: prepared.expectedHeadTurnId,
       userTranscript: input.userTranscript,
       assistantTranscript: actor.text,
+      userAudioAssetId: input.userAudioAssetId ?? null,
+      assistantAudioAssetId: input.assistantAudioAssetId ?? null,
       modelMetadata: [actor.metadata]
     });
   }

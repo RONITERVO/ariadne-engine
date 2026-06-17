@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import type { DocumentData, DocumentReference, Firestore, Transaction } from 'firebase-admin/firestore';
+import type { DocumentData, DocumentReference, Firestore, Query, Transaction } from 'firebase-admin/firestore';
 import { createInitialWorldState } from '../domain/initialState.js';
 import { sha256Json } from '../domain/stateHash.js';
-import type { BranchRef, CreateRepoInput, ForkBranchInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
+import type { AudioAsset, BranchRef, CreateRepoInput, ForkBranchInput, RegisterAudioAssetInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
 import { getFirebaseAdminDb } from '../firebase/admin.js';
 import type {
   ApplyCanonPatchInput,
@@ -27,6 +27,7 @@ const COLLECTIONS = {
   patches: 'canonPatches',
   warnings: 'continuityWarnings',
   locks: 'mutationLocks',
+  audioAssets: 'audioAssets',
   repoIndex: 'storyRepoIndex',
   branchIndex: 'storyBranchIndex',
   turnIndex: 'storyTurnIndex'
@@ -185,6 +186,73 @@ export class FirestoreStoryStore implements StoryStore {
       tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
       return clone({ branch, state });
     });
+  }
+
+  async deleteRepo(repoId: string): Promise<void> {
+    const repoLoc = await this.locateRepo(repoId);
+    if (!repoLoc) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    const repoRef = this.repoRef(repoLoc);
+    const [branches, turns] = await Promise.all([
+      repoRef.collection(COLLECTIONS.branches).get(),
+      repoRef.collection(COLLECTIONS.turns).get()
+    ]);
+
+    const recursiveDelete = (this.db as Firestore & { recursiveDelete?: (ref: FirestoreDocRef) => Promise<unknown> }).recursiveDelete;
+    if (typeof recursiveDelete === 'function') {
+      await recursiveDelete.call(this.db, repoRef);
+    } else {
+      await this.deleteKnownRepoDocuments(repoLoc);
+    }
+
+    const indexRefs: FirestoreDocRef[] = [this.repoIndexRef(repoId)];
+    for (const branchDoc of branches.docs) indexRefs.push(this.branchIndexRef(branchDoc.id));
+    for (const turnDoc of turns.docs) indexRefs.push(this.turnIndexRef(turnDoc.id));
+    await this.deleteRefs(indexRefs);
+  }
+
+  async saveAudioAsset(input: RegisterAudioAssetInput): Promise<AudioAsset> {
+    return this.db.runTransaction(async tx => {
+      const repoLoc = await this.locateRepoTx(tx, input.repoId);
+      if (!repoLoc) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repoSnapshot = await tx.get(this.repoRef(repoLoc));
+      if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repo = cleanRepo(repoSnapshot.data());
+      if (!repo) throw new StoreError(`repo is invalid: ${input.repoId}`, 'invalid');
+      if (input.branchId) {
+        const branchLoc = await this.locateBranchTx(tx, input.branchId);
+        if (!branchLoc) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+        if (branchLoc.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+      }
+      const now = new Date().toISOString();
+      const asset: AudioAsset = {
+        id: randomUUID(),
+        repoId: input.repoId,
+        branchId: input.branchId ?? null,
+        role: input.role,
+        storageUri: input.storageUri,
+        sha256: input.sha256,
+        codec: input.codec,
+        container: input.container,
+        sampleRate: input.sampleRate,
+        durationMs: input.durationMs,
+        byteLength: input.byteLength,
+        encryptionKeyRef: input.encryptionKeyRef ?? null,
+        createdAt: now
+      };
+      tx.set(this.audioAssetRef(repoLoc, asset.id), storyDoc(asset, 'audio_asset'));
+      tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
+      return clone(asset);
+    });
+  }
+
+  async listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]> {
+    const repoLoc = await this.locateRepo(repoId);
+    if (!repoLoc) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    let query: Query<DocumentData, DocumentData> = this.repoRef(repoLoc).collection(COLLECTIONS.audioAssets);
+    if (branchId !== undefined) query = query.where('branchId', '==', branchId);
+    const snapshot = await query.get();
+    return snapshot.docs.map(doc => cleanAudioAsset(doc.data())).filter(isPresent).sort(sortByCreatedAt);
   }
 
   async acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease> {
@@ -407,6 +475,36 @@ export class FirestoreStoryStore implements StoryStore {
     // Firebase Admin owns the process-level Firestore client.
   }
 
+  private async deleteKnownRepoDocuments(loc: RepoLoc): Promise<void> {
+    const repoRef = this.repoRef(loc);
+    const names = [
+      COLLECTIONS.branches,
+      COLLECTIONS.turns,
+      COLLECTIONS.states,
+      COLLECTIONS.snapshots,
+      COLLECTIONS.patches,
+      COLLECTIONS.warnings,
+      COLLECTIONS.locks,
+      COLLECTIONS.audioAssets
+    ];
+    const refs: FirestoreDocRef[] = [];
+    for (const name of names) {
+      const snapshot = await repoRef.collection(name).get();
+      refs.push(...snapshot.docs.map(doc => doc.ref));
+    }
+    refs.push(repoRef);
+    await this.deleteRefs(refs);
+  }
+
+  private async deleteRefs(refs: FirestoreDocRef[]): Promise<void> {
+    const uniqueRefs = [...new Map(refs.map(ref => [ref.path, ref])).values()];
+    for (let i = 0; i < uniqueRefs.length; i += 450) {
+      const batch = this.db.batch();
+      for (const ref of uniqueRefs.slice(i, i + 450)) batch.delete(ref);
+      await batch.commit();
+    }
+  }
+
   private userRef(ownerKey: string): FirestoreDocRef {
     return this.db.collection(COLLECTIONS.users).doc(ownerKey);
   }
@@ -441,6 +539,10 @@ export class FirestoreStoryStore implements StoryStore {
 
   private branchLockRef(loc: BranchLoc): FirestoreDocRef {
     return this.repoRef(loc).collection(COLLECTIONS.locks).doc(loc.branchId);
+  }
+
+  private audioAssetRef(loc: RepoLoc, assetId: string): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.audioAssets).doc(assetId);
   }
 
   private repoIndexRef(repoId: string): FirestoreDocRef {
@@ -635,6 +737,28 @@ function cleanTurn(data: DocumentData | undefined): TurnCommit | null {
   });
 }
 
+function cleanAudioAsset(data: DocumentData | undefined): AudioAsset | null {
+  if (!data) return null;
+  const id = stringFrom(data.id);
+  const repoId = stringFrom(data.repoId);
+  if (!id || !repoId) return null;
+  return clone({
+    id,
+    repoId,
+    branchId: nullableString(data.branchId),
+    role: (stringFrom(data.role) || 'user') as AudioAsset['role'],
+    storageUri: stringFrom(data.storageUri),
+    sha256: stringFrom(data.sha256),
+    codec: stringFrom(data.codec),
+    container: stringFrom(data.container),
+    sampleRate: optionalNumber(data.sampleRate),
+    durationMs: optionalNumber(data.durationMs),
+    byteLength: optionalNumber(data.byteLength),
+    encryptionKeyRef: nullableString(data.encryptionKeyRef),
+    createdAt: stringFrom(data.createdAt)
+  });
+}
+
 function ownerKeyFromOwnerUserId(ownerUserId: string | null | undefined): string {
   return normalizeOwnerUserId(ownerUserId) ?? UNOWNED_OWNER_KEY;
 }
@@ -655,6 +779,11 @@ function stringFrom(value: unknown): string {
 function numberFrom(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function sortByCreatedAt<T extends { createdAt: string }>(a: T, b: T): number {

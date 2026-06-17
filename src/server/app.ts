@@ -41,10 +41,21 @@ import { StoreError } from '../storage/storyStore.js';
 import { StoryService, type ContinueStoryStreamEvent } from '../application/storyService.js';
 import { buildStoryMap } from '../application/storyMapService.js';
 import {
+  archiveToMarkdown,
+  buildCanonDebug,
+  buildStoryArchive,
+  compareBranches,
+  searchStory
+} from '../application/storyReleaseService.js';
+import {
+  AudioAssetBodySchema,
+  BranchCompareQuerySchema,
   CreateRepoBodySchema,
   ForkBranchBodySchema,
   LiveTurnBodySchema,
   LiveTokenBodySchema,
+  RepoExportQuerySchema,
+  StorySearchQuerySchema,
   StoryTurnBodySchema
 } from '../domain/validation.js';
 import type { BranchRef, StoryRepo } from '../domain/types.js';
@@ -119,7 +130,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   await app.register(cors, {
     origin: config.corsOrigins,
     credentials: false,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['content-type', 'authorization', 'x-ariadne-provider-key']
   });
   await app.register(rateLimit, {
@@ -200,7 +211,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   app.get('/health', async () => ({
     ok: true,
     name: 'ariadne-engine',
-    version: '0.3.0',
+    version: '1.0.0',
     storage: config.storage,
     provider: config.defaultProvider
   }));
@@ -324,6 +335,146 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     const user = await resolveStoryUser(request, config, tokens);
     const map = await buildStoryMap(store, user?.uid);
     return { ...map, tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/story-search', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_SEARCH);
+    const user = await resolveStoryUser(request, config, tokens);
+    const query = parseBody(StorySearchQuerySchema, request.query);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+
+    let repoIds: string[];
+    let branchId = query.branchId;
+    if (branchId) {
+      const branch = await store.getBranch(branchId);
+      if (!branch) throw tokens.fail(`branch not found: ${branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+      if (query.repoId && query.repoId !== branch.repoId) {
+        throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+      }
+      const repo = await store.getRepo(branch.repoId);
+      if (!repo) throw tokens.fail(`repo not found: ${branch.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_REPO_FOUND, ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+      assertRepoAccess(repo, user, config, tokens);
+      repoIds = [repo.id];
+    } else if (query.repoId) {
+      const repo = await store.getRepo(query.repoId);
+      if (!repo) throw tokens.fail(`repo not found: ${query.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+      assertRepoAccess(repo, user, config, tokens);
+      repoIds = [repo.id];
+    } else {
+      repoIds = (await store.listRepos(user?.uid)).map(repo => repo.id);
+      branchId = undefined;
+    }
+
+    return { ...(await searchStory(store, { query: query.q, repoIds, branchId, limit: query.limit })), tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/repos/:repoId/export', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_EXPORT_REPO);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { repoId } = request.params as { repoId: string };
+    const query = parseBody(RepoExportQuerySchema, request.query);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const repo = await store.getRepo(repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    const archive = await buildStoryArchive(store, repoId);
+    const filename = `${downloadName(repo.title || repo.id)}-ariadne-archive.${query.format === 'markdown' ? 'md' : 'json'}`;
+    if (query.format === 'markdown') {
+      const snapshot = tokens.snapshot();
+      return reply
+        .code(200)
+        .header('x-ariadne-active-tokens', snapshot.activeTokens.join(','))
+        .header('content-disposition', `attachment; filename="${filename}"`)
+        .type('text/markdown; charset=utf-8')
+        .send(archiveToMarkdown(archive));
+    }
+    const snapshot = tokens.snapshot();
+    return reply
+      .header('x-ariadne-active-tokens', snapshot.activeTokens.join(','))
+      .header('content-disposition', `attachment; filename="${filename}"`)
+      .send({ archive, tokens: snapshot });
+  });
+
+  app.delete('/v1/repos/:repoId', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_DELETE_REPO);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { repoId } = request.params as { repoId: string };
+    const repo = await store.getRepo(repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    await store.deleteRepo(repoId);
+    return sendWithTokens(reply, { ok: true, deletedRepoId: repoId }, tokens);
+  });
+
+  app.post('/v1/audio-assets', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_REGISTER_AUDIO_ASSET);
+    const user = await resolveStoryUser(request, config, tokens);
+    const body = parseBody(AudioAssetBodySchema, request.body);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const repo = await store.getRepo(body.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${body.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    if (body.branchId) {
+      const branch = await store.getBranch(body.branchId);
+      if (!branch) throw tokens.fail(`branch not found: ${body.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+      if (branch.repoId !== repo.id) {
+        throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+      }
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    }
+    const audioAsset = await store.saveAudioAsset(body);
+    return sendWithTokens(reply, { audioAsset }, tokens, 201);
+  });
+
+  app.get('/v1/repos/:repoId/audio-assets', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_LIST_AUDIO_ASSETS);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { repoId } = request.params as { repoId: string };
+    const query = request.query as { branchId?: string };
+    const repo = await store.getRepo(repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    return { audioAssets: await store.listAudioAssets(repoId, typeof query.branchId === 'string' ? query.branchId : undefined), tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/branches/compare', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_COMPARE_BRANCHES);
+    const user = await resolveStoryUser(request, config, tokens);
+    const query = parseBody(BranchCompareQuerySchema, request.query);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const [left, right] = await Promise.all([store.getBranch(query.leftBranchId), store.getBranch(query.rightBranchId)]);
+    if (!left) throw tokens.fail(`branch not found: ${query.leftBranchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    if (!right) throw tokens.fail(`branch not found: ${query.rightBranchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+    if (left.repoId !== right.repoId) throw tokens.fail('branches must belong to the same repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    const repo = await store.getRepo(left.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${left.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    return { ...(await compareBranches(store, left.id, right.id)), tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/branches/:branchId/canon', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_CANON_DEBUG);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { branchId } = request.params as { branchId: string };
+    const branch = await store.getBranch(branchId);
+    if (!branch) throw tokens.fail(`branch not found: ${branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+    const repo = await store.getRepo(branch.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${branch.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND, ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    assertRepoAccess(repo, user, config, tokens);
+    return { ...(await buildCanonDebug(store, branch.id)), tokens: tokens.snapshot() };
   });
 
   app.post('/v1/repos', async (request, reply) => {
@@ -522,6 +673,8 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
         assistantTranscript: body.assistantTranscript,
         liveSessionId: body.liveSessionId,
         expectedHeadTurnId: body.expectedHeadTurnId,
+        userAudioAssetId: body.userAudioAssetId ?? null,
+        assistantAudioAssetId: body.assistantAudioAssetId ?? null,
         providerKey: access.providerKey,
         provider: access.provider,
         tokens
@@ -592,6 +745,14 @@ function sendErrorWithTokens(
     .send({ error: code, message, tokens });
 }
 
+function downloadName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'ariadne-story';
+}
+
 function requestPathname(request: FastifyRequest): string {
   return new URL(request.url, 'http://ariadne.local').pathname;
 }
@@ -604,6 +765,9 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'POST' && pathname === '/v1/provider/gemini/live-session/end') return ACTION_ID.PROVIDER_END_LIVE_SESSION;
   if (method === 'GET' && pathname === '/v1/repos') return ACTION_ID.STORY_LIST_REPOS;
   if (method === 'GET' && pathname === '/v1/story-map') return ACTION_ID.STORY_GET_MAP;
+  if (method === 'GET' && pathname === '/v1/story-search') return ACTION_ID.STORY_SEARCH;
+  if (method === 'GET' && pathname === '/v1/branches/compare') return ACTION_ID.STORY_COMPARE_BRANCHES;
+  if (method === 'POST' && pathname === '/v1/audio-assets') return ACTION_ID.STORY_REGISTER_AUDIO_ASSET;
   if (method === 'POST' && pathname === '/v1/repos') return ACTION_ID.STORY_CREATE_REPO;
   if (method === 'POST' && pathname === '/v1/branches/fork') return ACTION_ID.STORY_FORK_BRANCH;
   if (method === 'GET' && pathname === '/v1/billing/me') return ACTION_ID.BILLING_GET_ENTITLEMENT;
@@ -612,8 +776,12 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'POST' && pathname === '/v1/story/turn') return ACTION_ID.STORY_TURN;
   if (method === 'POST' && pathname === '/v1/story/turn/stream') return ACTION_ID.STORY_TURN_STREAM;
   if (method === 'POST' && pathname === '/v1/story/live-turn') return ACTION_ID.STORY_LIVE_TURN;
+  if (method === 'GET' && /^\/v1\/repos\/[^/]+\/export$/.test(pathname)) return ACTION_ID.STORY_EXPORT_REPO;
+  if (method === 'DELETE' && /^\/v1\/repos\/[^/]+$/.test(pathname)) return ACTION_ID.STORY_DELETE_REPO;
+  if (method === 'GET' && /^\/v1\/repos\/[^/]+\/audio-assets$/.test(pathname)) return ACTION_ID.STORY_LIST_AUDIO_ASSETS;
   if (method === 'GET' && /^\/v1\/repos\/[^/]+$/.test(pathname)) return ACTION_ID.STORY_GET_REPO;
   if (method === 'GET' && /^\/v1\/branches\/[^/]+\/timeline$/.test(pathname)) return ACTION_ID.STORY_GET_TIMELINE;
+  if (method === 'GET' && /^\/v1\/branches\/[^/]+\/canon$/.test(pathname)) return ACTION_ID.STORY_CANON_DEBUG;
   return ACTION_ID.HTTP_REQUEST;
 }
 

@@ -1,8 +1,27 @@
-# Product spec: Ariadne Engine
+# Product spec: Ariadne Engine 1.0
 
 ## One-sentence product
 
-A no-UI voice roleplay engine where every story is a branchable, replayable, audio-preserved timeline.
+A no-UI voice roleplay engine where every story is a branchable, replayable, exportable timeline, with preserved transcript state and audio-asset manifests.
+
+## 1.0 promise boundary
+
+Ariadne 1.0 is the complete non-voice-control release. The product supports the story flows through the browser player, the `/map` Google Galaxy interface, and API controls. Voice-native branch commands are deliberately reserved for v1.1 so the 1.0 promise stays honest.
+
+Implemented in 1.0:
+
+- Branchable story repos and immutable turn commits.
+- Visual branch checkout, fork, replay, compare, semantic rewind, export, delete, and canon inspection from `/map`.
+- Gemini Live token flow and Live transcript commits.
+- Context capsules, canonization, deterministic state reduction, and closure-budget tracking.
+- User-data export/delete workflows.
+- Audio asset registration and turn-level audio metadata links.
+
+Reserved for v1.1:
+
+- Voice-native branch commands such as “fork here,” “show my branches,” and “take me back before the betrayal.”
+- Direct browser-to-object-storage upload UX and transcript/audio timestamp alignment.
+- Fully audible branch recaps and timeline audio replay.
 
 ## User experience
 
@@ -12,23 +31,11 @@ The default experience has a short setup gate: sign in for prepaid credits or pa
 2. Ariadne opens or creates a branch.
 3. User speaks a line or action.
 4. Browser speech recognition detects speech start; it is not the transcript authority.
-5. The browser sends two seconds of pre-roll audio, speech audio, and two seconds of trailing audio to Gemini Live.
-6. Gemini Live returns user transcript, model transcript, and model audio.
-7. Ariadne commits the Live transcripts, canonizes the turn, and resumes listening.
+5. Gemini Live receives the user's audio and returns user transcript, model transcript, and model audio.
+6. Ariadne commits the Live transcripts, optionally links registered audio assets, canonizes the turn, and resumes listening.
+7. The user can open `/map` to navigate the story galaxy, search memory, fork timelines, replay branches, compare branches, export archives, or delete a story world.
 
-## Voice commands
-
-Commands are interpreted as story-control acts, not UI clicks.
-
-- "Continue."
-- "Fork here."
-- "Take me back to the inn before the spy arrived."
-- "Show me my branches."
-- "Read the branch where I saved the city."
-- "Start a new branch from the betrayal."
-- "Close this story in the next few scenes."
-
-## Modes
+## Story-control flows
 
 ### Story mode
 
@@ -36,15 +43,19 @@ The model stays in character and responds as narrator / NPCs / scene director.
 
 ### Library mode
 
-The app can generate a concise voice menu of story repositories and branches. The user selects by speaking.
+The `/map` galaxy is the release library surface. It shows story worlds, branches, turns, scenes, entities, facts, and open threads as zoomable cosmic objects.
 
 ### Time-machine mode
 
-The app finds a past event semantically, confirms it aloud, then forks from that turn.
+The app searches transcripts and canon landmarks, finds a candidate past event, shows the matching turn/landmark, and offers a fork action. In 1.0 this is visual/API-driven. Voice confirmation is v1.1.
+
+### Compare mode
+
+The app can compare two branches from the same repo, show the common ancestor, unique turns, and scene/entity/fact/thread divergence.
 
 ### Closure mode
 
-The app stops opening new arcs and resolves active threads before the context budget is exhausted.
+The app tracks context budget and can stop opening new arcs before the budget is exhausted. Closing narration itself remains a story-model behavior directed by the context capsule.
 
 ## Differentiators
 
@@ -52,23 +63,18 @@ The app stops opening new arcs and resolves active threads before the context bu
 
 Each branch is a pointer to a turn commit. Forking does not copy the full transcript. It creates a new branch ref pointing at an existing turn.
 
-### Audio is first-class
+### Memory is structured, not model hope
 
-Every production turn should store:
+The AI proposes a patch. The deterministic state compiler applies only valid state changes. Future models can change without losing the story library because the event ledger and compiled state remain the source of truth.
 
-- raw user audio
-- normalized user audio
-- user transcript
-- raw assistant audio
-- assistant transcript
-- alignment between transcript spans and audio timestamps when available
+### Audio has a release-safe storage contract
 
-The current release stores transcripts and has schema support for audio metadata; object-storage audio upload remains a beta item.
+1.0 supports audio manifests through `/v1/audio-assets` and optional turn-level `userAudioAssetId` / `assistantAudioAssetId` links. Production deployments should store the raw audio objects in encrypted object storage and register only metadata, checksums, storage URIs, codec/container data, and key references in Ariadne.
 
-### AI is not trusted as memory
+### Export and deletion are product features
 
-The AI proposes a patch. The deterministic state compiler applies only valid state changes.
+Users can download JSON archives, readable Markdown archives, and delete a story world. These controls matter because Ariadne stores private transcripts and branch state.
 
-### Latency and continuity are decoupled
+### Atlas is the moat surface
 
-Gemini Live answers quickly. Canonization, auditing, embeddings, and snapshots happen after the turn.
+The `/map` release is not just a visualization. It is the product control plane for story memory: rewind, fork, checkout, replay, compare, canon inspection, export, and deletion.

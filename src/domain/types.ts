@@ -176,3 +176,17 @@ export interface ForkBranchInput {
   name: string;
   forkReason?: string;
 }
+
+export interface RegisterAudioAssetInput {
+  repoId: ID;
+  branchId?: ID | null;
+  role: AudioRole;
+  storageUri: string;
+  sha256: string;
+  codec: string;
+  container: string;
+  sampleRate?: number;
+  durationMs?: number;
+  byteLength?: number;
+  encryptionKeyRef?: string | null;
+}

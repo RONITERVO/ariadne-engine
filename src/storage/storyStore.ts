@@ -1,8 +1,10 @@
 import type {
+  AudioAsset,
   BranchRef,
   CreateRepoInput,
   ForkBranchInput,
   ModelInvocationMetadata,
+  RegisterAudioAssetInput,
   StoryEventPatch,
   StoryRepo,
   TurnCommit,
@@ -56,6 +58,9 @@ export interface StoryStore {
   getBranch(branchId: string): Promise<BranchRef | null>;
   listBranches(repoId: string): Promise<BranchRef[]>;
   forkBranch(input: ForkBranchInput): Promise<{ branch: BranchRef; state: WorldState }>;
+  deleteRepo(repoId: string): Promise<void>;
+  saveAudioAsset(input: RegisterAudioAssetInput): Promise<AudioAsset>;
+  listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]>;
   acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease>;
   releaseBranchMutationLease(lease: BranchMutationLease): Promise<void>;
   commitTurn(input: CommitTurnInput): Promise<TurnCommit>;
