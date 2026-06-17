@@ -67,6 +67,7 @@ export const ACTION_ID = {
   PROVIDER_END_LIVE_SESSION: 'provider.end-live-session',
   STORY_CREATE_REPO: 'story.create-repo',
   STORY_LIST_REPOS: 'story.list-repos',
+  STORY_GET_LATEST: 'story.get-latest',
   STORY_GET_REPO: 'story.get-repo',
   STORY_GET_MAP: 'story.get-map',
   STORY_SEARCH: 'story.search',

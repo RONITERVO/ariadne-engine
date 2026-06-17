@@ -146,6 +146,13 @@ type BranchTimelineResponse = {
   state?: unknown;
 };
 
+type LatestStoryResponse = {
+  story: {
+    repo: { id: string };
+    branch: { id: string };
+  } | null;
+};
+
 type SpeechRecognitionResultLike = {
   isFinal: boolean;
   0?: { transcript?: string };
@@ -307,10 +314,19 @@ function initialStoryId(storageKey: typeof STORAGE.repoId | typeof STORAGE.branc
   for (const key of queryKeys) {
     const value = params.get(key)?.trim();
     if (!value) continue;
-    sessionStorage.setItem(storageKey, value);
+    persistStoryId(storageKey, value);
     return value;
   }
-  return sessionStorage.getItem(storageKey);
+  return readStoryId(storageKey);
+}
+
+function persistStoryId(storageKey: typeof STORAGE.repoId | typeof STORAGE.branchId, value: string): void {
+  localStorage.setItem(storageKey, value);
+  sessionStorage.setItem(storageKey, value);
+}
+
+function readStoryId(storageKey: typeof STORAGE.repoId | typeof STORAGE.branchId): string | null {
+  return localStorage.getItem(storageKey) ?? sessionStorage.getItem(storageKey);
 }
 
 function resolveApiBase(): string {
@@ -1692,7 +1708,10 @@ async function boot(): Promise<void> {
       await providerFetch('/v1/provider/gemini/validate-key', { method: 'POST', body: {} });
     }
 
-    await ensureRepo();
+    if (!await ensureStoryCursor()) {
+      setGateStatus('No current story yet. Open Atlas and start a story from Observable Universe.');
+      return;
+    }
     startTranscriptOnlyMode();
     await hydrateBranchTranscript();
     try {
@@ -1708,46 +1727,55 @@ async function boot(): Promise<void> {
   }
 }
 
-async function ensureRepo(): Promise<void> {
+async function ensureStoryCursor(): Promise<boolean> {
   if (state.repoId && state.branchId) {
-    try {
-      const result = await publicFetch<{ branches: Array<{ id: string }> }>(`/v1/repos/${encodeURIComponent(state.repoId)}`, { method: 'GET' });
-      if (result.branches.some(branch => branch.id === state.branchId)) return;
-    } catch {
-      // Fall through and create a fresh session.
+    if (await validateStoryCursor(state.repoId, state.branchId)) {
+      persistStoryCursor(state.repoId, state.branchId);
+      return true;
     }
+    const sessionRepoId = sessionStorage.getItem(STORAGE.repoId);
+    const sessionBranchId = sessionStorage.getItem(STORAGE.branchId);
+    if (
+      sessionRepoId &&
+      sessionBranchId &&
+      (sessionRepoId !== state.repoId || sessionBranchId !== state.branchId) &&
+      await validateStoryCursor(sessionRepoId, sessionBranchId)
+    ) {
+      persistStoryCursor(sessionRepoId, sessionBranchId);
+      return true;
+    }
+    clearStoryCursor();
   }
 
-  const config = state.config ?? {
-    defaultStoryTitle: 'Ariadne Voice Session',
-    defaultStoryStyle: 'voice-first interactive fiction',
-    maxTranscriptChars: 12_000,
-    liveModel: 'gemini-3.1-flash-live-preview',
-    paidUsageEnabled: false,
-    firebaseAuthRequired: false,
-    billingCurrency: 'usd',
-    defaultCheckoutAmountCents: 1000,
-    minCheckoutAmountCents: 500,
-    liveBillableSeconds: 30,
-    audioStorageEnabled: false,
-    audioMaxBytes: 0,
-    audioDefaultQualityProfile: 'voice-hifi',
-    audioAllowedQualityProfiles: ['voice-hifi'],
-    audioQualityProfiles: {}
-  };
-  const result = await authorizedFetch<{ repo: { id: string }; branch: { id: string } }>('/v1/repos', {
-    method: 'POST',
-    body: {
-      title: config.defaultStoryTitle,
-      defaultStyle: config.defaultStoryStyle,
-      safetyProfile: 'general'
-    }
-  });
+  const latest = await publicFetch<LatestStoryResponse>('/v1/story/latest', { method: 'GET' });
+  if (!latest.story?.repo.id || !latest.story.branch.id) return false;
+  persistStoryCursor(latest.story.repo.id, latest.story.branch.id);
+  return true;
+}
 
-  state.repoId = result.repo.id;
-  state.branchId = result.branch.id;
-  sessionStorage.setItem(STORAGE.repoId, state.repoId);
-  sessionStorage.setItem(STORAGE.branchId, state.branchId);
+async function validateStoryCursor(repoId: string, branchId: string): Promise<boolean> {
+  try {
+    const result = await publicFetch<{ branches: Array<{ id: string }> }>(`/v1/repos/${encodeURIComponent(repoId)}`, { method: 'GET' });
+    return result.branches.some(branch => branch.id === branchId);
+  } catch {
+    return false;
+  }
+}
+
+function persistStoryCursor(repoId: string, branchId: string): void {
+  state.repoId = repoId;
+  state.branchId = branchId;
+  persistStoryId(STORAGE.repoId, repoId);
+  persistStoryId(STORAGE.branchId, branchId);
+}
+
+function clearStoryCursor(): void {
+  state.repoId = null;
+  state.branchId = null;
+  localStorage.removeItem(STORAGE.repoId);
+  localStorage.removeItem(STORAGE.branchId);
+  sessionStorage.removeItem(STORAGE.repoId);
+  sessionStorage.removeItem(STORAGE.branchId);
 }
 
 function startTranscriptOnlyMode(): void {
@@ -1864,7 +1892,7 @@ function startRecognitionLoop(): void {
   };
   recognition.onend = () => {
     removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
-    if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED) && !hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN)) {
+    if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED) && !isRecognitionPaused()) {
       restartRecognitionSoon();
     }
   };
@@ -2089,7 +2117,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
     if (result.turn?.id) {
       setLineAudioAsset(turn.userLine, result.turn.userAudioAssetId ?? audioAssetIds.userAudioAssetId);
       setLineAudioAsset(turn.assistantLine, result.turn.assistantAudioAssetId ?? audioAssetIds.assistantAudioAssetId);
-      sessionStorage.setItem(STORAGE.branchId, state.branchId);
+      persistStoryCursor(state.repoId, state.branchId);
     }
   } catch (error) {
     addLine('system', messageFrom(error));
@@ -2448,7 +2476,7 @@ function restartRecognitionSoon(): void {
     if (
       !recognition ||
       hasLocalToken(CLIENT_TOKEN.STT_LISTENING) ||
-      hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN) ||
+      isRecognitionPaused() ||
       (activeTurn ? turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED) : false)
     ) {
       return;
@@ -2460,6 +2488,10 @@ function restartRecognitionSoon(): void {
       // start() throws if the browser still considers the previous recognition session active.
     }
   }, 180);
+}
+
+function isRecognitionPaused(): boolean {
+  return hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN) || hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK);
 }
 
 function pauseRecognitionForLiveTurn(): void {
@@ -2475,6 +2507,22 @@ function pauseRecognitionForLiveTurn(): void {
 
 function resumeRecognitionAfterLiveTurn(): void {
   removeLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN);
+  if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) restartRecognitionSoon();
+}
+
+function pauseRecognitionForTranscriptPlayback(): void {
+  addLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK);
+  if (!recognition) return;
+  try {
+    recognition.abort();
+  } catch {
+    // Some browsers throw if recognition has already stopped.
+  }
+  removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
+}
+
+function resumeRecognitionAfterTranscriptPlayback(): void {
+  removeLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK);
   if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) restartRecognitionSoon();
 }
 
@@ -2572,6 +2620,7 @@ async function playTranscriptLineAudio(line: HTMLElement): Promise<void> {
 
 async function playTranscriptPlaybackUrl(line: HTMLElement, url: string): Promise<void> {
   stopTranscriptPlayback();
+  pauseRecognitionForTranscriptPlayback();
   const audio = new Audio(url);
   transcriptPlaybackAudio = audio;
   transcriptPlaybackLine = line;
@@ -2582,6 +2631,7 @@ async function playTranscriptPlaybackUrl(line: HTMLElement, url: string): Promis
     line.classList.remove('is-playing-audio');
     transcriptPlaybackAudio = null;
     transcriptPlaybackLine = null;
+    resumeRecognitionAfterTranscriptPlayback();
   };
   audio.addEventListener('ended', cleanup, { once: true });
   audio.addEventListener('error', () => {
@@ -2606,6 +2656,7 @@ function stopTranscriptPlayback(): void {
   audio.pause();
   audio.removeAttribute('src');
   audio.load();
+  resumeRecognitionAfterTranscriptPlayback();
 }
 
 function setLineText(line: HTMLElement, text: string, options: { scroll?: boolean } = {}): void {

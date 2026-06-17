@@ -189,6 +189,68 @@ test('story map route exposes a player-facing graph without a migration', async 
   assert.ok(payload.stats.links >= 2);
 });
 
+test('latest story route returns null without creating a repo', async t => {
+  const app = await buildApp(testConfig());
+  t.after(() => app.close());
+
+  const latest = await app.inject({ method: 'GET', url: '/v1/story/latest' });
+  assert.equal(latest.statusCode, 200);
+  const latestPayload = latest.json() as { story: null; tokens: { action: string } };
+  assert.equal(latestPayload.story, null);
+  assert.equal(latestPayload.tokens.action, 'story.get-latest');
+
+  const repos = await app.inject({ method: 'GET', url: '/v1/repos' });
+  assert.equal(repos.statusCode, 200);
+  assert.deepEqual((repos.json() as { repos: unknown[] }).repos, []);
+});
+
+test('latest story route follows the most recently advanced branch', async t => {
+  const app = await buildApp(testConfig());
+  t.after(() => app.close());
+
+  const first = await app.inject({
+    method: 'POST',
+    url: '/v1/repos',
+    payload: { title: 'First Story' }
+  });
+  assert.equal(first.statusCode, 201);
+  const firstPayload = first.json() as { repo: { id: string }; branch: { id: string } };
+
+  await new Promise(resolve => setTimeout(resolve, 2));
+  const second = await app.inject({
+    method: 'POST',
+    url: '/v1/repos',
+    payload: { title: 'Second Story' }
+  });
+  assert.equal(second.statusCode, 201);
+  const secondPayload = second.json() as { repo: { id: string }; branch: { id: string } };
+
+  const newestCreated = await app.inject({ method: 'GET', url: '/v1/story/latest' });
+  assert.equal(newestCreated.statusCode, 200);
+  assert.equal((newestCreated.json() as { story: { repo: { id: string }; branch: { id: string } } }).story.repo.id, secondPayload.repo.id);
+
+  await new Promise(resolve => setTimeout(resolve, 2));
+  const turn = await app.inject({
+    method: 'POST',
+    url: '/v1/story/live-turn',
+    headers: { 'x-ariadne-provider-key': 'mock-local-dev-key' },
+    payload: {
+      repoId: firstPayload.repo.id,
+      branchId: firstPayload.branch.id,
+      expectedHeadTurnId: null,
+      userTranscript: 'Return to the first story.',
+      assistantTranscript: 'The first story advances and becomes current.'
+    }
+  });
+  assert.equal(turn.statusCode, 201);
+
+  const latest = await app.inject({ method: 'GET', url: '/v1/story/latest' });
+  assert.equal(latest.statusCode, 200);
+  const latestPayload = latest.json() as { story: { repo: { id: string }; branch: { id: string } } };
+  assert.equal(latestPayload.story.repo.id, firstPayload.repo.id);
+  assert.equal(latestPayload.story.branch.id, firstPayload.branch.id);
+});
+
 test('streaming story route emits realtime deltas and final canonized state', async t => {
   const app = await buildApp(testConfig());
   t.after(() => app.close());
