@@ -94,6 +94,7 @@ export interface StoryStore {
   getAudioUploadIntent(repoId: string, uploadId: string): Promise<AudioUploadIntent | null>;
   completeAudioUploadIntent(input: CompleteAudioUploadIntentInput): Promise<AudioAsset>;
   saveAudioAsset(input: RegisterAudioAssetInput): Promise<AudioAsset>;
+  getAudioAsset(repoId: string, assetId: string): Promise<AudioAsset | null>;
   listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]>;
   acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease>;
   releaseBranchMutationLease(lease: BranchMutationLease): Promise<void>;

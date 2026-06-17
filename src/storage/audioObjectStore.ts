@@ -10,7 +10,7 @@ import {
   type AudioQualityProfile,
   type AudioQualityProfilePolicy
 } from '../domain/audioQuality.js';
-import type { AudioObjectVerification, AudioRole, AudioUploadIntent, RegisterAudioAssetInput } from '../domain/types.js';
+import type { AudioAsset, AudioObjectVerification, AudioRole, AudioUploadIntent, RegisterAudioAssetInput } from '../domain/types.js';
 import { StoreError } from './storyStore.js';
 
 const ONE_WRITE_PRECONDITION = '0';
@@ -44,6 +44,15 @@ export interface PreparedAudioUpload {
   qualityPolicy: PreparedAudioQualityPolicy;
 }
 
+export interface PreparedAudioPlayback {
+  method: 'GET';
+  playbackUrl: string;
+  expiresAt: string;
+  contentType?: string | null;
+  byteLength?: number;
+  durationMs?: number;
+}
+
 export interface PreparedAudioQualityPolicy {
   profile: AudioQualityProfile;
   codec: string;
@@ -58,6 +67,7 @@ export interface PreparedAudioQualityPolicy {
 export interface AudioObjectStore {
   isEnabled(): boolean;
   prepareUpload(input: PrepareAudioUploadInput): Promise<PreparedAudioUpload>;
+  createPlaybackUrl(asset: AudioAsset): Promise<PreparedAudioPlayback>;
   verifyUploadedAsset(input: RegisterAudioAssetInput, intent?: AudioUploadIntent): Promise<AudioObjectVerification>;
   deleteRepoObjects(repoId: string): Promise<void>;
 }
@@ -68,6 +78,10 @@ export class DisabledAudioObjectStore implements AudioObjectStore {
   }
 
   async prepareUpload(_input: PrepareAudioUploadInput): Promise<PreparedAudioUpload> {
+    throw new StoreError('audio object storage is not configured', 'unavailable');
+  }
+
+  async createPlaybackUrl(_asset: AudioAsset): Promise<PreparedAudioPlayback> {
     throw new StoreError('audio object storage is not configured', 'unavailable');
   }
 
@@ -187,6 +201,38 @@ export class GcsAudioObjectStore implements AudioObjectStore {
         byteLength: normalized.byteLength,
         encryptionKeyRef: null
       }
+    };
+  }
+
+  async createPlaybackUrl(asset: AudioAsset): Promise<PreparedAudioPlayback> {
+    if (!this.bucketName) throw new StoreError('audio object storage is not configured', 'unavailable');
+    if (asset.storageProvider && asset.storageProvider !== 'gcs') {
+      throw new StoreError('audio asset is not backed by GCS object storage', 'invalid');
+    }
+    const parsed = parseGcsUri(asset.storageUri);
+    if (!parsed) throw new StoreError('audio storageUri must be a gs:// URI', 'invalid');
+    if (parsed.bucket !== this.bucketName) {
+      throw new StoreError('audio object is not in the configured GCS bucket', 'invalid');
+    }
+    if (this.objectPrefix && !parsed.objectName.startsWith(`${this.objectPrefix}/`)) {
+      throw new StoreError('audio object is outside the configured GCS prefix', 'invalid');
+    }
+
+    const expiresAtMs = Date.now() + this.config.signedUrlTtlSeconds * 1000;
+    const expiresAt = new Date(expiresAtMs).toISOString();
+    const [playbackUrl] = await this.storage.bucket(parsed.bucket).file(parsed.objectName).getSignedUrl({
+      action: 'read',
+      version: 'v4',
+      expires: expiresAtMs
+    });
+
+    return {
+      method: 'GET',
+      playbackUrl,
+      expiresAt,
+      contentType: asset.contentType ?? null,
+      byteLength: asset.byteLength,
+      durationMs: asset.durationMs
     };
   }
 

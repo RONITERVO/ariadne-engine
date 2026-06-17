@@ -129,6 +129,23 @@ type LiveTokenResponse = {
   billingMode?: 'byok' | 'paid';
 };
 
+type TimelineTurn = {
+  id: string;
+  turnIndex?: number;
+  userTranscript?: string;
+  assistantTranscript?: string;
+  userAudioAssetId?: string | null;
+  assistantAudioAssetId?: string | null;
+  createdAt?: string;
+  committedAt?: string | null;
+};
+
+type BranchTimelineResponse = {
+  branchId: string;
+  timeline: TimelineTurn[];
+  state?: unknown;
+};
+
 type SpeechRecognitionResultLike = {
   isFinal: boolean;
   0?: { transcript?: string };
@@ -208,6 +225,25 @@ type AudioAssetResponse = {
   };
 };
 
+type AudioPlaybackResponse = {
+  audioPlayback: {
+    method: 'GET';
+    playbackUrl: string;
+    expiresAt: string;
+    contentType?: string | null;
+    byteLength?: number;
+    durationMs?: number;
+  };
+};
+
+type LiveTurnCommitResponse = {
+  turn?: {
+    id?: string;
+    userAudioAssetId?: string | null;
+    assistantAudioAssetId?: string | null;
+  };
+};
+
 type AudioArchiveBlob = {
   blob: Blob;
   contentType: string;
@@ -238,6 +274,15 @@ type LiveTurn = {
   assistantLine: HTMLElement | null;
 };
 
+type TranscriptRole = 'user' | 'model' | 'system';
+
+type TranscriptLineOptions = {
+  scroll?: boolean;
+  audioAssetId?: string | null;
+  turnId?: string;
+  turnIndex?: number;
+};
+
 const STORAGE = {
   key: 'ariadne.geminiKey',
   repoId: 'ariadne.repoId',
@@ -257,9 +302,33 @@ const AUDIO_ARCHIVE_ENCODINGS = [
   { mimeType: 'audio/mp4;codecs=mp4a.40.2', contentType: 'audio/mp4;codecs=mp4a.40.2', codec: 'aac', container: 'mp4', qualityProfile: 'aac-hifi' }
 ] as const;
 
+function initialStoryId(storageKey: typeof STORAGE.repoId | typeof STORAGE.branchId, queryKeys: string[]): string | null {
+  const params = new URLSearchParams(window.location.search);
+  for (const key of queryKeys) {
+    const value = params.get(key)?.trim();
+    if (!value) continue;
+    sessionStorage.setItem(storageKey, value);
+    return value;
+  }
+  return sessionStorage.getItem(storageKey);
+}
+
+function resolveApiBase(): string {
+  const params = new URLSearchParams(window.location.search);
+  const queryApi = params.get('api');
+  if (queryApi) localStorage.setItem(STORAGE.apiBase, queryApi.replace(/\/$/, ''));
+
+  const configured = import.meta.env.VITE_ARIADNE_API_BASE?.replace(/\/$/, '') || import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '');
+  if (configured) return configured;
+  const saved = localStorage.getItem(STORAGE.apiBase);
+  if (saved) return saved.replace(/\/$/, '');
+  if (window.location.hostname === 'localhost' && window.location.port === '5173') return 'http://localhost:3000';
+  return window.location.origin;
+}
+
 const state: RepoState = {
-  repoId: sessionStorage.getItem(STORAGE.repoId),
-  branchId: sessionStorage.getItem(STORAGE.branchId),
+  repoId: initialStoryId(STORAGE.repoId, ['repoId', 'repo']),
+  branchId: initialStoryId(STORAGE.branchId, ['branchId', 'branch']),
   apiBase: resolveApiBase(),
   key: sessionStorage.getItem(STORAGE.key) ?? '',
   config: null,
@@ -289,6 +358,10 @@ let liveStarting: Promise<void> | null = null;
 let audioPlayhead = 0;
 let tokenFlagOpen = false;
 let latestBackendTokens: TokenSnapshot | null = null;
+let transcriptPlaybackAudio: HTMLAudioElement | null = null;
+let transcriptPlaybackLine: HTMLElement | null = null;
+let transcriptPlaybackRequestId = 0;
+let hydratedTranscriptBranchId: string | null = null;
 const localActivityTokens = new Set<ClientToken>();
 const tokenFlagEls: {
   root?: HTMLButtonElement;
@@ -1620,9 +1693,14 @@ async function boot(): Promise<void> {
     }
 
     await ensureRepo();
-    await startMicrophoneBuffer();
     startTranscriptOnlyMode();
-    startRecognitionLoop();
+    await hydrateBranchTranscript();
+    try {
+      await startMicrophoneBuffer();
+      startRecognitionLoop();
+    } catch (error) {
+      addLine('system', `microphone unavailable: ${messageFrom(error)}`);
+    }
   } catch (error) {
     setGateStatus(messageFrom(error));
   } finally {
@@ -1677,6 +1755,55 @@ function startTranscriptOnlyMode(): void {
   removeLocalToken(CLIENT_TOKEN.UI_GATE_OPEN);
   els.gate.classList.add('is-hidden');
   els.transcript.classList.add('is-live');
+}
+
+async function hydrateBranchTranscript(): Promise<void> {
+  const branchId = state.branchId;
+  if (!branchId || hydratedTranscriptBranchId === branchId) return;
+  els.transcript.setAttribute('aria-busy', 'true');
+  try {
+    const payload = await authorizedFetch<BranchTimelineResponse>(
+      `/v1/branches/${encodeURIComponent(branchId)}/timeline`,
+      { method: 'GET' }
+    );
+    if (state.branchId !== branchId) return;
+    renderTimelineTranscript(payload.timeline);
+    hydratedTranscriptBranchId = branchId;
+  } catch (error) {
+    els.transcript.replaceChildren();
+    addLine('system', `transcript unavailable: ${messageFrom(error)}`);
+  } finally {
+    els.transcript.removeAttribute('aria-busy');
+  }
+}
+
+function renderTimelineTranscript(timeline: TimelineTurn[]): void {
+  stopTranscriptPlayback();
+  const fragment = document.createDocumentFragment();
+  for (const turn of timeline) {
+    const userTranscript = turn.userTranscript?.trim();
+    const assistantTranscript = turn.assistantTranscript?.trim();
+    if (userTranscript) {
+      fragment.append(createLine('user', userTranscript, {
+        scroll: false,
+        audioAssetId: turn.userAudioAssetId ?? null,
+        turnId: turn.id,
+        turnIndex: turn.turnIndex
+      }));
+    }
+    if (assistantTranscript) {
+      fragment.append(createLine('model', assistantTranscript, {
+        scroll: false,
+        audioAssetId: turn.assistantAudioAssetId ?? null,
+        turnId: turn.id,
+        turnIndex: turn.turnIndex
+      }));
+    }
+  }
+  els.transcript.replaceChildren(fragment);
+  window.requestAnimationFrame(() => {
+    els.transcript.scrollTop = els.transcript.scrollHeight;
+  });
 }
 
 async function startMicrophoneBuffer(): Promise<void> {
@@ -1945,7 +2072,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
       return {} as { userAudioAssetId?: string; assistantAudioAssetId?: string };
     });
 
-    const result = await authorizedFetch<{ turn?: { id?: string } }>('/v1/story/live-turn', {
+    const result = await authorizedFetch<LiveTurnCommitResponse>('/v1/story/live-turn', {
       method: 'POST',
       providerKey: providerKeyForRequests(),
       body: {
@@ -1960,6 +2087,8 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
       }
     });
     if (result.turn?.id) {
+      setLineAudioAsset(turn.userLine, result.turn.userAudioAssetId ?? audioAssetIds.userAudioAssetId);
+      setLineAudioAsset(turn.assistantLine, result.turn.assistantAudioAssetId ?? audioAssetIds.assistantAudioAssetId);
       sessionStorage.setItem(STORAGE.branchId, state.branchId);
     }
   } catch (error) {
@@ -2369,27 +2498,119 @@ function shouldStartLiveTurn(text: string, isFinal: boolean): boolean {
   return clean.length >= 12 && clean.split(' ').length >= 2;
 }
 
-function updateOrCreateLine(existing: HTMLElement | null, role: 'user' | 'model' | 'system', text: string, interim: boolean): HTMLElement {
+function updateOrCreateLine(existing: HTMLElement | null, role: TranscriptRole, text: string, interim: boolean): HTMLElement {
   const line = existing ?? addLine(role, text);
   line.classList.toggle('interim', interim);
   setLineText(line, text);
   return line;
 }
 
-function addLine(role: 'user' | 'model' | 'system', text: string): HTMLElement {
+function addLine(role: TranscriptRole, text: string, options: TranscriptLineOptions = {}): HTMLElement {
+  const line = createLine(role, text, options);
+  els.transcript.append(line);
+  if (options.scroll !== false) line.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  return line;
+}
+
+function createLine(role: TranscriptRole, text: string, options: TranscriptLineOptions = {}): HTMLElement {
   const line = document.createElement('article');
   line.className = `line ${role}`;
   line.innerHTML = '<span class="role"></span><span class="text"></span>';
   line.querySelector<HTMLElement>('.role')!.textContent = role === 'model' ? 'model' : role;
-  setLineText(line, text);
-  els.transcript.append(line);
-  line.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  if (options.turnId) line.dataset.turnId = options.turnId;
+  if (options.turnIndex !== undefined) line.dataset.turnIndex = String(options.turnIndex);
+  setLineText(line, text, { scroll: false });
+  setLineAudioAsset(line, options.audioAssetId);
   return line;
 }
 
-function setLineText(line: HTMLElement, text: string): void {
+function setLineAudioAsset(line: HTMLElement | null, assetId: string | null | undefined): void {
+  if (!line || !assetId) return;
+  line.dataset.audioAssetId = assetId;
+  line.classList.add('playable');
+  line.tabIndex = 0;
+  line.setAttribute('role', 'button');
+  line.setAttribute('aria-label', `${line.classList.contains('model') ? 'model' : 'user'} transcript audio`);
+  if (line.dataset.audioPlaybackBound === 'true') return;
+  line.dataset.audioPlaybackBound = 'true';
+  line.addEventListener('click', event => {
+    if (window.getSelection()?.toString()) return;
+    void playTranscriptLineAudio(event.currentTarget as HTMLElement);
+  });
+  line.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    void playTranscriptLineAudio(event.currentTarget as HTMLElement);
+  });
+}
+
+async function playTranscriptLineAudio(line: HTMLElement): Promise<void> {
+  const assetId = line.dataset.audioAssetId;
+  const repoId = state.repoId;
+  if (!assetId || !repoId) return;
+  if (line.classList.contains('is-loading-audio')) return;
+  if (transcriptPlaybackLine === line && transcriptPlaybackAudio && !transcriptPlaybackAudio.paused) {
+    stopTranscriptPlayback();
+    return;
+  }
+
+  const requestId = ++transcriptPlaybackRequestId;
+  line.classList.add('is-loading-audio');
+  try {
+    const playback = await authorizedFetch<AudioPlaybackResponse>(
+      `/v1/repos/${encodeURIComponent(repoId)}/audio-assets/${encodeURIComponent(assetId)}/playback-url`,
+      { method: 'GET' }
+    );
+    if (requestId !== transcriptPlaybackRequestId) return;
+    await playTranscriptPlaybackUrl(line, playback.audioPlayback.playbackUrl);
+  } catch (error) {
+    if (requestId === transcriptPlaybackRequestId) addLine('system', `audio playback unavailable: ${messageFrom(error)}`);
+  } finally {
+    line.classList.remove('is-loading-audio');
+  }
+}
+
+async function playTranscriptPlaybackUrl(line: HTMLElement, url: string): Promise<void> {
+  stopTranscriptPlayback();
+  const audio = new Audio(url);
+  transcriptPlaybackAudio = audio;
+  transcriptPlaybackLine = line;
+  line.classList.add('is-playing-audio');
+
+  const cleanup = () => {
+    if (transcriptPlaybackAudio !== audio) return;
+    line.classList.remove('is-playing-audio');
+    transcriptPlaybackAudio = null;
+    transcriptPlaybackLine = null;
+  };
+  audio.addEventListener('ended', cleanup, { once: true });
+  audio.addEventListener('error', () => {
+    cleanup();
+    addLine('system', 'audio playback unavailable');
+  }, { once: true });
+
+  try {
+    await audio.play();
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+}
+
+function stopTranscriptPlayback(): void {
+  const audio = transcriptPlaybackAudio;
+  transcriptPlaybackLine?.classList.remove('is-playing-audio');
+  transcriptPlaybackAudio = null;
+  transcriptPlaybackLine = null;
+  if (!audio) return;
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();
+}
+
+function setLineText(line: HTMLElement, text: string, options: { scroll?: boolean } = {}): void {
   line.querySelector<HTMLElement>('.text')!.textContent = text;
-  line.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  if (options.scroll !== false) line.scrollIntoView({ behavior: 'smooth', block: 'end' });
 }
 
 function updateGateActions(): void {
@@ -2569,19 +2790,6 @@ function tokenSmall(text: string): HTMLElement {
   const small = document.createElement('small');
   small.textContent = text;
   return small;
-}
-
-function resolveApiBase(): string {
-  const params = new URLSearchParams(window.location.search);
-  const queryApi = params.get('api');
-  if (queryApi) localStorage.setItem(STORAGE.apiBase, queryApi.replace(/\/$/, ''));
-
-  const configured = import.meta.env.VITE_ARIADNE_API_BASE?.replace(/\/$/, '') || import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, '');
-  if (configured) return configured;
-  const saved = localStorage.getItem(STORAGE.apiBase);
-  if (saved) return saved.replace(/\/$/, '');
-  if (window.location.hostname === 'localhost' && window.location.port === '5173') return 'http://localhost:3000';
-  return window.location.origin;
 }
 
 function getApiRequestHeaders(headers: Record<string, string> = {}): Record<string, string> {

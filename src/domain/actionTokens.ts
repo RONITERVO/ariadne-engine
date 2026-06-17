@@ -44,6 +44,9 @@ export const ACTION_TOKEN = {
   AUDIO_STORAGE_DISABLED: 'audio:storage-disabled',
   AUDIO_UPLOAD_URL_CREATED: 'audio:upload-url-created',
   AUDIO_OBJECT_VERIFIED: 'audio:object-verified',
+  AUDIO_ASSET_FOUND: 'audio:asset-found',
+  AUDIO_ASSET_MISSING: 'audio:asset-missing',
+  AUDIO_PLAYBACK_URL_CREATED: 'audio:playback-url-created',
 
   MUTATION_BRANCH_LEASE_ACQUIRED: 'mutation:branch-lease-acquired',
   MUTATION_BRANCH_LEASE_ACTIVE: 'mutation:branch-lease-active',
@@ -74,6 +77,7 @@ export const ACTION_ID = {
   STORY_CREATE_AUDIO_UPLOAD: 'story.create-audio-upload',
   STORY_REGISTER_AUDIO_ASSET: 'story.register-audio-asset',
   STORY_LIST_AUDIO_ASSETS: 'story.list-audio-assets',
+  STORY_CREATE_AUDIO_PLAYBACK_URL: 'story.create-audio-playback-url',
   STORY_FORK_BRANCH: 'story.fork-branch',
   STORY_GET_TIMELINE: 'story.get-timeline',
   STORY_TURN: 'story.turn',
@@ -490,13 +494,34 @@ const TOKEN_METADATA: Record<ActionToken, ActionTokenMetadata> = {
     tone: 'ready',
     priority: 79
   },
+  [ACTION_TOKEN.AUDIO_ASSET_FOUND]: {
+    category: 'audio',
+    label: 'Audio asset found',
+    description: 'The requested audio manifest exists for this repo.',
+    tone: 'ready',
+    priority: 80
+  },
+  [ACTION_TOKEN.AUDIO_ASSET_MISSING]: {
+    category: 'audio',
+    label: 'Audio asset missing',
+    description: 'The requested audio manifest was not found for this repo.',
+    tone: 'blocked',
+    priority: 16
+  },
+  [ACTION_TOKEN.AUDIO_PLAYBACK_URL_CREATED]: {
+    category: 'audio',
+    label: 'Playback URL ready',
+    description: 'A short-lived GCS read URL was created for this audio object.',
+    tone: 'ready',
+    priority: 81
+  },
 
   [ACTION_TOKEN.MUTATION_BRANCH_LEASE_ACQUIRED]: {
     category: 'mutation',
     label: 'Branch lease',
     description: 'This action owns the branch mutation lease.',
     tone: 'work',
-    priority: 80
+    priority: 82
   },
   [ACTION_TOKEN.MUTATION_BRANCH_LEASE_ACTIVE]: {
     category: 'mutation',

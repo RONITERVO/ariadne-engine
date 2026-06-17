@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import type { AudioStorageConfig } from '../src/config.js';
-import type { RegisterAudioAssetInput } from '../src/domain/types.js';
+import type { AudioAsset, RegisterAudioAssetInput } from '../src/domain/types.js';
 import {
   GcsAudioObjectStore,
   type GcsBucketClient,
@@ -132,6 +132,31 @@ test('GCS audio verification checks metadata, content type, size, sha256 bytes, 
     encryptionKeyRef: 'projects/p/locations/global/keyRings/r/cryptoKeys/k',
     updatedAt: '2026-06-17T10:00:00.000Z'
   });
+});
+
+test('GCS audio playback URLs are signed read URLs scoped to the configured bucket and prefix', async () => {
+  const storage = new FakeStorage();
+  const store = new GcsAudioObjectStore(config(), storage);
+  const upload = await store.prepareUpload(uploadInput);
+  const asset: AudioAsset = {
+    id: 'asset-1',
+    ...upload.asset,
+    storageProvider: 'gcs',
+    byteLength: upload.asset.byteLength,
+    createdAt: new Date().toISOString()
+  };
+  const objectName = objectNameFromUri(asset.storageUri);
+  const file = storage.bucket('ariadne-audio-test').file(objectName) as FakeFile;
+
+  const playback = await store.createPlaybackUrl(asset);
+
+  assert.equal(playback.method, 'GET');
+  assert.match(playback.playbackUrl, /^https:\/\/storage\.example\//);
+  assert.equal(playback.contentType, 'audio/webm;codecs=opus');
+  assert.equal(playback.byteLength, 12);
+  assert.equal(file.signedUrlConfigs.length, 2);
+  assert.equal(file.signedUrlConfigs[1].action, 'read');
+  assert.equal(file.signedUrlConfigs[1].version, 'v4');
 });
 
 test('GCS audio verification rejects a manifest whose sha256 does not match stored bytes', async () => {

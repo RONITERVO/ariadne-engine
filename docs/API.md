@@ -334,6 +334,23 @@ When GCS audio storage is disabled for local development, this route also accept
 
 Lists audio manifests for a repo. Add `?branchId=...` to narrow the list to one branch.
 
+### `GET /v1/repos/:repoId/audio-assets/:assetId/playback-url`
+
+Returns a short-lived signed `GET` URL for a stored GCS audio asset after validating repo access. Clients should request this when a transcript line is clicked, then play `audioPlayback.playbackUrl` directly with a browser audio element.
+
+```json
+{
+  "audioPlayback": {
+    "method": "GET",
+    "playbackUrl": "https://storage.googleapis.com/...",
+    "expiresAt": "2026-06-17T12:15:00.000Z",
+    "contentType": "audio/webm;codecs=opus",
+    "byteLength": 24000,
+    "durationMs": 1800
+  }
+}
+```
+
 ## Story turns
 
 ### `POST /v1/story/turn`
