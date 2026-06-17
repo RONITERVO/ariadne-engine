@@ -340,6 +340,12 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     return { repos: await store.listRepos(user?.uid), tokens: tokens.snapshot() };
   });
 
+  app.get('/v1/story/latest', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_GET_LATEST);
+    const user = await resolveStoryUser(request, config, tokens);
+    return { story: await findLatestStoryCursor(store, user?.uid), tokens: tokens.snapshot() };
+  });
+
   app.get('/v1/story-map', async request => {
     const tokens = createActionTokenSet(ACTION_ID.STORY_GET_MAP);
     const user = await resolveStoryUser(request, config, tokens);
@@ -846,6 +852,44 @@ function sendWithTokens<T extends object>(
     .send({ ...payload, tokens: snapshot });
 }
 
+async function findLatestStoryCursor(
+  store: StoryStore,
+  ownerUserId?: string
+): Promise<{ repo: StoryRepo; branch: BranchRef } | null> {
+  const repos = await store.listRepos(ownerUserId);
+  let latest: { repo: StoryRepo; branch: BranchRef; branchTime: number; repoTime: number; headRank: number } | null = null;
+
+  for (const repo of repos) {
+    const repoTime = Math.max(dateValue(repo.updatedAt), dateValue(repo.createdAt));
+    const branches = await store.listBranches(repo.id);
+    for (const branch of branches) {
+      const branchTime = Math.max(dateValue(branch.updatedAt), dateValue(branch.createdAt));
+      const headRank = branch.headTurnId ? 1 : 0;
+      if (
+        !latest ||
+        branchTime > latest.branchTime ||
+        (branchTime === latest.branchTime && headRank > latest.headRank) ||
+        (branchTime === latest.branchTime && headRank === latest.headRank && repoTime > latest.repoTime) ||
+        (
+          branchTime === latest.branchTime &&
+          headRank === latest.headRank &&
+          repoTime === latest.repoTime &&
+          `${repo.id}:${branch.id}` > `${latest.repo.id}:${latest.branch.id}`
+        )
+      ) {
+        latest = { repo, branch, branchTime, repoTime, headRank };
+      }
+    }
+  }
+
+  return latest ? { repo: latest.repo, branch: latest.branch } : null;
+}
+
+function dateValue(value: string | null | undefined): number {
+  const parsed = value ? Date.parse(value) : 0;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function sendErrorWithTokens(
   reply: FastifyReply,
   statusCode: number,
@@ -901,6 +945,7 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'POST' && pathname === '/v1/provider/gemini/live-token') return ACTION_ID.PROVIDER_CREATE_LIVE_TOKEN;
   if (method === 'POST' && pathname === '/v1/provider/gemini/live-session/end') return ACTION_ID.PROVIDER_END_LIVE_SESSION;
   if (method === 'GET' && pathname === '/v1/repos') return ACTION_ID.STORY_LIST_REPOS;
+  if (method === 'GET' && pathname === '/v1/story/latest') return ACTION_ID.STORY_GET_LATEST;
   if (method === 'GET' && pathname === '/v1/story-map') return ACTION_ID.STORY_GET_MAP;
   if (method === 'GET' && pathname === '/v1/story-search') return ACTION_ID.STORY_SEARCH;
   if (method === 'GET' && pathname === '/v1/branches/compare') return ACTION_ID.STORY_COMPARE_BRANCHES;

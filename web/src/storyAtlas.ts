@@ -51,6 +51,11 @@ type StoryMapRepoSummary = {
   updatedAt: string;
 };
 
+type PublicConfig = {
+  defaultStoryTitle: string;
+  defaultStoryStyle: string;
+};
+
 type StoryMapResponse = {
   generatedAt: string;
   rootId: string;
@@ -94,6 +99,11 @@ type ForkBranchResponse = {
     name: string;
     headTurnId?: string | null;
   };
+};
+
+type CreateRepoResponse = {
+  repo: { id: string };
+  branch: { id: string };
 };
 
 type StorySearchResult = {
@@ -2025,7 +2035,7 @@ function updateFilterHighlight(): void {
 function activeBranchId(graph: StoryMapResponse): string | null {
   const selected = atlasState.positioned.get(atlasState.selectedId);
   if (selected?.branchId) return selected.branchId;
-  const stored = sessionStorage.getItem(STORAGE.branchId);
+  const stored = localStorage.getItem(STORAGE.branchId) ?? sessionStorage.getItem(STORAGE.branchId);
   if (stored && graph.nodes.some(node => node.branchId === stored)) return stored;
   return graph.nodes.find(node => node.kind === 'branch')?.branchId ?? null;
 }
@@ -2191,6 +2201,10 @@ function actionList(node: StoryMapNode, graph: StoryMapResponse): HTMLElement | 
   const actions = document.createElement('div');
   actions.className = 'atlas-action-stack';
 
+  if (node.kind === 'library') {
+    appendAction(actions, 'Start new story', 'atlas-primary-action', () => void startNewStoryFromAtlas());
+  }
+
   const continueTarget = continueTargetFor(node, graph);
   if (continueTarget) {
     appendAction(actions, 'Continue this branch', 'atlas-primary-action', () => continueBranch(continueTarget.repoId, continueTarget.branchId));
@@ -2268,10 +2282,37 @@ function continueTargetFor(node: StoryMapNode, graph: StoryMapResponse): { repoI
   return null;
 }
 
+async function startNewStoryFromAtlas(): Promise<void> {
+  if (atlasState.simulated) {
+    setAtlasStatus('Demo galaxy cannot create persisted stories. Open a real story map to start a story.');
+    return;
+  }
+  setAtlasStatus('Starting a new story from Observable Universe...');
+  try {
+    const config = await atlasFetch<PublicConfig>('/v1/config');
+    const result = await atlasPost<CreateRepoResponse>('/v1/repos', {
+      title: config.defaultStoryTitle,
+      defaultStyle: config.defaultStoryStyle,
+      safetyProfile: 'general'
+    });
+    persistStoryCursor(result.repo.id, result.branch.id);
+    setAtlasStatus('New story created. Opening the main branch.');
+    window.location.href = storyEntryUrl(result.repo.id, result.branch.id);
+  } catch (error) {
+    setAtlasStatus(messageFrom(error));
+  }
+}
+
 function continueBranch(repoId: string, branchId: string): void {
+  persistStoryCursor(repoId, branchId);
+  window.location.href = storyEntryUrl(repoId, branchId);
+}
+
+function persistStoryCursor(repoId: string, branchId: string): void {
+  localStorage.setItem(STORAGE.repoId, repoId);
+  localStorage.setItem(STORAGE.branchId, branchId);
   sessionStorage.setItem(STORAGE.repoId, repoId);
   sessionStorage.setItem(STORAGE.branchId, branchId);
-  window.location.href = storyEntryUrl(repoId, branchId);
 }
 
 async function forkFromTurn(repoId: string, sourceTurnId: string, selectedLabel: string): Promise<void> {
@@ -2286,8 +2327,7 @@ async function forkFromTurn(repoId: string, sourceTurnId: string, selectedLabel:
   setAtlasStatus(`Creating branch ${name}...`);
   try {
     const result = await atlasPost<ForkBranchResponse>('/v1/branches/fork', { repoId, sourceTurnId, name, forkReason });
-    sessionStorage.setItem(STORAGE.repoId, result.branch.repoId);
-    sessionStorage.setItem(STORAGE.branchId, result.branch.id);
+    persistStoryCursor(result.branch.repoId, result.branch.id);
     setAtlasStatus(`Forked ${result.branch.name}. Opening the new branch.`);
     window.location.href = storyEntryUrl(result.branch.repoId, result.branch.id);
   } catch (error) {

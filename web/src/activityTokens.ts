@@ -6,6 +6,7 @@ export const CLIENT_TOKEN = {
   MEDIA_MICROPHONE_BUFFER: 'media:microphone-buffer',
   STT_LISTENING: 'stt:listening',
   STT_PAUSED_FOR_LIVE_TURN: 'stt:paused-for-live-turn',
+  STT_PAUSED_FOR_PLAYBACK: 'stt:paused-for-playback',
   LIVE_TURN_STARTING: 'live:turn-starting',
   LIVE_TURN_ACTIVE: 'live:turn-active',
   LIVE_INPUT_OPEN: 'live:input-open',
@@ -85,6 +86,13 @@ const CLIENT_TOKEN_DISPLAY: Record<ClientToken, Omit<TokenDisplay, 'token' | 'so
     description: 'Browser speech recognition is paused while Gemini Live owns the turn input.',
     tone: 'state',
     priority: 21
+  },
+  [CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK]: {
+    category: 'stt',
+    label: 'Playback mute',
+    description: 'Browser speech recognition is paused while archived transcript audio is playing.',
+    tone: 'state',
+    priority: 22
   },
   [CLIENT_TOKEN.LIVE_TURN_STARTING]: {
     category: 'live',
