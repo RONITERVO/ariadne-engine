@@ -121,7 +121,7 @@ For any public deployment:
 5. Keep `ARIADNE_ALLOW_MOCK_PROVIDER=false`.
 6. Set `ARIADNE_PAID_USAGE_ENABLED=true`, `ARIADNE_FIREBASE_AUTH_REQUIRED=true`, `GEMINI_API_KEYS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRODUCT_ID`, and `APP_URL`.
 7. Do not log request bodies containing transcripts unless users have explicitly opted in.
-8. Store audio in a private GCS bucket through one-time signed browser upload intents with CRC32C and server-side SHA-256 verification, then save only verified object metadata in Firestore.
+8. Store compressed audio in a private GCS bucket through one-time signed browser upload intents with exact-size, one-write, CRC32C, quality-profile, and server-side SHA-256 verification, then save only verified object metadata in Firestore.
 9. Keep provider keys in `x-ariadne-provider-key`; `Authorization: Bearer` is reserved for Firebase ID tokens.
 10. Update `ARIADNE_MODEL_CATALOG_JSON` whenever enforced Gemini models or prices change.
 
@@ -142,7 +142,7 @@ Transcript-only browser
   |-- validates BYOK keys through Ariadne backend
   |-- auto-creates/continues a branch
   |-- sends Live audio to Gemini after speech is detected
-  |-- uploads preserved turn audio directly to GCS through short-lived one-time signed upload intents
+  |-- uploads compressed preserved turn audio directly to GCS through short-lived one-time signed upload intents
   `-- renders Gemini user/model transcripts
 
 Ariadne API

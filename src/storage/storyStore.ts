@@ -43,6 +43,9 @@ export interface CreateAudioUploadIntentInput {
   crc32c?: string | null;
   codec: string;
   container: string;
+  qualityProfile?: AudioUploadIntent['qualityProfile'];
+  bitrateKbps?: number;
+  channelCount?: number;
   sampleRate?: number;
   durationMs?: number;
   byteLength: number;

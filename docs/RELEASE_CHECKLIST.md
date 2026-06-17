@@ -13,7 +13,7 @@
 - [x] `/v1/story-search` supports time-machine search over transcripts and canon landmarks.
 - [x] `/v1/repos/:repoId/export` supports JSON and Markdown archives.
 - [x] `/v1/repos/:repoId` deletion removes the repo and related local/Firestore story records.
-- [x] `/v1/audio-assets/upload-url` creates server-issued GCS upload intents with required CRC32C, signed object preconditions, and server-side SHA-256 verification.
+- [x] `/v1/audio-assets/upload-url` creates server-issued GCS upload intents with required CRC32C, exact-size signed upload bounds, compressed quality-profile enforcement, signed object preconditions, and server-side SHA-256 verification.
 - [x] `/v1/audio-assets` completes one-time GCS upload tickets and stores verified preserved-audio manifests.
 - [x] Repo deletion removes stored GCS audio objects under the repo prefix before deleting story records.
 - [x] `/v1/repos/:repoId/audio-assets` lists preserved-audio manifests.
@@ -32,7 +32,7 @@
 - [ ] Configure Firebase Google Auth for the hosted frontend and confirm anonymous Auth is disabled.
 - [ ] Set `GEMINI_API_KEYS` and server-key rotation limits.
 - [ ] Configure Stripe Checkout, `STRIPE_WEBHOOK_SECRET`, and dashboard-managed `STRIPE_PRODUCT_ID`.
-- [ ] Create the private GCS audio bucket, CORS policy, lifecycle policy, and service-account IAM bindings.
+- [ ] Create the private GCS audio bucket, apply `gcs.audio.cors.json`, apply `gcs.audio.lifecycle.json`, and configure service-account IAM bindings.
 - [ ] Confirm `/v1/webhooks/stripe` subscribes to `payment_intent.succeeded` and `checkout.session.completed`, then grants credits idempotently.
 - [ ] Confirm overlapping turn requests on the same branch return conflict instead of creating competing heads.
 - [ ] Confirm Live turns include `expectedHeadTurnId` and stale Live commits are rejected.

@@ -31,7 +31,7 @@
 - [x] repo deletion workflow
 - [x] audio asset manifest registration and listing
 - [x] optional audio asset links on Live turn commits
-- [x] direct browser-to-GCS audio upload UX through server-issued upload intents, CRC32C validation, server-side SHA-256 verification, and signed object preconditions
+- [x] direct browser-to-GCS audio upload UX through server-issued upload intents, exact-size signed upload bounds, compressed quality-profile enforcement, CRC32C validation, server-side SHA-256 verification, and signed object preconditions
 - [x] release tests for search/export/audio/canon/compare/delete
 
 ## v1.1: voice-native control layer

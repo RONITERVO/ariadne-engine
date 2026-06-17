@@ -1,4 +1,37 @@
 import { z } from 'zod';
+import { AUDIO_QUALITY_PROFILE_NAMES } from './audioQuality.js';
+
+function hasNoHeaderControlChars(value: string): boolean {
+  return !/[\r\n\0]/.test(value);
+}
+
+function headerSafeString(max: number) {
+  return z.string().trim().max(max).refine(hasNoHeaderControlChars, {
+    message: 'value must not contain control characters'
+  });
+}
+
+function audioMetadataString(max: number) {
+  return z.string().trim().min(1).max(max).refine(hasNoHeaderControlChars, {
+    message: 'value must not contain control characters'
+  });
+}
+
+const AudioContentTypeSchema = z.string().trim().min(3).max(120).refine(hasNoHeaderControlChars, {
+  message: 'value must not contain control characters'
+}).refine(value => /^audio\/[A-Za-z0-9!#$&^_.+-]+(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$/.test(value), {
+  message: 'contentType must be an audio MIME type'
+});
+
+const AudioMetadataStringSchema = audioMetadataString(160);
+const AudioCodecSchema = audioMetadataString(80);
+const AudioQualityProfileSchema = z.enum(AUDIO_QUALITY_PROFILE_NAMES);
+const AudioSha256Schema = z.string().trim().regex(/^[a-f0-9]{64}$/i).transform(value => value.toLowerCase());
+const GcsStorageUriSchema = z.string().trim().min(8).max(2048).regex(/^gs:\/\/[^/]+\/.+$/, {
+  message: 'storageUri must be a gs://bucket/object URI'
+}).refine(hasNoHeaderControlChars, {
+  message: 'value must not contain control characters'
+});
 
 export const EventTypeSchema = z.enum([
   'PLAYER_MOVED',
@@ -111,27 +144,29 @@ const Crc32cSchema = z.string().trim().regex(/^[A-Za-z0-9+/]{6}==$/, {
 
 const AudioManifestBodySchema = z.object({
   uploadId: z.string().trim().min(1).max(160).nullable().optional(),
-  repoId: z.string().min(1),
-  branchId: z.string().min(1).nullable().optional(),
+  repoId: AudioMetadataStringSchema,
+  branchId: AudioMetadataStringSchema.nullable().optional(),
   role: z.enum(['user', 'assistant', 'system']),
   storageProvider: z.enum(['gcs', 'external']).nullable().optional(),
-  storageUri: z.string().trim().min(3).max(2048),
-  contentType: z.string().trim().min(3).max(120).refine(value => value.startsWith('audio/'), {
-    message: 'contentType must be an audio MIME type'
-  }).nullable().optional(),
-  sha256: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  storageUri: GcsStorageUriSchema,
+  contentType: AudioContentTypeSchema.nullable().optional(),
+  sha256: AudioSha256Schema,
   crc32c: Crc32cSchema.nullable().optional(),
-  md5Hash: z.string().trim().min(16).max(64).nullable().optional(),
-  gcsGeneration: z.string().trim().max(80).nullable().optional(),
-  gcsMetageneration: z.string().trim().max(80).nullable().optional(),
-  codec: z.string().trim().min(1).max(80),
-  container: z.string().trim().min(1).max(80),
+  md5Hash: headerSafeString(64).nullable().optional(),
+  gcsGeneration: headerSafeString(80).nullable().optional(),
+  gcsMetageneration: headerSafeString(80).nullable().optional(),
+  gcsEtag: headerSafeString(256).nullable().optional(),
+  codec: AudioCodecSchema,
+  container: AudioCodecSchema,
+  qualityProfile: AudioQualityProfileSchema.nullable().optional(),
+  bitrateKbps: z.number().int().min(1).max(2000).optional(),
+  channelCount: z.number().int().min(1).max(8).optional(),
   sampleRate: z.number().int().min(1).max(384000).optional(),
   durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
   byteLength: z.number().int().min(0).max(10 * 1024 * 1024 * 1024).optional(),
-  encryptionKeyRef: z.string().trim().max(512).nullable().optional(),
-  uploadedAt: z.string().trim().max(80).nullable().optional(),
-  verifiedAt: z.string().trim().max(80).nullable().optional()
+  encryptionKeyRef: headerSafeString(512).nullable().optional(),
+  uploadedAt: headerSafeString(80).nullable().optional(),
+  verifiedAt: headerSafeString(80).nullable().optional()
 });
 
 const AudioUploadRegistrationBodySchema = z.object({
@@ -142,16 +177,17 @@ const AudioUploadRegistrationBodySchema = z.object({
 export const AudioAssetBodySchema = z.union([AudioUploadRegistrationBodySchema, AudioManifestBodySchema]);
 
 export const AudioUploadUrlBodySchema = z.object({
-  repoId: z.string().min(1),
-  branchId: z.string().min(1).nullable().optional(),
+  repoId: AudioMetadataStringSchema,
+  branchId: AudioMetadataStringSchema.nullable().optional(),
   role: z.enum(['user', 'assistant', 'system']),
-  contentType: z.string().trim().min(3).max(120).refine(value => value.startsWith('audio/'), {
-    message: 'contentType must be an audio MIME type'
-  }),
-  sha256: z.string().trim().regex(/^[a-f0-9]{64}$/i),
+  contentType: AudioContentTypeSchema,
+  sha256: AudioSha256Schema,
   crc32c: Crc32cSchema,
-  codec: z.string().trim().min(1).max(80),
-  container: z.string().trim().min(1).max(80),
+  codec: AudioCodecSchema,
+  container: AudioCodecSchema,
+  qualityProfile: AudioQualityProfileSchema.optional(),
+  bitrateKbps: z.number().int().min(1).max(2000).optional(),
+  channelCount: z.number().int().min(1).max(8).optional(),
   sampleRate: z.number().int().min(1).max(384000).optional(),
   durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
   byteLength: z.number().int().min(1).max(10 * 1024 * 1024 * 1024)

@@ -39,6 +39,20 @@ type PublicConfig = {
   liveBillableSeconds: number;
   audioStorageEnabled: boolean;
   audioMaxBytes: number;
+  audioDefaultQualityProfile: string;
+  audioAllowedQualityProfiles: string[];
+  audioQualityProfiles: Record<string, AudioQualityPolicy>;
+};
+
+type AudioQualityPolicy = {
+  profile: string;
+  codec: string;
+  containers: string[];
+  contentTypes: string[];
+  targetBitrateKbps: number;
+  maxBitrateKbps: number;
+  maxSampleRate: number;
+  maxChannelCount: number;
 };
 
 type AdminDocument = {
@@ -162,10 +176,14 @@ type AudioUploadAsset = {
   branchId?: string | null;
   role: 'user' | 'assistant' | 'system';
   storageUri: string;
+  contentType?: string | null;
   sha256: string;
   crc32c?: string | null;
   codec: string;
   container: string;
+  qualityProfile?: string | null;
+  bitrateKbps?: number;
+  channelCount?: number;
   sampleRate?: number;
   durationMs?: number;
   byteLength?: number;
@@ -195,6 +213,9 @@ type AudioArchiveBlob = {
   contentType: string;
   codec: string;
   container: string;
+  qualityProfile: string;
+  bitrateKbps: number;
+  channelCount: number;
   sampleRate?: number;
   durationMs?: number;
 };
@@ -230,6 +251,11 @@ const POST_ROLL_MS = 2000;
 const SPEECH_IDLE_MS = 1500;
 const PCM_BUFFER_MS = 10_000;
 const EMPTY_LIVE_TURN_TIMEOUT_MS = 12_000;
+const AUDIO_ARCHIVE_ENCODINGS = [
+  { mimeType: 'audio/webm;codecs=opus', contentType: 'audio/webm;codecs=opus', codec: 'opus', container: 'webm', qualityProfile: 'voice-hifi' },
+  { mimeType: 'audio/ogg;codecs=opus', contentType: 'audio/ogg;codecs=opus', codec: 'opus', container: 'ogg', qualityProfile: 'voice-hifi' },
+  { mimeType: 'audio/mp4;codecs=mp4a.40.2', contentType: 'audio/mp4;codecs=mp4a.40.2', codec: 'aac', container: 'mp4', qualityProfile: 'aac-hifi' }
+] as const;
 
 const state: RepoState = {
   repoId: sessionStorage.getItem(STORAGE.repoId),
@@ -1626,7 +1652,10 @@ async function ensureRepo(): Promise<void> {
     minCheckoutAmountCents: 500,
     liveBillableSeconds: 30,
     audioStorageEnabled: false,
-    audioMaxBytes: 0
+    audioMaxBytes: 0,
+    audioDefaultQualityProfile: 'voice-hifi',
+    audioAllowedQualityProfiles: ['voice-hifi'],
+    audioQualityProfiles: {}
   };
   const result = await authorizedFetch<{ repo: { id: string }; branch: { id: string } }>('/v1/repos', {
     method: 'POST',
@@ -1955,7 +1984,7 @@ async function uploadLiveTurnAudioAssets(turn: LiveTurn): Promise<{ userAudioAss
 
 async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedAudioChunk[]): Promise<string | undefined> {
   if (!state.repoId || !state.branchId || !chunks.length) return undefined;
-  const archive = audioChunksToArchive(chunks);
+  const archive = await audioChunksToArchive(chunks);
   if (!archive || archive.blob.size <= 0) return undefined;
   const maxBytes = state.config?.audioMaxBytes ?? 0;
   if (maxBytes > 0 && archive.blob.size > maxBytes) {
@@ -1976,7 +2005,10 @@ async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedA
       container: archive.container,
       sampleRate: archive.sampleRate,
       durationMs: archive.durationMs,
-      byteLength: archive.blob.size
+      byteLength: archive.blob.size,
+      qualityProfile: archive.qualityProfile,
+      bitrateKbps: archive.bitrateKbps,
+      channelCount: archive.channelCount
     }
   });
 
@@ -2000,31 +2032,79 @@ async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedA
   return registered.audioAsset.id;
 }
 
-function audioChunksToArchive(chunks: CapturedAudioChunk[]): AudioArchiveBlob | null {
+async function audioChunksToArchive(chunks: CapturedAudioChunk[]): Promise<AudioArchiveBlob | null> {
   if (!chunks.length) return null;
   const pcmSampleRate = parsePcmSampleRate(chunks[0].mimeType);
-  const allPcm = pcmSampleRate && chunks.every(chunk => parsePcmSampleRate(chunk.mimeType) === pcmSampleRate);
-  if (allPcm) {
-    const pcmBytes = concatUint8Arrays(chunks.map(chunk => base64ToUint8Array(chunk.data)));
-    const wavBytes = wavFromPcm16(pcmBytes, pcmSampleRate);
+  const allPcm = pcmSampleRate !== null && chunks.every(chunk => parsePcmSampleRate(chunk.mimeType) === pcmSampleRate);
+  if (!allPcm) return null;
+
+  const pcmBytes = concatUint8Arrays(chunks.map(chunk => base64ToUint8Array(chunk.data)));
+  const durationMs = Math.round((pcmBytes.byteLength / 2 / pcmSampleRate) * 1000);
+  return compressedArchiveFromPcm16(pcmBytes, pcmSampleRate, durationMs);
+}
+
+type BrowserAudioArchiveEncoding = {
+  mimeType: string;
+  contentType: string;
+  codec: string;
+  container: string;
+  qualityProfile: string;
+  bitrateKbps: number;
+  channelCount: number;
+};
+
+async function compressedArchiveFromPcm16(pcmBytes: Uint8Array, sampleRate: number, durationMs: number): Promise<AudioArchiveBlob | null> {
+  const encoding = preferredAudioArchiveEncoding();
+  if (!encoding) return null;
+  try {
+    const blob = await encodePcm16WithMediaRecorder(pcmBytes, sampleRate, encoding.mimeType, encoding.bitrateKbps, durationMs);
+    if (blob.size <= 0) return null;
     return {
-      blob: new Blob([arrayBufferFromBytes(wavBytes)], { type: 'audio/wav' }),
-      contentType: 'audio/wav',
-      codec: 'pcm_s16le',
-      container: 'wav',
-      sampleRate: pcmSampleRate,
-      durationMs: Math.round((pcmBytes.byteLength / 2 / pcmSampleRate) * 1000)
+      blob,
+      contentType: blob.type || encoding.contentType,
+      codec: encoding.codec,
+      container: encoding.container,
+      qualityProfile: encoding.qualityProfile,
+      bitrateKbps: encoding.bitrateKbps,
+      channelCount: encoding.channelCount,
+      sampleRate,
+      durationMs
+    };
+  } catch {
+    return null;
+  }
+}
+
+function preferredAudioArchiveEncoding(): BrowserAudioArchiveEncoding | null {
+  if (typeof MediaRecorder === 'undefined') return null;
+  const allowedProfiles = new Set(state.config?.audioAllowedQualityProfiles ?? ['voice-hifi']);
+  for (const candidate of AUDIO_ARCHIVE_ENCODINGS) {
+    if (!MediaRecorder.isTypeSupported(candidate.mimeType)) continue;
+    const qualityProfile = resolveEncodingProfile(candidate.codec, candidate.qualityProfile, allowedProfiles);
+    if (!qualityProfile) continue;
+    const policy = state.config?.audioQualityProfiles?.[qualityProfile];
+    return {
+      mimeType: candidate.mimeType,
+      contentType: candidate.contentType,
+      codec: candidate.codec,
+      container: candidate.container,
+      qualityProfile,
+      bitrateKbps: policy?.targetBitrateKbps ?? (candidate.codec === 'aac' ? 128 : 96),
+      channelCount: Math.min(1, policy?.maxChannelCount ?? 1)
     };
   }
+  return null;
+}
 
-  const bytes = concatUint8Arrays(chunks.map(chunk => base64ToUint8Array(chunk.data)));
-  const contentType = chunks[0].mimeType.split(';')[0] || 'audio/octet-stream';
-  return {
-    blob: new Blob([arrayBufferFromBytes(bytes)], { type: contentType }),
-    contentType,
-    codec: codecFromMimeType(contentType),
-    container: containerFromMimeType(contentType)
-  };
+function resolveEncodingProfile(codec: string, fallbackProfile: string, allowedProfiles: Set<string>): string | null {
+  const defaultProfile = state.config?.audioDefaultQualityProfile;
+  const profiles = state.config?.audioQualityProfiles ?? {};
+  if (defaultProfile && allowedProfiles.has(defaultProfile) && profiles[defaultProfile]?.codec === codec) return defaultProfile;
+  if (allowedProfiles.has(fallbackProfile) && (!profiles[fallbackProfile] || profiles[fallbackProfile].codec === codec)) return fallbackProfile;
+  for (const profile of allowedProfiles) {
+    if (profiles[profile]?.codec === codec) return profile;
+  }
+  return null;
 }
 
 function parsePcmSampleRate(mimeType: string): number | null {
@@ -2033,32 +2113,74 @@ function parsePcmSampleRate(mimeType: string): number | null {
   return Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : null;
 }
 
-function wavFromPcm16(pcmBytes: Uint8Array, sampleRate: number): Uint8Array {
-  const channels = 1;
-  const bitsPerSample = 16;
-  const blockAlign = channels * bitsPerSample / 8;
-  const byteRate = sampleRate * blockAlign;
-  const buffer = new ArrayBuffer(44 + pcmBytes.byteLength);
-  const view = new DataView(buffer);
-  writeAscii(view, 0, 'RIFF');
-  view.setUint32(4, 36 + pcmBytes.byteLength, true);
-  writeAscii(view, 8, 'WAVE');
-  writeAscii(view, 12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, channels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, bitsPerSample, true);
-  writeAscii(view, 36, 'data');
-  view.setUint32(40, pcmBytes.byteLength, true);
-  new Uint8Array(buffer, 44).set(pcmBytes);
-  return new Uint8Array(buffer);
+async function encodePcm16WithMediaRecorder(
+  pcmBytes: Uint8Array,
+  sampleRate: number,
+  mimeType: string,
+  bitrateKbps: number,
+  durationMs: number
+): Promise<Blob> {
+  if (typeof MediaRecorder === 'undefined') throw new Error('MediaRecorder is unavailable');
+  const context = new AudioContext({ sampleRate });
+  await context.resume();
+  const sampleCount = Math.floor(pcmBytes.byteLength / 2);
+  const buffer = context.createBuffer(1, sampleCount, sampleRate);
+  copyPcm16ToAudioChannel(pcmBytes, buffer.getChannelData(0));
+  const destination = context.createMediaStreamDestination();
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.connect(destination);
+
+  try {
+    return await new Promise<Blob>((resolve, reject) => {
+      const encodedChunks: Blob[] = [];
+      const recorder = new MediaRecorder(destination.stream, {
+        mimeType,
+        audioBitsPerSecond: bitrateKbps * 1000
+      });
+      let settled = false;
+      const timeoutMs = Math.max(durationMs + 5_000, 10_000);
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        source.disconnect();
+        destination.stream.getTracks().forEach(track => track.stop());
+        callback();
+      };
+      const timeout = window.setTimeout(() => {
+        if (recorder.state !== 'inactive') recorder.stop();
+        finish(() => reject(new Error('audio archive encoder timed out')));
+      }, timeoutMs);
+
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) encodedChunks.push(event.data);
+      };
+      recorder.onerror = event => {
+        const error = (event as ErrorEvent & { error?: DOMException }).error;
+        finish(() => reject(new Error(error?.message || 'audio archive encoder failed')));
+      };
+      recorder.onstop = () => {
+        const type = recorder.mimeType || mimeType;
+        finish(() => resolve(new Blob(encodedChunks, { type })));
+      };
+      source.onended = () => {
+        if (recorder.state !== 'inactive') recorder.stop();
+      };
+
+      recorder.start();
+      source.start();
+    });
+  } finally {
+    await context.close().catch(() => {});
+  }
 }
 
-function writeAscii(view: DataView, offset: number, value: string): void {
-  for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
+function copyPcm16ToAudioChannel(pcmBytes: Uint8Array, channel: Float32Array): void {
+  const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+  for (let i = 0; i < channel.length; i += 1) {
+    channel[i] = view.getInt16(i * 2, true) / 32768;
+  }
 }
 
 function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
@@ -2070,10 +2192,6 @@ function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
     offset += chunk.byteLength;
   }
   return output;
-}
-
-function arrayBufferFromBytes(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 async function audioChecksums(blob: Blob): Promise<{ sha256: string; crc32c: string }> {
@@ -2113,22 +2231,6 @@ function crc32cBase64(bytes: Uint8Array): string {
     crc & 0xff
   ]);
   return btoa(String.fromCharCode(...out));
-}
-
-function codecFromMimeType(contentType: string): string {
-  if (contentType.includes('webm')) return 'opus';
-  if (contentType.includes('ogg')) return 'opus';
-  if (contentType.includes('wav')) return 'pcm_s16le';
-  if (contentType.includes('mpeg')) return 'mp3';
-  return 'unknown';
-}
-
-function containerFromMimeType(contentType: string): string {
-  if (contentType.includes('webm')) return 'webm';
-  if (contentType.includes('ogg')) return 'ogg';
-  if (contentType.includes('wav')) return 'wav';
-  if (contentType.includes('mpeg')) return 'mp3';
-  return 'bin';
 }
 
 async function buyCredits(): Promise<void> {

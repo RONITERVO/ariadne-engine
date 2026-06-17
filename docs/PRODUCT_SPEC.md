@@ -32,7 +32,7 @@ The default experience has a short setup gate: sign in for prepaid credits or pa
 3. User speaks a line or action.
 4. Browser speech recognition detects speech start; it is not the transcript authority.
 5. Gemini Live receives the user's audio and returns user transcript, model transcript, and model audio.
-6. Ariadne uploads preserved per-turn user/model audio to GCS through one-time signed upload intents, verifies the objects, commits the Live transcripts with audio asset links, canonizes the turn, and resumes listening.
+6. Ariadne uploads compressed preserved per-turn user/model audio to GCS through one-time signed upload intents, verifies exact size, CRC32C, quality profile, and server-side SHA-256, commits the Live transcripts with audio asset links, canonizes the turn, and resumes listening.
 7. The user can open `/map` to navigate the story galaxy, search memory, fork timelines, replay branches, compare branches, export archives, or delete a story world.
 
 ## Story-control flows
@@ -69,7 +69,7 @@ The AI proposes a patch. The deterministic state compiler applies only valid sta
 
 ### Audio has a release-safe storage contract
 
-1.0 supports direct browser-to-GCS uploads through server-issued upload intents, one-time ticket completion through `/v1/audio-assets`, and turn-level `userAudioAssetId` / `assistantAudioAssetId` links. Ariadne stores only verified metadata, checksums, GCS URIs, object generation/metageneration, codec/container data, and key references in Firestore; raw audio remains in the private bucket and is deleted when the repo is deleted.
+1.0 supports direct browser-to-GCS uploads through server-issued upload intents, one-time ticket completion through `/v1/audio-assets`, and turn-level `userAudioAssetId` / `assistantAudioAssetId` links. Ariadne stores only verified metadata, checksums, GCS URIs, object generation/metageneration, quality profile, codec/container data, and key references in Firestore; raw audio remains in the private bucket and is deleted when the repo is deleted.
 
 ### Export and deletion are product features
 

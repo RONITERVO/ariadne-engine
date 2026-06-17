@@ -7,12 +7,20 @@ import {
   type ModelCatalog
 } from './billing/modelCatalog.js';
 import type { BillingConfig } from './billing/usageBilling.js';
+import {
+  DEFAULT_AUDIO_QUALITY_PROFILE,
+  parseAllowedAudioQualityProfiles,
+  parseAudioQualityProfile,
+  type AudioQualityProfile
+} from './domain/audioQuality.js';
 
 export interface AudioStorageConfig {
   gcsBucket?: string;
   objectPrefix: string;
   signedUrlTtlSeconds: number;
   maxBytes: number;
+  defaultQualityProfile: AudioQualityProfile;
+  allowedQualityProfiles: AudioQualityProfile[];
 }
 
 export interface AppConfig {
@@ -86,8 +94,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     gcsBucket: readOptionalTrimmed(env.ARIADNE_AUDIO_GCS_BUCKET),
     objectPrefix: normalizeObjectPrefix(env.ARIADNE_AUDIO_GCS_PREFIX ?? 'audio'),
     signedUrlTtlSeconds: readInt(env.ARIADNE_AUDIO_UPLOAD_URL_TTL_SECONDS, 15 * 60, { min: 60, max: 60 * 60 }),
-    maxBytes: readInt(env.ARIADNE_AUDIO_MAX_BYTES, 100 * 1024 * 1024, { min: 1024, max: 10 * 1024 * 1024 * 1024 })
+    maxBytes: readInt(env.ARIADNE_AUDIO_MAX_BYTES, 50 * 1024 * 1024, { min: 1024, max: 10 * 1024 * 1024 * 1024 }),
+    defaultQualityProfile: parseAudioQualityProfile(env.ARIADNE_AUDIO_DEFAULT_QUALITY_PROFILE, DEFAULT_AUDIO_QUALITY_PROFILE),
+    allowedQualityProfiles: parseAllowedAudioQualityProfiles(env.ARIADNE_AUDIO_ALLOWED_QUALITY_PROFILES)
   };
+  if (!audioStorage.allowedQualityProfiles.includes(audioStorage.defaultQualityProfile)) {
+    throw new Error('ARIADNE_AUDIO_DEFAULT_QUALITY_PROFILE must be present in ARIADNE_AUDIO_ALLOWED_QUALITY_PROFILES');
+  }
 
   if (appEnv === 'production') {
     assertProductionSafe({

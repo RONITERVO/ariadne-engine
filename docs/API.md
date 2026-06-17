@@ -48,7 +48,18 @@ Returns frontend-safe public configuration. It never returns provider keys or se
   "billingCurrency": "usd",
   "liveBillableSeconds": 30,
   "audioStorageEnabled": true,
-  "audioMaxBytes": 104857600
+  "audioMaxBytes": 52428800,
+  "audioDefaultQualityProfile": "voice-hifi",
+  "audioAllowedQualityProfiles": ["voice-balanced", "voice-hifi", "music-hifi", "aac-hifi"],
+  "audioQualityProfiles": {
+    "voice-hifi": {
+      "codec": "opus",
+      "targetBitrateKbps": 96,
+      "maxBitrateKbps": 128,
+      "maxSampleRate": 48000,
+      "maxChannelCount": 1
+    }
+  }
 }
 ```
 
@@ -189,7 +200,7 @@ The JSON payload contains `schemaVersion`, `repo`, `branches`, timelines, compil
 
 ### `DELETE /v1/repos/:repoId`
 
-Deletes the repo and its branches, turns, snapshots, branch locks, and audio manifests from the configured story store.
+Deletes the repo and its branches, turns, snapshots, branch locks, audio manifests, and, when GCS audio storage is enabled, objects under that repo's configured audio prefix.
 
 ```json
 { "ok": true, "deletedRepoId": "..." }
@@ -199,19 +210,24 @@ Deletes the repo and its branches, turns, snapshots, branch locks, and audio man
 
 Creates a short-lived, server-issued GCS upload intent and a signed `PUT` URL for one preserved audio object. The browser computes SHA-256 and CRC32C before calling this route, uploads the bytes directly to GCS using **all** returned headers, then completes the ticket through `POST /v1/audio-assets`.
 
+Production defaults are cost-managed. Uncompressed WAV/PCM is rejected by the GCS upload policy; clients should upload Opus WebM/Ogg or AAC MP4 using an allowed quality profile. The default `voice-hifi` profile targets 96 kbps Opus mono and allows up to 128 kbps plus mux overhead.
+
 ```json
 {
   "repoId": "...",
   "branchId": "...",
   "role": "user",
-  "contentType": "audio/wav",
+  "contentType": "audio/webm;codecs=opus",
   "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "crc32c": "AAAAAA==",
-  "codec": "pcm_s16le",
-  "container": "wav",
+  "codec": "opus",
+  "container": "webm",
+  "qualityProfile": "voice-hifi",
+  "bitrateKbps": 96,
+  "channelCount": 1,
   "sampleRate": 48000,
   "durationMs": 1800,
-  "byteLength": 172844
+  "byteLength": 24000
 }
 ```
 
@@ -224,16 +240,36 @@ Response:
     "uploadUrl": "https://storage.googleapis.com/...",
     "uploadId": "server-issued-one-time-ticket",
     "expiresAt": "2026-06-17T12:15:00.000Z",
+    "maxBytes": 50944,
+    "qualityPolicy": {
+      "profile": "voice-hifi",
+      "codec": "opus",
+      "targetBitrateKbps": 96,
+      "maxBitrateKbps": 128,
+      "maxSampleRate": 48000,
+      "maxChannelCount": 1
+    },
     "headers": {
-      "content-type": "audio/wav",
+      "content-type": "audio/webm;codecs=opus",
+      "cache-control": "private, max-age=31536000, immutable",
+      "x-goog-content-length-range": "24000,24000",
       "x-goog-if-generation-match": "0",
       "x-goog-hash": "crc32c=AAAAAA==",
       "x-goog-meta-ariadne-upload-id": "server-issued-one-time-ticket",
       "x-goog-meta-ariadne-repo-id": "...",
       "x-goog-meta-ariadne-branch-id": "...",
       "x-goog-meta-ariadne-role": "user",
+      "x-goog-meta-ariadne-content-type": "audio/webm;codecs=opus",
       "x-goog-meta-ariadne-sha256": "...",
-      "x-goog-meta-ariadne-crc32c": "AAAAAA=="
+      "x-goog-meta-ariadne-crc32c": "AAAAAA==",
+      "x-goog-meta-ariadne-codec": "opus",
+      "x-goog-meta-ariadne-container": "webm",
+      "x-goog-meta-ariadne-quality-profile": "voice-hifi",
+      "x-goog-meta-ariadne-bitrate-kbps": "96",
+      "x-goog-meta-ariadne-channel-count": "1",
+      "x-goog-meta-ariadne-byte-length": "24000",
+      "x-goog-meta-ariadne-sample-rate": "48000",
+      "x-goog-meta-ariadne-duration-ms": "1800"
     },
     "asset": {
       "uploadId": "server-issued-one-time-ticket",
@@ -241,15 +277,18 @@ Response:
       "branchId": "...",
       "role": "user",
       "storageProvider": "gcs",
-      "storageUri": "gs://bucket/live-audio/repos/.../branches/.../user/2026-06-17/uploads/object.wav",
-      "contentType": "audio/wav",
+      "storageUri": "gs://bucket/live-audio/repos/.../branches/.../user/voice-hifi/2026-06-17/uploads/object.webm",
+      "contentType": "audio/webm;codecs=opus",
       "sha256": "...",
       "crc32c": "AAAAAA==",
-      "codec": "pcm_s16le",
-      "container": "wav",
+      "codec": "opus",
+      "container": "webm",
+      "qualityProfile": "voice-hifi",
+      "bitrateKbps": 96,
+      "channelCount": 1,
       "sampleRate": 48000,
       "durationMs": 1800,
-      "byteLength": 172844,
+      "byteLength": 24000,
       "encryptionKeyRef": null
     }
   }
@@ -258,7 +297,7 @@ Response:
 
 ### `POST /v1/audio-assets`
 
-Completes an uploaded GCS audio intent. In production, the client sends only the repo ID and upload ID. Ariadne loads the stored upload intent, verifies that the GCS object exists in the configured bucket/prefix, checks the server-signed metadata, byte length, MIME type, CRC32C, server-streamed SHA-256, generation, and metageneration, then writes the durable audio manifest. The completion call is idempotent after a ticket has already been verified.
+Completes an uploaded GCS audio intent. In production, the client sends only the repo ID and upload ID. Ariadne loads the stored upload intent, verifies that the GCS object exists in the configured bucket/prefix, checks the server-signed metadata, byte length, MIME type, CRC32C, quality profile, server-streamed SHA-256, generation, metageneration, ETag, and KMS key reference, then writes the durable audio manifest. The completion call is idempotent after a ticket has already been verified.
 
 ```json
 {
@@ -276,11 +315,14 @@ When GCS audio storage is disabled for local development, this route also accept
   "role": "user",
   "storageProvider": "external",
   "storageUri": "gs://bucket/path/user-turn-1.webm",
-  "contentType": "audio/webm",
+  "contentType": "audio/webm;codecs=opus",
   "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "crc32c": "AAAAAA==",
   "codec": "opus",
   "container": "webm",
+  "qualityProfile": "voice-hifi",
+  "bitrateKbps": 96,
+  "channelCount": 1,
   "sampleRate": 48000,
   "durationMs": 1800,
   "byteLength": 4096,

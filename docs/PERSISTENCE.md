@@ -96,9 +96,9 @@ audioUploads/{uploadId}   pending one-time GCS upload intent
 audioAssets/{assetId}     verified durable audio manifest linked from turns
 ```
 
-`audioUploads` records are server-issued tickets. They capture repo, branch, role, storage URI, content type, SHA-256, CRC32C, codec, container, sample rate, duration, byte length, owner, expiry, and status. The browser must upload to the signed URL with the exact returned headers, including the CRC32C `x-goog-hash` and `x-goog-if-generation-match: 0` precondition.
+`audioUploads` records are server-issued tickets. They capture repo, branch, role, storage URI, content type, SHA-256, CRC32C, codec, container, quality profile, bitrate, channel count, sample rate, duration, byte length, owner, expiry, and status. The browser must upload to the signed URL with the exact returned headers, including `x-goog-content-length-range`, CRC32C `x-goog-hash`, and the `x-goog-if-generation-match: 0` one-write precondition.
 
-`audioAssets` records are written only after the API verifies the uploaded GCS object, including a server-streamed SHA-256 check against the upload intent. They store the original intent fields plus object verification metadata: GCS generation, metageneration, object CRC32C, MD5 when available, upload timestamp, and verification timestamp. Turns link to these manifests through `userAudioAssetId` and `assistantAudioAssetId`; raw audio bytes stay in the private GCS bucket.
+`audioAssets` records are written only after the API verifies the uploaded GCS object, including a server-streamed SHA-256 check against the upload intent. They store the original intent fields plus object verification metadata: GCS generation, metageneration, ETag, object CRC32C, MD5 when available, KMS key reference when present, upload timestamp, and verification timestamp. Turns link to these manifests through `userAudioAssetId` and `assistantAudioAssetId`; raw audio bytes stay in the private GCS bucket.
 
 Recommended future fields:
 

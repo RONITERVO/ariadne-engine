@@ -71,6 +71,7 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
   const config = await app.inject({ method: 'GET', url: '/v1/config' });
   assert.equal(config.statusCode, 200);
   assert.equal(config.json().audioStorageEnabled, true);
+  assert.equal(config.json().audioDefaultQualityProfile, 'voice-hifi');
 
   const created = await app.inject({
     method: 'POST',
@@ -87,21 +88,26 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
       repoId: repo.repo.id,
       branchId: repo.branch.id,
       role: 'user',
-      contentType: 'audio/wav',
+      contentType: 'audio/webm;codecs=opus',
       sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
       crc32c: 'AAAAAA==',
-      codec: 'pcm_s16le',
-      container: 'wav',
+      codec: 'opus',
+      container: 'webm',
+      qualityProfile: 'voice-hifi',
+      bitrateKbps: 96,
+      channelCount: 1,
       sampleRate: 48000,
       durationMs: 250,
-      byteLength: 24000
+      byteLength: 12000
     }
   });
   assert.equal(upload.statusCode, 201);
   const uploadPayload = upload.json() as { audioUpload: PreparedAudioUpload; tokens: { activeTokens: string[] } };
   assert.equal(uploadPayload.audioUpload.method, 'PUT');
-  assert.equal(uploadPayload.audioUpload.asset.storageUri, `gs://fake-audio/${repo.repo.id}/user.wav`);
-  assert.equal(uploadPayload.audioUpload.headers['content-type'], 'audio/wav');
+  assert.equal(uploadPayload.audioUpload.asset.storageUri, `gs://fake-audio/${repo.repo.id}/user.webm`);
+  assert.equal(uploadPayload.audioUpload.headers['content-type'], 'audio/webm;codecs=opus');
+  assert.equal(uploadPayload.audioUpload.headers['x-goog-content-length-range'], '12000,12000');
+  assert.equal(uploadPayload.audioUpload.asset.qualityProfile, 'voice-hifi');
   assert.ok(uploadPayload.tokens.activeTokens.includes(ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED));
 
   const registered = await app.inject({
@@ -111,10 +117,11 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
   });
   assert.equal(registered.statusCode, 201);
   assert.equal(audioObjects.verified.length, 1);
-  const audioAsset = (registered.json() as { audioAsset: { id: string; storageUri: string; uploadId: string; crc32c?: string }; tokens: { activeTokens: string[] } }).audioAsset;
+  const audioAsset = (registered.json() as { audioAsset: { id: string; storageUri: string; uploadId: string; crc32c?: string; qualityProfile?: string }; tokens: { activeTokens: string[] } }).audioAsset;
   assert.equal(audioAsset.storageUri, uploadPayload.audioUpload.asset.storageUri);
   assert.equal(audioAsset.uploadId, uploadPayload.audioUpload.uploadId);
   assert.equal(audioAsset.crc32c, 'AAAAAA==');
+  assert.equal(audioAsset.qualityProfile, 'voice-hifi');
 
   const liveTurn = await app.inject({
     method: 'POST',
@@ -365,8 +372,20 @@ class FakeAudioObjectStore implements AudioObjectStore {
       uploadId,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       maxBytes: 10 * 1024 * 1024,
+      qualityPolicy: {
+        profile: input.qualityProfile ?? 'voice-hifi',
+        codec: input.codec,
+        containers: [input.container],
+        contentTypes: [input.contentType],
+        targetBitrateKbps: input.bitrateKbps ?? 96,
+        maxBitrateKbps: 128,
+        maxSampleRate: 48000,
+        maxChannelCount: 1
+      },
       headers: {
         'content-type': input.contentType,
+        'cache-control': 'private, max-age=31536000, immutable',
+        'x-goog-content-length-range': `${input.byteLength},${input.byteLength}`,
         'x-goog-if-generation-match': '0',
         'x-goog-hash': input.crc32c ? `crc32c=${input.crc32c}` : '',
         'x-goog-meta-ariadne-upload-id': uploadId,
@@ -377,6 +396,9 @@ class FakeAudioObjectStore implements AudioObjectStore {
         'x-goog-meta-ariadne-crc32c': input.crc32c ?? '',
         'x-goog-meta-ariadne-codec': input.codec,
         'x-goog-meta-ariadne-container': input.container,
+        'x-goog-meta-ariadne-quality-profile': input.qualityProfile ?? 'voice-hifi',
+        'x-goog-meta-ariadne-bitrate-kbps': String(input.bitrateKbps ?? 96),
+        'x-goog-meta-ariadne-channel-count': String(input.channelCount ?? 1),
         'x-goog-meta-ariadne-byte-length': String(input.byteLength),
         'x-goog-meta-ariadne-content-type': input.contentType
       },
@@ -392,6 +414,9 @@ class FakeAudioObjectStore implements AudioObjectStore {
         crc32c: input.crc32c ?? null,
         codec: input.codec,
         container: input.container,
+        qualityProfile: input.qualityProfile ?? 'voice-hifi',
+        bitrateKbps: input.bitrateKbps,
+        channelCount: input.channelCount,
         sampleRate: input.sampleRate,
         durationMs: input.durationMs,
         byteLength: input.byteLength,
@@ -418,4 +443,3 @@ class FakeAudioObjectStore implements AudioObjectStore {
     this.deletedRepoIds.push(repoId);
   }
 }
-

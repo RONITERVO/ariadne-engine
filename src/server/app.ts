@@ -36,6 +36,7 @@ import {
 } from '../security/providerKeys.js';
 import { FirestoreStoryStore } from '../storage/firestoreStoryStore.js';
 import { InMemoryStoryStore } from '../storage/inMemoryStoryStore.js';
+import { AUDIO_QUALITY_PROFILES } from '../domain/audioQuality.js';
 import { createAudioObjectStore, type AudioObjectStore } from '../storage/audioObjectStore.js';
 import type { StoryStore } from '../storage/storyStore.js';
 import { StoreError } from '../storage/storyStore.js';
@@ -246,7 +247,10 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     minCheckoutAmountCents: config.billing.minCheckoutAmountCents,
     liveBillableSeconds: calculateLiveSessionCharge(config.modelCatalog, config.liveModel).billableSeconds,
     audioStorageEnabled: audioObjects.isEnabled(),
-    audioMaxBytes: config.audioStorage.maxBytes
+    audioMaxBytes: config.audioStorage.maxBytes,
+    audioDefaultQualityProfile: config.audioStorage.defaultQualityProfile,
+    audioAllowedQualityProfiles: config.audioStorage.allowedQualityProfiles,
+    audioQualityProfiles: Object.fromEntries(config.audioStorage.allowedQualityProfiles.map(profile => [profile, AUDIO_QUALITY_PROFILES[profile]]))
   }));
   registerAdminRoutes(app, config);
 
@@ -449,14 +453,17 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       role: body.role,
       storageProvider: 'gcs',
       storageUri: audioUpload.asset.storageUri,
-      contentType: body.contentType,
-      sha256: body.sha256,
-      crc32c: body.crc32c ?? null,
-      codec: body.codec,
-      container: body.container,
-      sampleRate: body.sampleRate,
-      durationMs: body.durationMs,
-      byteLength: body.byteLength,
+      contentType: audioUpload.asset.contentType ?? body.contentType,
+      sha256: audioUpload.asset.sha256,
+      crc32c: audioUpload.asset.crc32c ?? null,
+      codec: audioUpload.asset.codec,
+      container: audioUpload.asset.container,
+      qualityProfile: audioUpload.asset.qualityProfile ?? null,
+      bitrateKbps: audioUpload.asset.bitrateKbps,
+      channelCount: audioUpload.asset.channelCount,
+      sampleRate: audioUpload.asset.sampleRate,
+      durationMs: audioUpload.asset.durationMs,
+      byteLength: audioUpload.asset.byteLength ?? body.byteLength,
       encryptionKeyRef: audioUpload.asset.encryptionKeyRef ?? null,
       expiresAt: audioUpload.expiresAt
     });
@@ -845,6 +852,9 @@ function audioManifestFromIntent(intent: AudioUploadIntent): RegisterAudioAssetI
     crc32c: intent.crc32c ?? null,
     codec: intent.codec,
     container: intent.container,
+    qualityProfile: intent.qualityProfile ?? null,
+    bitrateKbps: intent.bitrateKbps,
+    channelCount: intent.channelCount,
     sampleRate: intent.sampleRate,
     durationMs: intent.durationMs,
     byteLength: intent.byteLength,

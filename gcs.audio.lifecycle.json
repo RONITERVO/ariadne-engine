@@ -1,0 +1,19 @@
+{
+  "rule": [
+    {
+      "action": { "type": "SetStorageClass", "storageClass": "NEARLINE" },
+      "condition": {
+        "age": 30,
+        "matchesPrefix": ["live-audio/repos/"]
+      }
+    },
+    {
+      "action": { "type": "SetStorageClass", "storageClass": "COLDLINE" },
+      "condition": {
+        "age": 180,
+        "matchesStorageClass": ["NEARLINE"],
+        "matchesPrefix": ["live-audio/repos/"]
+      }
+    }
+  ]
+}

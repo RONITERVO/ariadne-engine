@@ -1,4 +1,5 @@
 import type { ContextBudgetMode } from './contextBudget.js';
+import type { AudioQualityProfile } from './audioQuality.js';
 
 export type ID = string;
 
@@ -13,6 +14,8 @@ export interface AudioObjectVerification {
   md5Hash?: string | null;
   generation?: string | null;
   metageneration?: string | null;
+  etag?: string | null;
+  encryptionKeyRef?: string | null;
   updatedAt?: string | null;
 }
 
@@ -29,6 +32,9 @@ export interface AudioUploadIntent {
   crc32c?: string | null;
   codec: string;
   container: string;
+  qualityProfile?: AudioQualityProfile | null;
+  bitrateKbps?: number;
+  channelCount?: number;
   sampleRate?: number;
   durationMs?: number;
   byteLength: number;
@@ -54,8 +60,12 @@ export interface AudioAsset {
   md5Hash?: string | null;
   gcsGeneration?: string | null;
   gcsMetageneration?: string | null;
+  gcsEtag?: string | null;
   codec: string;
   container: string;
+  qualityProfile?: AudioQualityProfile | null;
+  bitrateKbps?: number;
+  channelCount?: number;
   sampleRate?: number;
   durationMs?: number;
   byteLength?: number;
@@ -234,8 +244,12 @@ export interface RegisterAudioAssetInput {
   md5Hash?: string | null;
   gcsGeneration?: string | null;
   gcsMetageneration?: string | null;
+  gcsEtag?: string | null;
   codec: string;
   container: string;
+  qualityProfile?: AudioQualityProfile | null;
+  bitrateKbps?: number;
+  channelCount?: number;
   sampleRate?: number;
   durationMs?: number;
   byteLength?: number;
