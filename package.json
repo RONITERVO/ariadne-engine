@@ -35,10 +35,12 @@
     "firebase": "^12.14.0",
     "firebase-admin": "^14.0.0",
     "stripe": "^22.2.1",
+    "three": "^0.184.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/three": "^0.184.1",
     "tsx": "^4.19.2",
     "typescript": "^5.8.3",
     "vite": "^8.0.16"
