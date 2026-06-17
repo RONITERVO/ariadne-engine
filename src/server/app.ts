@@ -36,18 +36,32 @@ import {
 } from '../security/providerKeys.js';
 import { FirestoreStoryStore } from '../storage/firestoreStoryStore.js';
 import { InMemoryStoryStore } from '../storage/inMemoryStoryStore.js';
+import { AUDIO_QUALITY_PROFILES } from '../domain/audioQuality.js';
+import { createAudioObjectStore, type AudioObjectStore } from '../storage/audioObjectStore.js';
 import type { StoryStore } from '../storage/storyStore.js';
 import { StoreError } from '../storage/storyStore.js';
 import { StoryService, type ContinueStoryStreamEvent } from '../application/storyService.js';
 import { buildStoryMap } from '../application/storyMapService.js';
 import {
+  archiveToMarkdown,
+  buildCanonDebug,
+  buildStoryArchive,
+  compareBranches,
+  searchStory
+} from '../application/storyReleaseService.js';
+import {
+  AudioAssetBodySchema,
+  AudioUploadUrlBodySchema,
+  BranchCompareQuerySchema,
   CreateRepoBodySchema,
   ForkBranchBodySchema,
   LiveTurnBodySchema,
   LiveTokenBodySchema,
+  RepoExportQuerySchema,
+  StorySearchQuerySchema,
   StoryTurnBodySchema
 } from '../domain/validation.js';
-import type { BranchRef, StoryRepo } from '../domain/types.js';
+import type { AudioUploadIntent, BranchRef, RegisterAudioAssetInput, StoryRepo } from '../domain/types.js';
 import { getBearerToken, looksLikeJwt, requireFirebaseUser } from './firebaseAuth.js';
 import { HttpError } from './httpErrors.js';
 import { registerAdminRoutes } from './adminRoutes.js';
@@ -57,6 +71,7 @@ export interface AppDeps {
   providers?: ProviderRegistry;
   billing?: UsageBillingService;
   keyPool?: GeminiServerKeyPool;
+  audioObjects?: AudioObjectStore;
 }
 
 const PROVIDER_KEY_ALLOWED_PATHS = new Set([
@@ -110,6 +125,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   const providers = deps.providers ?? new ProviderRegistry(config.allowMockProvider);
   const billing = deps.billing ?? new UsageBillingService(config.billing);
   const keyPool = deps.keyPool ?? new GeminiServerKeyPool(config.geminiServerKeys, config.geminiKeyPool);
+  const audioObjects = deps.audioObjects ?? createAudioObjectStore(config.audioStorage);
   const service = new StoryService(store, config);
 
   await app.register(helmet, {
@@ -119,7 +135,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   await app.register(cors, {
     origin: config.corsOrigins,
     credentials: false,
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['content-type', 'authorization', 'x-ariadne-provider-key']
   });
   await app.register(rateLimit, {
@@ -200,7 +216,7 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   app.get('/health', async () => ({
     ok: true,
     name: 'ariadne-engine',
-    version: '0.3.0',
+    version: '1.0.0',
     storage: config.storage,
     provider: config.defaultProvider
   }));
@@ -229,7 +245,12 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     billingCurrency: config.billing.currency,
     defaultCheckoutAmountCents: config.billing.defaultCheckoutAmountCents,
     minCheckoutAmountCents: config.billing.minCheckoutAmountCents,
-    liveBillableSeconds: calculateLiveSessionCharge(config.modelCatalog, config.liveModel).billableSeconds
+    liveBillableSeconds: calculateLiveSessionCharge(config.modelCatalog, config.liveModel).billableSeconds,
+    audioStorageEnabled: audioObjects.isEnabled(),
+    audioMaxBytes: config.audioStorage.maxBytes,
+    audioDefaultQualityProfile: config.audioStorage.defaultQualityProfile,
+    audioAllowedQualityProfiles: config.audioStorage.allowedQualityProfiles,
+    audioQualityProfiles: Object.fromEntries(config.audioStorage.allowedQualityProfiles.map(profile => [profile, AUDIO_QUALITY_PROFILES[profile]]))
   }));
   registerAdminRoutes(app, config);
 
@@ -324,6 +345,230 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     const user = await resolveStoryUser(request, config, tokens);
     const map = await buildStoryMap(store, user?.uid);
     return { ...map, tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/story-search', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_SEARCH);
+    const user = await resolveStoryUser(request, config, tokens);
+    const query = parseBody(StorySearchQuerySchema, request.query);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+
+    let repoIds: string[];
+    let branchId = query.branchId;
+    if (branchId) {
+      const branch = await store.getBranch(branchId);
+      if (!branch) throw tokens.fail(`branch not found: ${branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+      if (query.repoId && query.repoId !== branch.repoId) {
+        throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+      }
+      const repo = await store.getRepo(branch.repoId);
+      if (!repo) throw tokens.fail(`repo not found: ${branch.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_REPO_FOUND, ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+      assertRepoAccess(repo, user, config, tokens);
+      repoIds = [repo.id];
+    } else if (query.repoId) {
+      const repo = await store.getRepo(query.repoId);
+      if (!repo) throw tokens.fail(`repo not found: ${query.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+      assertRepoAccess(repo, user, config, tokens);
+      repoIds = [repo.id];
+    } else {
+      repoIds = (await store.listRepos(user?.uid)).map(repo => repo.id);
+      branchId = undefined;
+    }
+
+    return { ...(await searchStory(store, { query: query.q, repoIds, branchId, limit: query.limit })), tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/repos/:repoId/export', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_EXPORT_REPO);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { repoId } = request.params as { repoId: string };
+    const query = parseBody(RepoExportQuerySchema, request.query);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const repo = await store.getRepo(repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    const archive = await buildStoryArchive(store, repoId);
+    const filename = `${downloadName(repo.title || repo.id)}-ariadne-archive.${query.format === 'markdown' ? 'md' : 'json'}`;
+    if (query.format === 'markdown') {
+      const snapshot = tokens.snapshot();
+      return reply
+        .code(200)
+        .header('x-ariadne-active-tokens', snapshot.activeTokens.join(','))
+        .header('content-disposition', `attachment; filename="${filename}"`)
+        .type('text/markdown; charset=utf-8')
+        .send(archiveToMarkdown(archive));
+    }
+    const snapshot = tokens.snapshot();
+    return reply
+      .header('x-ariadne-active-tokens', snapshot.activeTokens.join(','))
+      .header('content-disposition', `attachment; filename="${filename}"`)
+      .send({ archive, tokens: snapshot });
+  });
+
+  app.delete('/v1/repos/:repoId', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_DELETE_REPO);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { repoId } = request.params as { repoId: string };
+    const repo = await store.getRepo(repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    await audioObjects.deleteRepoObjects(repoId);
+    await store.deleteRepo(repoId);
+    return sendWithTokens(reply, { ok: true, deletedRepoId: repoId }, tokens);
+  });
+
+  app.post('/v1/audio-assets/upload-url', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_CREATE_AUDIO_UPLOAD);
+    const user = await resolveStoryUser(request, config, tokens);
+    const body = parseBody(AudioUploadUrlBodySchema, request.body);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    if (!audioObjects.isEnabled()) {
+      throw tokens.fail('Audio object storage is not configured for this deployment.', 503, 'audio_storage_disabled', ACTION_TOKEN.AUDIO_STORAGE_DISABLED);
+    }
+    tokens.add(ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+    const repo = await store.getRepo(body.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${body.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    if (body.branchId) {
+      const branch = await store.getBranch(body.branchId);
+      if (!branch) throw tokens.fail(`branch not found: ${body.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+      if (branch.repoId !== repo.id) {
+        throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+      }
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    }
+    const audioUpload = await audioObjects.prepareUpload(body);
+    await store.createAudioUploadIntent({
+      uploadId: audioUpload.uploadId,
+      repoId: body.repoId,
+      branchId: body.branchId ?? null,
+      ownerUserId: repo.ownerUserId ?? user?.uid ?? null,
+      role: body.role,
+      storageProvider: 'gcs',
+      storageUri: audioUpload.asset.storageUri,
+      contentType: audioUpload.asset.contentType ?? body.contentType,
+      sha256: audioUpload.asset.sha256,
+      crc32c: audioUpload.asset.crc32c ?? null,
+      codec: audioUpload.asset.codec,
+      container: audioUpload.asset.container,
+      qualityProfile: audioUpload.asset.qualityProfile ?? null,
+      bitrateKbps: audioUpload.asset.bitrateKbps,
+      channelCount: audioUpload.asset.channelCount,
+      sampleRate: audioUpload.asset.sampleRate,
+      durationMs: audioUpload.asset.durationMs,
+      byteLength: audioUpload.asset.byteLength ?? body.byteLength,
+      encryptionKeyRef: audioUpload.asset.encryptionKeyRef ?? null,
+      expiresAt: audioUpload.expiresAt
+    });
+    tokens.add(ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED);
+    return sendWithTokens(reply, { audioUpload }, tokens, 201);
+  });
+
+  app.post('/v1/audio-assets', async (request, reply) => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_REGISTER_AUDIO_ASSET);
+    const user = await resolveStoryUser(request, config, tokens);
+    const body = parseBody(AudioAssetBodySchema, request.body);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+
+    if (body.uploadId) {
+      if (!audioObjects.isEnabled()) {
+        throw tokens.fail('Audio upload tickets require configured object storage.', 503, 'audio_storage_disabled', ACTION_TOKEN.AUDIO_STORAGE_DISABLED);
+      }
+      tokens.add(ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+      const intent = await store.getAudioUploadIntent(body.repoId, body.uploadId);
+      if (!intent) throw tokens.fail(`audio upload not found: ${body.uploadId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      const repo = await store.getRepo(intent.repoId);
+      if (!repo) throw tokens.fail(`repo not found: ${intent.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+      assertRepoAccess(repo, user, config, tokens);
+      if (intent.branchId) {
+        const branch = await store.getBranch(intent.branchId);
+        if (!branch) throw tokens.fail(`branch not found: ${intent.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+        tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+        if (branch.repoId !== repo.id) {
+          throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+        }
+        tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+      }
+      const verification = await audioObjects.verifyUploadedAsset(audioManifestFromIntent(intent), intent);
+      tokens.add(ACTION_TOKEN.AUDIO_OBJECT_VERIFIED);
+      const audioAsset = await store.completeAudioUploadIntent({ repoId: intent.repoId, uploadId: intent.id, verification });
+      return sendWithTokens(reply, { audioAsset }, tokens, 201);
+    }
+
+    if (audioObjects.isEnabled()) {
+      throw tokens.fail('GCS audio registration requires a server-issued uploadId.', 400, 'audio_upload_id_required', ACTION_TOKEN.AUDIO_STORAGE_ENABLED);
+    }
+    if (!('storageUri' in body)) {
+      throw tokens.fail('Audio manifest registration requires audio metadata.', 400, 'audio_manifest_required', ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    }
+
+    const repo = await store.getRepo(body.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${body.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    if (body.branchId) {
+      const branch = await store.getBranch(body.branchId);
+      if (!branch) throw tokens.fail(`branch not found: ${body.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+      if (branch.repoId !== repo.id) {
+        throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+      }
+      tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    }
+    const audioAsset = await store.saveAudioAsset(body);
+    return sendWithTokens(reply, { audioAsset }, tokens, 201);
+  });
+
+  app.get('/v1/repos/:repoId/audio-assets', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_LIST_AUDIO_ASSETS);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { repoId } = request.params as { repoId: string };
+    const query = request.query as { branchId?: string };
+    const repo = await store.getRepo(repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    return { audioAssets: await store.listAudioAssets(repoId, typeof query.branchId === 'string' ? query.branchId : undefined), tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/branches/compare', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_COMPARE_BRANCHES);
+    const user = await resolveStoryUser(request, config, tokens);
+    const query = parseBody(BranchCompareQuerySchema, request.query);
+    tokens.add(ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+    const [left, right] = await Promise.all([store.getBranch(query.leftBranchId), store.getBranch(query.rightBranchId)]);
+    if (!left) throw tokens.fail(`branch not found: ${query.leftBranchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    if (!right) throw tokens.fail(`branch not found: ${query.rightBranchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+    if (left.repoId !== right.repoId) throw tokens.fail('branches must belong to the same repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    const repo = await store.getRepo(left.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${left.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
+    assertRepoAccess(repo, user, config, tokens);
+    return { ...(await compareBranches(store, left.id, right.id)), tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/branches/:branchId/canon', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_CANON_DEBUG);
+    const user = await resolveStoryUser(request, config, tokens);
+    const { branchId } = request.params as { branchId: string };
+    const branch = await store.getBranch(branchId);
+    if (!branch) throw tokens.fail(`branch not found: ${branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+    const repo = await store.getRepo(branch.repoId);
+    if (!repo) throw tokens.fail(`repo not found: ${branch.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND, ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
+    assertRepoAccess(repo, user, config, tokens);
+    return { ...(await buildCanonDebug(store, branch.id)), tokens: tokens.snapshot() };
   });
 
   app.post('/v1/repos', async (request, reply) => {
@@ -522,6 +767,8 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
         assistantTranscript: body.assistantTranscript,
         liveSessionId: body.liveSessionId,
         expectedHeadTurnId: body.expectedHeadTurnId,
+        userAudioAssetId: body.userAudioAssetId ?? null,
+        assistantAudioAssetId: body.assistantAudioAssetId ?? null,
         providerKey: access.providerKey,
         provider: access.provider,
         tokens
@@ -592,6 +839,37 @@ function sendErrorWithTokens(
     .send({ error: code, message, tokens });
 }
 
+function audioManifestFromIntent(intent: AudioUploadIntent): RegisterAudioAssetInput {
+  return {
+    uploadId: intent.id,
+    repoId: intent.repoId,
+    branchId: intent.branchId ?? null,
+    role: intent.role,
+    storageProvider: intent.storageProvider,
+    storageUri: intent.storageUri,
+    contentType: intent.contentType,
+    sha256: intent.sha256,
+    crc32c: intent.crc32c ?? null,
+    codec: intent.codec,
+    container: intent.container,
+    qualityProfile: intent.qualityProfile ?? null,
+    bitrateKbps: intent.bitrateKbps,
+    channelCount: intent.channelCount,
+    sampleRate: intent.sampleRate,
+    durationMs: intent.durationMs,
+    byteLength: intent.byteLength,
+    encryptionKeyRef: intent.encryptionKeyRef ?? null
+  };
+}
+
+function downloadName(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'ariadne-story';
+}
+
 function requestPathname(request: FastifyRequest): string {
   return new URL(request.url, 'http://ariadne.local').pathname;
 }
@@ -604,6 +882,10 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'POST' && pathname === '/v1/provider/gemini/live-session/end') return ACTION_ID.PROVIDER_END_LIVE_SESSION;
   if (method === 'GET' && pathname === '/v1/repos') return ACTION_ID.STORY_LIST_REPOS;
   if (method === 'GET' && pathname === '/v1/story-map') return ACTION_ID.STORY_GET_MAP;
+  if (method === 'GET' && pathname === '/v1/story-search') return ACTION_ID.STORY_SEARCH;
+  if (method === 'GET' && pathname === '/v1/branches/compare') return ACTION_ID.STORY_COMPARE_BRANCHES;
+  if (method === 'POST' && pathname === '/v1/audio-assets/upload-url') return ACTION_ID.STORY_CREATE_AUDIO_UPLOAD;
+  if (method === 'POST' && pathname === '/v1/audio-assets') return ACTION_ID.STORY_REGISTER_AUDIO_ASSET;
   if (method === 'POST' && pathname === '/v1/repos') return ACTION_ID.STORY_CREATE_REPO;
   if (method === 'POST' && pathname === '/v1/branches/fork') return ACTION_ID.STORY_FORK_BRANCH;
   if (method === 'GET' && pathname === '/v1/billing/me') return ACTION_ID.BILLING_GET_ENTITLEMENT;
@@ -612,8 +894,12 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'POST' && pathname === '/v1/story/turn') return ACTION_ID.STORY_TURN;
   if (method === 'POST' && pathname === '/v1/story/turn/stream') return ACTION_ID.STORY_TURN_STREAM;
   if (method === 'POST' && pathname === '/v1/story/live-turn') return ACTION_ID.STORY_LIVE_TURN;
+  if (method === 'GET' && /^\/v1\/repos\/[^/]+\/export$/.test(pathname)) return ACTION_ID.STORY_EXPORT_REPO;
+  if (method === 'DELETE' && /^\/v1\/repos\/[^/]+$/.test(pathname)) return ACTION_ID.STORY_DELETE_REPO;
+  if (method === 'GET' && /^\/v1\/repos\/[^/]+\/audio-assets$/.test(pathname)) return ACTION_ID.STORY_LIST_AUDIO_ASSETS;
   if (method === 'GET' && /^\/v1\/repos\/[^/]+$/.test(pathname)) return ACTION_ID.STORY_GET_REPO;
   if (method === 'GET' && /^\/v1\/branches\/[^/]+\/timeline$/.test(pathname)) return ACTION_ID.STORY_GET_TIMELINE;
+  if (method === 'GET' && /^\/v1\/branches\/[^/]+\/canon$/.test(pathname)) return ACTION_ID.STORY_CANON_DEBUG;
   return ACTION_ID.HTTP_REQUEST;
 }
 

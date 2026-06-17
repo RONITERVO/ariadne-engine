@@ -1,23 +1,77 @@
 import type { ContextBudgetMode } from './contextBudget.js';
+import type { AudioQualityProfile } from './audioQuality.js';
 
 export type ID = string;
 
 export type ProviderName = 'google-ai-studio' | 'mock';
 export type AudioRole = 'user' | 'assistant' | 'system';
+export type AudioUploadStatus = 'pending' | 'verified' | 'expired' | 'failed';
+
+export interface AudioObjectVerification {
+  byteLength: number;
+  contentType?: string | null;
+  crc32c?: string | null;
+  md5Hash?: string | null;
+  generation?: string | null;
+  metageneration?: string | null;
+  etag?: string | null;
+  encryptionKeyRef?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface AudioUploadIntent {
+  id: ID;
+  repoId: ID;
+  branchId?: ID | null;
+  ownerUserId?: ID | null;
+  role: AudioRole;
+  storageProvider: 'gcs';
+  storageUri: string;
+  contentType: string;
+  sha256: string;
+  crc32c?: string | null;
+  codec: string;
+  container: string;
+  qualityProfile?: AudioQualityProfile | null;
+  bitrateKbps?: number;
+  channelCount?: number;
+  sampleRate?: number;
+  durationMs?: number;
+  byteLength: number;
+  encryptionKeyRef?: string | null;
+  status: AudioUploadStatus;
+  audioAssetId?: ID | null;
+  createdAt: string;
+  expiresAt: string;
+  verifiedAt?: string | null;
+}
 
 export interface AudioAsset {
   id: ID;
   repoId: ID;
   branchId?: ID | null;
+  uploadId?: ID | null;
   role: AudioRole;
+  storageProvider?: 'gcs' | 'external' | null;
   storageUri: string;
+  contentType?: string | null;
   sha256: string;
+  crc32c?: string | null;
+  md5Hash?: string | null;
+  gcsGeneration?: string | null;
+  gcsMetageneration?: string | null;
+  gcsEtag?: string | null;
   codec: string;
   container: string;
+  qualityProfile?: AudioQualityProfile | null;
+  bitrateKbps?: number;
+  channelCount?: number;
   sampleRate?: number;
   durationMs?: number;
   byteLength?: number;
   encryptionKeyRef?: string | null;
+  uploadedAt?: string | null;
+  verifiedAt?: string | null;
   createdAt: string;
 }
 
@@ -175,4 +229,31 @@ export interface ForkBranchInput {
   sourceTurnId?: ID | null;
   name: string;
   forkReason?: string;
+}
+
+export interface RegisterAudioAssetInput {
+  uploadId?: ID | null;
+  repoId: ID;
+  branchId?: ID | null;
+  role: AudioRole;
+  storageProvider?: 'gcs' | 'external' | null;
+  storageUri: string;
+  contentType?: string | null;
+  sha256: string;
+  crc32c?: string | null;
+  md5Hash?: string | null;
+  gcsGeneration?: string | null;
+  gcsMetageneration?: string | null;
+  gcsEtag?: string | null;
+  codec: string;
+  container: string;
+  qualityProfile?: AudioQualityProfile | null;
+  bitrateKbps?: number;
+  channelCount?: number;
+  sampleRate?: number;
+  durationMs?: number;
+  byteLength?: number;
+  encryptionKeyRef?: string | null;
+  uploadedAt?: string | null;
+  verifiedAt?: string | null;
 }

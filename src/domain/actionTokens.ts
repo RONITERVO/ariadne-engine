@@ -40,6 +40,10 @@ export const ACTION_TOKEN = {
   STORY_BRANCH_HEAD_STALE: 'story:branch-head-stale',
   STORY_BRANCH_STATE_FOUND: 'story:branch-state-found',
   STORY_BRANCH_STATE_MISSING: 'story:branch-state-missing',
+  AUDIO_STORAGE_ENABLED: 'audio:storage-enabled',
+  AUDIO_STORAGE_DISABLED: 'audio:storage-disabled',
+  AUDIO_UPLOAD_URL_CREATED: 'audio:upload-url-created',
+  AUDIO_OBJECT_VERIFIED: 'audio:object-verified',
 
   MUTATION_BRANCH_LEASE_ACQUIRED: 'mutation:branch-lease-acquired',
   MUTATION_BRANCH_LEASE_ACTIVE: 'mutation:branch-lease-active',
@@ -62,6 +66,14 @@ export const ACTION_ID = {
   STORY_LIST_REPOS: 'story.list-repos',
   STORY_GET_REPO: 'story.get-repo',
   STORY_GET_MAP: 'story.get-map',
+  STORY_SEARCH: 'story.search',
+  STORY_EXPORT_REPO: 'story.export-repo',
+  STORY_DELETE_REPO: 'story.delete-repo',
+  STORY_COMPARE_BRANCHES: 'story.compare-branches',
+  STORY_CANON_DEBUG: 'story.canon-debug',
+  STORY_CREATE_AUDIO_UPLOAD: 'story.create-audio-upload',
+  STORY_REGISTER_AUDIO_ASSET: 'story.register-audio-asset',
+  STORY_LIST_AUDIO_ASSETS: 'story.list-audio-assets',
   STORY_FORK_BRANCH: 'story.fork-branch',
   STORY_GET_TIMELINE: 'story.get-timeline',
   STORY_TURN: 'story.turn',
@@ -450,6 +462,34 @@ const TOKEN_METADATA: Record<ActionToken, ActionTokenMetadata> = {
     tone: 'blocked',
     priority: 14
   },
+  [ACTION_TOKEN.AUDIO_STORAGE_ENABLED]: {
+    category: 'audio',
+    label: 'Audio storage',
+    description: 'GCS audio object storage is configured for this deployment.',
+    tone: 'ready',
+    priority: 77
+  },
+  [ACTION_TOKEN.AUDIO_STORAGE_DISABLED]: {
+    category: 'audio',
+    label: 'Audio storage disabled',
+    description: 'Audio object storage is not configured for this deployment.',
+    tone: 'blocked',
+    priority: 15
+  },
+  [ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED]: {
+    category: 'audio',
+    label: 'Upload URL ready',
+    description: 'A short-lived GCS upload URL was created for this audio object.',
+    tone: 'ready',
+    priority: 78
+  },
+  [ACTION_TOKEN.AUDIO_OBJECT_VERIFIED]: {
+    category: 'audio',
+    label: 'Audio verified',
+    description: 'The GCS object exists and matches the audio manifest.',
+    tone: 'ready',
+    priority: 79
+  },
 
   [ACTION_TOKEN.MUTATION_BRANCH_LEASE_ACQUIRED]: {
     category: 'mutation',
@@ -463,7 +503,7 @@ const TOKEN_METADATA: Record<ActionToken, ActionTokenMetadata> = {
     label: 'Turn in progress',
     description: 'Another turn already owns the branch mutation lease.',
     tone: 'blocked',
-    priority: 15
+    priority: 16
   },
 
   [ACTION_TOKEN.CONTEXT_TRANSCRIPT_WITHIN_LIMIT]: {
@@ -478,7 +518,7 @@ const TOKEN_METADATA: Record<ActionToken, ActionTokenMetadata> = {
     label: 'Transcript too long',
     description: 'The user transcript exceeds the configured request limit.',
     tone: 'blocked',
-    priority: 16
+    priority: 17
   },
   [ACTION_TOKEN.CONTEXT_BUDGET_STABLE]: {
     category: 'context',
@@ -499,7 +539,7 @@ const TOKEN_METADATA: Record<ActionToken, ActionTokenMetadata> = {
     label: 'Context hard stop',
     description: 'The branch context exceeds the hard budget.',
     tone: 'blocked',
-    priority: 17
+    priority: 18
   }
 };
 

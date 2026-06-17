@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import type { DocumentData, DocumentReference, Firestore, Transaction } from 'firebase-admin/firestore';
+import type { DocumentData, DocumentReference, Firestore, Query, Transaction } from 'firebase-admin/firestore';
 import { createInitialWorldState } from '../domain/initialState.js';
 import { sha256Json } from '../domain/stateHash.js';
-import type { BranchRef, CreateRepoInput, ForkBranchInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
+import type { AudioAsset, AudioUploadIntent, BranchRef, CreateRepoInput, ForkBranchInput, RegisterAudioAssetInput, StoryRepo, TurnCommit, WorldState } from '../domain/types.js';
 import { getFirebaseAdminDb } from '../firebase/admin.js';
 import type {
   ApplyCanonPatchInput,
   BranchMutationLease,
   BranchMutationLeaseInput,
   CommitTurnInput,
+  CompleteAudioUploadIntentInput,
+  CreateAudioUploadIntentInput,
   CreateRepoResult,
   StoryStore
 } from './storyStore.js';
@@ -27,6 +29,8 @@ const COLLECTIONS = {
   patches: 'canonPatches',
   warnings: 'continuityWarnings',
   locks: 'mutationLocks',
+  audioAssets: 'audioAssets',
+  audioUploads: 'audioUploads',
   repoIndex: 'storyRepoIndex',
   branchIndex: 'storyBranchIndex',
   turnIndex: 'storyTurnIndex'
@@ -185,6 +189,203 @@ export class FirestoreStoryStore implements StoryStore {
       tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
       return clone({ branch, state });
     });
+  }
+
+  async deleteRepo(repoId: string): Promise<void> {
+    const repoLoc = await this.locateRepo(repoId);
+    if (!repoLoc) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    const repoRef = this.repoRef(repoLoc);
+    const [branches, turns] = await Promise.all([
+      repoRef.collection(COLLECTIONS.branches).get(),
+      repoRef.collection(COLLECTIONS.turns).get()
+    ]);
+
+    const recursiveDelete = (this.db as Firestore & { recursiveDelete?: (ref: FirestoreDocRef) => Promise<unknown> }).recursiveDelete;
+    if (typeof recursiveDelete === 'function') {
+      await recursiveDelete.call(this.db, repoRef);
+    } else {
+      await this.deleteKnownRepoDocuments(repoLoc);
+    }
+
+    const indexRefs: FirestoreDocRef[] = [this.repoIndexRef(repoId)];
+    for (const branchDoc of branches.docs) indexRefs.push(this.branchIndexRef(branchDoc.id));
+    for (const turnDoc of turns.docs) indexRefs.push(this.turnIndexRef(turnDoc.id));
+    await this.deleteRefs(indexRefs);
+  }
+
+  async createAudioUploadIntent(input: CreateAudioUploadIntentInput): Promise<AudioUploadIntent> {
+    return this.db.runTransaction(async tx => {
+      const repoLoc = await this.locateRepoTx(tx, input.repoId);
+      if (!repoLoc) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repoSnapshot = await tx.get(this.repoRef(repoLoc));
+      if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repo = cleanRepo(repoSnapshot.data());
+      if (!repo) throw new StoreError(`repo is invalid: ${input.repoId}`, 'invalid');
+      if (input.branchId) {
+        const branchLoc = await this.locateBranchTx(tx, input.branchId);
+        if (!branchLoc) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+        if (branchLoc.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+      }
+      const uploadRef = this.audioUploadRef(repoLoc, input.uploadId);
+      const existing = await tx.get(uploadRef);
+      if (existing.exists) throw new StoreError(`audio upload already exists: ${input.uploadId}`, 'conflict');
+      const now = new Date().toISOString();
+      const intent: AudioUploadIntent = {
+        id: input.uploadId,
+        repoId: input.repoId,
+        branchId: input.branchId ?? null,
+        ownerUserId: input.ownerUserId ?? repo.ownerUserId ?? null,
+        role: input.role,
+        storageProvider: input.storageProvider,
+        storageUri: input.storageUri,
+        contentType: input.contentType,
+        sha256: input.sha256,
+        crc32c: input.crc32c ?? null,
+        codec: input.codec,
+        container: input.container,
+        qualityProfile: input.qualityProfile ?? null,
+        bitrateKbps: input.bitrateKbps,
+        channelCount: input.channelCount,
+        sampleRate: input.sampleRate,
+        durationMs: input.durationMs,
+        byteLength: input.byteLength,
+        encryptionKeyRef: input.encryptionKeyRef ?? null,
+        status: 'pending',
+        audioAssetId: null,
+        createdAt: now,
+        expiresAt: input.expiresAt,
+        verifiedAt: null
+      };
+      tx.set(uploadRef, storyDoc(intent, 'audio_upload'));
+      tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
+      return clone(intent);
+    });
+  }
+
+  async getAudioUploadIntent(repoId: string, uploadId: string): Promise<AudioUploadIntent | null> {
+    const repoLoc = await this.locateRepo(repoId);
+    if (!repoLoc) return null;
+    const snapshot = await this.audioUploadRef(repoLoc, uploadId).get();
+    return snapshot.exists ? cleanAudioUploadIntent(snapshot.data()) : null;
+  }
+
+  async completeAudioUploadIntent(input: CompleteAudioUploadIntentInput): Promise<AudioAsset> {
+    return this.db.runTransaction(async tx => {
+      const repoLoc = await this.locateRepoTx(tx, input.repoId);
+      if (!repoLoc) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const uploadRef = this.audioUploadRef(repoLoc, input.uploadId);
+      const uploadSnapshot = await tx.get(uploadRef);
+      if (!uploadSnapshot.exists) throw new StoreError(`audio upload not found: ${input.uploadId}`, 'not_found');
+      const intent = cleanAudioUploadIntent(uploadSnapshot.data());
+      if (!intent) throw new StoreError(`audio upload is invalid: ${input.uploadId}`, 'invalid');
+      if (intent.repoId !== input.repoId) throw new StoreError('audio upload does not belong to repo', 'invalid');
+      if (intent.status === 'verified' && intent.audioAssetId) {
+        const existingSnapshot = await tx.get(this.audioAssetRef(repoLoc, intent.audioAssetId));
+        const existing = cleanAudioAsset(existingSnapshot.data());
+        if (existing) return existing;
+      }
+      if (intent.status !== 'pending') throw new StoreError(`audio upload is not pending: ${intent.status}`, 'conflict');
+      const now = new Date().toISOString();
+      if (Date.parse(intent.expiresAt) < Date.now()) {
+        tx.set(uploadRef, { status: 'expired', updatedAt: now }, { merge: true });
+        throw new StoreError('audio upload URL has expired', 'conflict');
+      }
+      if (input.verification.byteLength !== intent.byteLength) {
+        throw new StoreError('audio object byte length does not match upload intent', 'invalid');
+      }
+      const asset: AudioAsset = {
+        id: randomUUID(),
+        repoId: intent.repoId,
+        branchId: intent.branchId ?? null,
+        uploadId: intent.id,
+        role: intent.role,
+        storageProvider: intent.storageProvider,
+        storageUri: intent.storageUri,
+        contentType: input.verification.contentType ?? intent.contentType,
+        sha256: intent.sha256,
+        crc32c: input.verification.crc32c ?? intent.crc32c ?? null,
+        md5Hash: input.verification.md5Hash ?? null,
+        gcsGeneration: input.verification.generation ?? null,
+        gcsMetageneration: input.verification.metageneration ?? null,
+        gcsEtag: input.verification.etag ?? null,
+        codec: intent.codec,
+        container: intent.container,
+        qualityProfile: intent.qualityProfile ?? null,
+        bitrateKbps: intent.bitrateKbps,
+        channelCount: intent.channelCount,
+        sampleRate: intent.sampleRate,
+        durationMs: intent.durationMs,
+        byteLength: input.verification.byteLength,
+        encryptionKeyRef: input.verification.encryptionKeyRef ?? intent.encryptionKeyRef ?? null,
+        uploadedAt: input.verification.updatedAt ?? now,
+        verifiedAt: now,
+        createdAt: now
+      };
+      tx.set(this.audioAssetRef(repoLoc, asset.id), storyDoc(asset, 'audio_asset'));
+      tx.set(uploadRef, { status: 'verified', audioAssetId: asset.id, verifiedAt: now, updatedAt: now }, { merge: true });
+      tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
+      return clone(asset);
+    });
+  }
+
+  async saveAudioAsset(input: RegisterAudioAssetInput): Promise<AudioAsset> {
+    return this.db.runTransaction(async tx => {
+      const repoLoc = await this.locateRepoTx(tx, input.repoId);
+      if (!repoLoc) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repoSnapshot = await tx.get(this.repoRef(repoLoc));
+      if (!repoSnapshot.exists) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const repo = cleanRepo(repoSnapshot.data());
+      if (!repo) throw new StoreError(`repo is invalid: ${input.repoId}`, 'invalid');
+      if (input.branchId) {
+        const branchLoc = await this.locateBranchTx(tx, input.branchId);
+        if (!branchLoc) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
+        if (branchLoc.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
+      }
+      const now = new Date().toISOString();
+      const asset: AudioAsset = {
+        id: randomUUID(),
+        repoId: input.repoId,
+        branchId: input.branchId ?? null,
+        uploadId: input.uploadId ?? null,
+        role: input.role,
+        storageProvider: input.storageProvider ?? 'external',
+        storageUri: input.storageUri,
+        contentType: input.contentType ?? null,
+        sha256: input.sha256,
+        crc32c: input.crc32c ?? null,
+        md5Hash: input.md5Hash ?? null,
+        gcsGeneration: input.gcsGeneration ?? null,
+        gcsMetageneration: input.gcsMetageneration ?? null,
+        gcsEtag: input.gcsEtag ?? null,
+        codec: input.codec,
+        container: input.container,
+        qualityProfile: input.qualityProfile ?? null,
+        bitrateKbps: input.bitrateKbps,
+        channelCount: input.channelCount,
+        sampleRate: input.sampleRate,
+        durationMs: input.durationMs,
+        byteLength: input.byteLength,
+        encryptionKeyRef: input.encryptionKeyRef ?? null,
+        uploadedAt: input.uploadedAt ?? null,
+        verifiedAt: input.verifiedAt ?? null,
+        createdAt: now
+      };
+      tx.set(this.audioAssetRef(repoLoc, asset.id), storyDoc(asset, 'audio_asset'));
+      tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
+      return clone(asset);
+    });
+  }
+
+  async listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]> {
+    const repoLoc = await this.locateRepo(repoId);
+    if (!repoLoc) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    let query: Query<DocumentData, DocumentData> = this.repoRef(repoLoc).collection(COLLECTIONS.audioAssets);
+    if (branchId !== undefined) query = query.where('branchId', '==', branchId);
+    const snapshot = await query.get();
+    return snapshot.docs.map(doc => cleanAudioAsset(doc.data())).filter(isPresent).sort(sortByCreatedAt);
   }
 
   async acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease> {
@@ -407,6 +608,37 @@ export class FirestoreStoryStore implements StoryStore {
     // Firebase Admin owns the process-level Firestore client.
   }
 
+  private async deleteKnownRepoDocuments(loc: RepoLoc): Promise<void> {
+    const repoRef = this.repoRef(loc);
+    const names = [
+      COLLECTIONS.branches,
+      COLLECTIONS.turns,
+      COLLECTIONS.states,
+      COLLECTIONS.snapshots,
+      COLLECTIONS.patches,
+      COLLECTIONS.warnings,
+      COLLECTIONS.locks,
+      COLLECTIONS.audioAssets,
+      COLLECTIONS.audioUploads
+    ];
+    const refs: FirestoreDocRef[] = [];
+    for (const name of names) {
+      const snapshot = await repoRef.collection(name).get();
+      refs.push(...snapshot.docs.map(doc => doc.ref));
+    }
+    refs.push(repoRef);
+    await this.deleteRefs(refs);
+  }
+
+  private async deleteRefs(refs: FirestoreDocRef[]): Promise<void> {
+    const uniqueRefs = [...new Map(refs.map(ref => [ref.path, ref])).values()];
+    for (let i = 0; i < uniqueRefs.length; i += 450) {
+      const batch = this.db.batch();
+      for (const ref of uniqueRefs.slice(i, i + 450)) batch.delete(ref);
+      await batch.commit();
+    }
+  }
+
   private userRef(ownerKey: string): FirestoreDocRef {
     return this.db.collection(COLLECTIONS.users).doc(ownerKey);
   }
@@ -441,6 +673,14 @@ export class FirestoreStoryStore implements StoryStore {
 
   private branchLockRef(loc: BranchLoc): FirestoreDocRef {
     return this.repoRef(loc).collection(COLLECTIONS.locks).doc(loc.branchId);
+  }
+
+  private audioAssetRef(loc: RepoLoc, assetId: string): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.audioAssets).doc(assetId);
+  }
+
+  private audioUploadRef(loc: RepoLoc, uploadId: string): FirestoreDocRef {
+    return this.repoRef(loc).collection(COLLECTIONS.audioUploads).doc(uploadId);
   }
 
   private repoIndexRef(repoId: string): FirestoreDocRef {
@@ -635,6 +875,75 @@ function cleanTurn(data: DocumentData | undefined): TurnCommit | null {
   });
 }
 
+function cleanAudioAsset(data: DocumentData | undefined): AudioAsset | null {
+  if (!data) return null;
+  const id = stringFrom(data.id);
+  const repoId = stringFrom(data.repoId);
+  if (!id || !repoId) return null;
+  return clone({
+    id,
+    repoId,
+    branchId: nullableString(data.branchId),
+    uploadId: nullableString(data.uploadId),
+    role: (stringFrom(data.role) || 'user') as AudioAsset['role'],
+    storageProvider: (stringFrom(data.storageProvider) || null) as AudioAsset['storageProvider'],
+    storageUri: stringFrom(data.storageUri),
+    contentType: nullableString(data.contentType),
+    sha256: stringFrom(data.sha256),
+    crc32c: nullableString(data.crc32c),
+    md5Hash: nullableString(data.md5Hash),
+    gcsGeneration: nullableString(data.gcsGeneration),
+    gcsMetageneration: nullableString(data.gcsMetageneration),
+    gcsEtag: nullableString(data.gcsEtag),
+    codec: stringFrom(data.codec),
+    container: stringFrom(data.container),
+    qualityProfile: nullableString(data.qualityProfile) as AudioAsset['qualityProfile'],
+    bitrateKbps: optionalNumber(data.bitrateKbps),
+    channelCount: optionalNumber(data.channelCount),
+    sampleRate: optionalNumber(data.sampleRate),
+    durationMs: optionalNumber(data.durationMs),
+    byteLength: optionalNumber(data.byteLength),
+    encryptionKeyRef: nullableString(data.encryptionKeyRef),
+    uploadedAt: nullableString(data.uploadedAt),
+    verifiedAt: nullableString(data.verifiedAt),
+    createdAt: stringFrom(data.createdAt)
+  });
+}
+
+function cleanAudioUploadIntent(data: DocumentData | undefined): AudioUploadIntent | null {
+  if (!data) return null;
+  const id = stringFrom(data.id);
+  const repoId = stringFrom(data.repoId);
+  const storageUri = stringFrom(data.storageUri);
+  if (!id || !repoId || !storageUri) return null;
+  return clone({
+    id,
+    repoId,
+    branchId: nullableString(data.branchId),
+    ownerUserId: normalizeOwnerUserId(data.ownerUserId),
+    role: (stringFrom(data.role) || 'user') as AudioUploadIntent['role'],
+    storageProvider: 'gcs',
+    storageUri,
+    contentType: stringFrom(data.contentType),
+    sha256: stringFrom(data.sha256),
+    crc32c: nullableString(data.crc32c),
+    codec: stringFrom(data.codec),
+    container: stringFrom(data.container),
+    qualityProfile: nullableString(data.qualityProfile) as AudioUploadIntent['qualityProfile'],
+    bitrateKbps: optionalNumber(data.bitrateKbps),
+    channelCount: optionalNumber(data.channelCount),
+    sampleRate: optionalNumber(data.sampleRate),
+    durationMs: optionalNumber(data.durationMs),
+    byteLength: numberFrom(data.byteLength),
+    encryptionKeyRef: nullableString(data.encryptionKeyRef),
+    status: (stringFrom(data.status) || 'pending') as AudioUploadIntent['status'],
+    audioAssetId: nullableString(data.audioAssetId),
+    createdAt: stringFrom(data.createdAt),
+    expiresAt: stringFrom(data.expiresAt),
+    verifiedAt: nullableString(data.verifiedAt)
+  });
+}
+
 function ownerKeyFromOwnerUserId(ownerUserId: string | null | undefined): string {
   return normalizeOwnerUserId(ownerUserId) ?? UNOWNED_OWNER_KEY;
 }
@@ -655,6 +964,11 @@ function stringFrom(value: unknown): string {
 function numberFrom(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function sortByCreatedAt<T extends { createdAt: string }>(a: T, b: T): number {

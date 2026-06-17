@@ -1,4 +1,37 @@
 import { z } from 'zod';
+import { AUDIO_QUALITY_PROFILE_NAMES } from './audioQuality.js';
+
+function hasNoHeaderControlChars(value: string): boolean {
+  return !/[\r\n\0]/.test(value);
+}
+
+function headerSafeString(max: number) {
+  return z.string().trim().max(max).refine(hasNoHeaderControlChars, {
+    message: 'value must not contain control characters'
+  });
+}
+
+function audioMetadataString(max: number) {
+  return z.string().trim().min(1).max(max).refine(hasNoHeaderControlChars, {
+    message: 'value must not contain control characters'
+  });
+}
+
+const AudioContentTypeSchema = z.string().trim().min(3).max(120).refine(hasNoHeaderControlChars, {
+  message: 'value must not contain control characters'
+}).refine(value => /^audio\/[A-Za-z0-9!#$&^_.+-]+(?:\s*;\s*[A-Za-z0-9!#$&^_.+-]+=[A-Za-z0-9!#$&^_.+-]+)*$/.test(value), {
+  message: 'contentType must be an audio MIME type'
+});
+
+const AudioMetadataStringSchema = audioMetadataString(160);
+const AudioCodecSchema = audioMetadataString(80);
+const AudioQualityProfileSchema = z.enum(AUDIO_QUALITY_PROFILE_NAMES);
+const AudioSha256Schema = z.string().trim().regex(/^[a-f0-9]{64}$/i).transform(value => value.toLowerCase());
+const GcsStorageUriSchema = z.string().trim().min(8).max(2048).regex(/^gs:\/\/[^/]+\/.+$/, {
+  message: 'storageUri must be a gs://bucket/object URI'
+}).refine(hasNoHeaderControlChars, {
+  message: 'value must not contain control characters'
+});
 
 export const EventTypeSchema = z.enum([
   'PLAYER_MOVED',
@@ -84,7 +117,9 @@ export const LiveTurnBodySchema = z.object({
   liveSessionId: z.string().trim().min(1).max(160).optional(),
   expectedHeadTurnId: z.string().min(1).nullable(),
   userTranscript: z.string().trim().min(1),
-  assistantTranscript: z.string().trim().min(1)
+  assistantTranscript: z.string().trim().min(1),
+  userAudioAssetId: z.string().trim().min(1).max(160).nullable().optional(),
+  assistantAudioAssetId: z.string().trim().min(1).max(160).nullable().optional()
 });
 
 export const ForkBranchBodySchema = z.object({
@@ -100,4 +135,76 @@ export const LiveTokenBodySchema = z.object({
   model: z.string().trim().min(1).max(160).optional(),
   responseModalities: z.array(z.enum(['AUDIO', 'TEXT'])).min(1).max(2).optional(),
   voiceName: z.string().trim().min(1).max(120).optional()
+});
+
+
+const Crc32cSchema = z.string().trim().regex(/^[A-Za-z0-9+/]{6}==$/, {
+  message: 'crc32c must be base64-encoded big-endian CRC32C'
+});
+
+const AudioManifestBodySchema = z.object({
+  uploadId: z.string().trim().min(1).max(160).nullable().optional(),
+  repoId: AudioMetadataStringSchema,
+  branchId: AudioMetadataStringSchema.nullable().optional(),
+  role: z.enum(['user', 'assistant', 'system']),
+  storageProvider: z.enum(['gcs', 'external']).nullable().optional(),
+  storageUri: GcsStorageUriSchema,
+  contentType: AudioContentTypeSchema.nullable().optional(),
+  sha256: AudioSha256Schema,
+  crc32c: Crc32cSchema.nullable().optional(),
+  md5Hash: headerSafeString(64).nullable().optional(),
+  gcsGeneration: headerSafeString(80).nullable().optional(),
+  gcsMetageneration: headerSafeString(80).nullable().optional(),
+  gcsEtag: headerSafeString(256).nullable().optional(),
+  codec: AudioCodecSchema,
+  container: AudioCodecSchema,
+  qualityProfile: AudioQualityProfileSchema.nullable().optional(),
+  bitrateKbps: z.number().int().min(1).max(2000).optional(),
+  channelCount: z.number().int().min(1).max(8).optional(),
+  sampleRate: z.number().int().min(1).max(384000).optional(),
+  durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
+  byteLength: z.number().int().min(0).max(10 * 1024 * 1024 * 1024).optional(),
+  encryptionKeyRef: headerSafeString(512).nullable().optional(),
+  uploadedAt: headerSafeString(80).nullable().optional(),
+  verifiedAt: headerSafeString(80).nullable().optional()
+});
+
+const AudioUploadRegistrationBodySchema = z.object({
+  uploadId: z.string().trim().min(1).max(160),
+  repoId: z.string().min(1)
+});
+
+export const AudioAssetBodySchema = z.union([AudioUploadRegistrationBodySchema, AudioManifestBodySchema]);
+
+export const AudioUploadUrlBodySchema = z.object({
+  repoId: AudioMetadataStringSchema,
+  branchId: AudioMetadataStringSchema.nullable().optional(),
+  role: z.enum(['user', 'assistant', 'system']),
+  contentType: AudioContentTypeSchema,
+  sha256: AudioSha256Schema,
+  crc32c: Crc32cSchema,
+  codec: AudioCodecSchema,
+  container: AudioCodecSchema,
+  qualityProfile: AudioQualityProfileSchema.optional(),
+  bitrateKbps: z.number().int().min(1).max(2000).optional(),
+  channelCount: z.number().int().min(1).max(8).optional(),
+  sampleRate: z.number().int().min(1).max(384000).optional(),
+  durationMs: z.number().int().min(0).max(24 * 60 * 60 * 1000).optional(),
+  byteLength: z.number().int().min(1).max(10 * 1024 * 1024 * 1024)
+});
+
+export const StorySearchQuerySchema = z.object({
+  q: z.string().trim().min(1).max(500),
+  repoId: z.string().trim().min(1).optional(),
+  branchId: z.string().trim().min(1).optional(),
+  limit: z.coerce.number().int().min(1).max(50).optional()
+});
+
+export const BranchCompareQuerySchema = z.object({
+  leftBranchId: z.string().trim().min(1),
+  rightBranchId: z.string().trim().min(1)
+});
+
+export const RepoExportQuerySchema = z.object({
+  format: z.enum(['json', 'markdown']).optional()
 });

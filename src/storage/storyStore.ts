@@ -1,8 +1,12 @@
 import type {
+  AudioAsset,
+  AudioObjectVerification,
+  AudioUploadIntent,
   BranchRef,
   CreateRepoInput,
   ForkBranchInput,
   ModelInvocationMetadata,
+  RegisterAudioAssetInput,
   StoryEventPatch,
   StoryRepo,
   TurnCommit,
@@ -24,6 +28,35 @@ export interface CommitTurnInput {
   userAudioAssetId?: string | null;
   assistantAudioAssetId?: string | null;
   modelMetadata?: ModelInvocationMetadata[];
+}
+
+export interface CreateAudioUploadIntentInput {
+  uploadId: string;
+  repoId: string;
+  branchId?: string | null;
+  ownerUserId?: string | null;
+  role: AudioUploadIntent['role'];
+  storageProvider: 'gcs';
+  storageUri: string;
+  contentType: string;
+  sha256: string;
+  crc32c?: string | null;
+  codec: string;
+  container: string;
+  qualityProfile?: AudioUploadIntent['qualityProfile'];
+  bitrateKbps?: number;
+  channelCount?: number;
+  sampleRate?: number;
+  durationMs?: number;
+  byteLength: number;
+  encryptionKeyRef?: string | null;
+  expiresAt: string;
+}
+
+export interface CompleteAudioUploadIntentInput {
+  repoId: string;
+  uploadId: string;
+  verification: AudioObjectVerification;
 }
 
 export interface BranchMutationLeaseInput {
@@ -56,6 +89,12 @@ export interface StoryStore {
   getBranch(branchId: string): Promise<BranchRef | null>;
   listBranches(repoId: string): Promise<BranchRef[]>;
   forkBranch(input: ForkBranchInput): Promise<{ branch: BranchRef; state: WorldState }>;
+  deleteRepo(repoId: string): Promise<void>;
+  createAudioUploadIntent(input: CreateAudioUploadIntentInput): Promise<AudioUploadIntent>;
+  getAudioUploadIntent(repoId: string, uploadId: string): Promise<AudioUploadIntent | null>;
+  completeAudioUploadIntent(input: CompleteAudioUploadIntentInput): Promise<AudioAsset>;
+  saveAudioAsset(input: RegisterAudioAssetInput): Promise<AudioAsset>;
+  listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]>;
   acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease>;
   releaseBranchMutationLease(lease: BranchMutationLease): Promise<void>;
   commitTurn(input: CommitTurnInput): Promise<TurnCommit>;

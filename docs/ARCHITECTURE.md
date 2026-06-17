@@ -17,7 +17,9 @@ Transcript-only browser
   -> Ariadne mints a locked Gemini Live token
   -> browser sends pre-roll/tail PCM to Gemini Live
   -> Gemini Live returns user/model transcripts and model audio
-  -> Ariadne commits the Live turn and calls canonizer
+  -> browser persists per-turn audio through a signed GCS upload intent
+  -> Ariadne verifies the object and commits the Live turn with audio asset links
+  -> Ariadne calls canonizer
 ```
 
 Paid usage uses server Gemini keys and Firestore credits. BYOK sends the user key only on provider-bearing requests and bypasses Ariadne billing.
@@ -129,4 +131,4 @@ StoryRepo
     model_invocation[]
 ```
 
-The canonical world state is derived from committed event patches. Summaries, embeddings, and snapshots are caches. The event ledger is the truth.
+The canonical world state is derived from committed event patches. Summaries, embeddings, and snapshots are caches. The event ledger is the truth. Raw audio is not part of the Firestore ledger; Firestore stores upload intents and verified manifests that point at private GCS objects.

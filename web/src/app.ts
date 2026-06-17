@@ -37,6 +37,22 @@ type PublicConfig = {
   defaultCheckoutAmountCents: number;
   minCheckoutAmountCents: number;
   liveBillableSeconds: number;
+  audioStorageEnabled: boolean;
+  audioMaxBytes: number;
+  audioDefaultQualityProfile: string;
+  audioAllowedQualityProfiles: string[];
+  audioQualityProfiles: Record<string, AudioQualityPolicy>;
+};
+
+type AudioQualityPolicy = {
+  profile: string;
+  codec: string;
+  containers: string[];
+  contentTypes: string[];
+  targetBitrateKbps: number;
+  maxBitrateKbps: number;
+  maxSampleRate: number;
+  maxChannelCount: number;
 };
 
 type AdminDocument = {
@@ -150,6 +166,60 @@ type PcmChunk = {
   endMs: number;
 };
 
+type CapturedAudioChunk = {
+  data: string;
+  mimeType: string;
+};
+
+type AudioUploadAsset = {
+  repoId: string;
+  branchId?: string | null;
+  role: 'user' | 'assistant' | 'system';
+  storageUri: string;
+  contentType?: string | null;
+  sha256: string;
+  crc32c?: string | null;
+  codec: string;
+  container: string;
+  qualityProfile?: string | null;
+  bitrateKbps?: number;
+  channelCount?: number;
+  sampleRate?: number;
+  durationMs?: number;
+  byteLength?: number;
+  encryptionKeyRef?: string | null;
+};
+
+type AudioUploadResponse = {
+  audioUpload: {
+    method: 'PUT';
+    uploadUrl: string;
+    uploadId: string;
+    expiresAt: string;
+    headers: Record<string, string>;
+    asset: AudioUploadAsset;
+    maxBytes: number;
+  };
+};
+
+type AudioAssetResponse = {
+  audioAsset: {
+    id: string;
+  };
+};
+
+type AudioArchiveBlob = {
+  blob: Blob;
+  contentType: string;
+  codec: string;
+  container: string;
+  qualityProfile: string;
+  bitrateKbps: number;
+  channelCount: number;
+  sampleRate?: number;
+  durationMs?: number;
+};
+
 type LiveTurn = {
   session: Session;
   sessionId: string | null;
@@ -162,6 +232,8 @@ type LiveTurn = {
   expectedHeadTurnId: string | null;
   userTranscript: string;
   assistantTranscript: string;
+  userAudioChunks: PcmChunk[];
+  assistantAudioChunks: CapturedAudioChunk[];
   userLine: HTMLElement | null;
   assistantLine: HTMLElement | null;
 };
@@ -179,6 +251,11 @@ const POST_ROLL_MS = 2000;
 const SPEECH_IDLE_MS = 1500;
 const PCM_BUFFER_MS = 10_000;
 const EMPTY_LIVE_TURN_TIMEOUT_MS = 12_000;
+const AUDIO_ARCHIVE_ENCODINGS = [
+  { mimeType: 'audio/webm;codecs=opus', contentType: 'audio/webm;codecs=opus', codec: 'opus', container: 'webm', qualityProfile: 'voice-hifi' },
+  { mimeType: 'audio/ogg;codecs=opus', contentType: 'audio/ogg;codecs=opus', codec: 'opus', container: 'ogg', qualityProfile: 'voice-hifi' },
+  { mimeType: 'audio/mp4;codecs=mp4a.40.2', contentType: 'audio/mp4;codecs=mp4a.40.2', codec: 'aac', container: 'mp4', qualityProfile: 'aac-hifi' }
+] as const;
 
 const state: RepoState = {
   repoId: sessionStorage.getItem(STORAGE.repoId),
@@ -419,6 +496,7 @@ function renderAdminDetail(container: HTMLElement, payload: AdminUserDetailRespo
     'eventPatches',
     'continuityWarnings',
     'branchMutationLocks',
+    'audioAssets',
     'liveSessions',
     'storyTurns',
     'billingEvents',
@@ -528,6 +606,7 @@ function buildStoriesMapNode(payload: AdminUserDetailResponse): AdminMapNode {
   const eventPatches = adminDocs(payload, 'eventPatches');
   const continuityWarnings = adminDocs(payload, 'continuityWarnings');
   const branchMutationLocks = adminDocs(payload, 'branchMutationLocks');
+  const audioAssets = adminDocs(payload, 'audioAssets');
   const turnById = indexDocsByEntityId(turns);
   const repoChildren = repos.map(repo => buildRepoMapNode(repo, {
     branches,
@@ -1571,7 +1650,12 @@ async function ensureRepo(): Promise<void> {
     billingCurrency: 'usd',
     defaultCheckoutAmountCents: 1000,
     minCheckoutAmountCents: 500,
-    liveBillableSeconds: 30
+    liveBillableSeconds: 30,
+    audioStorageEnabled: false,
+    audioMaxBytes: 0,
+    audioDefaultQualityProfile: 'voice-hifi',
+    audioAllowedQualityProfiles: ['voice-hifi'],
+    audioQualityProfiles: {}
   };
   const result = await authorizedFetch<{ repo: { id: string }; branch: { id: string } }>('/v1/repos', {
     method: 'POST',
@@ -1740,6 +1824,8 @@ async function startLiveTurn(): Promise<void> {
       expectedHeadTurnId: token.branchHeadTurnId,
       userTranscript: '',
       assistantTranscript: '',
+      userAudioChunks: [],
+      assistantAudioChunks: [],
       userLine: null,
       assistantLine: null
     };
@@ -1791,6 +1877,7 @@ function sendLiveChunksThrough(endMs: number): void {
   const chunks = pcmChunks.filter(chunk => chunk.endMs > activeTurn!.sentThroughMs && chunk.startMs <= endMs);
   for (const chunk of chunks) {
     activeTurn.session.sendRealtimeInput({ audio: { data: chunk.data, mimeType: chunk.mimeType } });
+    activeTurn.userAudioChunks.push({ ...chunk });
     activeTurn.sentThroughMs = Math.max(activeTurn.sentThroughMs, chunk.endMs);
   }
 }
@@ -1815,6 +1902,7 @@ function onLiveMessage(message: LiveServerMessage): void {
   for (const part of serverContent?.modelTurn?.parts ?? []) {
     const inlineData = part.inlineData;
     if (inlineData?.data && inlineData.mimeType?.startsWith('audio/')) {
+      turn.assistantAudioChunks.push({ data: inlineData.data, mimeType: inlineData.mimeType });
       void playAudioChunk(inlineData.data, inlineData.mimeType);
     }
   }
@@ -1852,6 +1940,10 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   }
   try {
     if (!state.repoId || !state.branchId || !userTranscript || !assistantTranscript) return;
+    const audioAssetIds = await uploadLiveTurnAudioAssets(turn).catch(error => {
+      addLine('system', `audio archive skipped: ${messageFrom(error)}`);
+      return {} as { userAudioAssetId?: string; assistantAudioAssetId?: string };
+    });
 
     const result = await authorizedFetch<{ turn?: { id?: string } }>('/v1/story/live-turn', {
       method: 'POST',
@@ -1862,7 +1954,9 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
         liveSessionId: turn.sessionId ?? undefined,
         expectedHeadTurnId: turn.expectedHeadTurnId,
         userTranscript,
-        assistantTranscript
+        assistantTranscript,
+        userAudioAssetId: audioAssetIds.userAudioAssetId,
+        assistantAudioAssetId: audioAssetIds.assistantAudioAssetId
       }
     });
     if (result.turn?.id) {
@@ -1875,6 +1969,268 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
     clearTurnTokens(turn);
     resumeRecognitionAfterLiveTurn();
   }
+}
+
+async function uploadLiveTurnAudioAssets(turn: LiveTurn): Promise<{ userAudioAssetId?: string; assistantAudioAssetId?: string }> {
+  if (!state.config?.audioStorageEnabled || !state.repoId || !state.branchId) return {};
+
+  const result: { userAudioAssetId?: string; assistantAudioAssetId?: string } = {};
+  const userAssetId = await uploadCapturedAudio('user', turn.userAudioChunks);
+  if (userAssetId) result.userAudioAssetId = userAssetId;
+  const assistantAssetId = await uploadCapturedAudio('assistant', turn.assistantAudioChunks);
+  if (assistantAssetId) result.assistantAudioAssetId = assistantAssetId;
+  return result;
+}
+
+async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedAudioChunk[]): Promise<string | undefined> {
+  if (!state.repoId || !state.branchId || !chunks.length) return undefined;
+  const archive = await audioChunksToArchive(chunks);
+  if (!archive || archive.blob.size <= 0) return undefined;
+  const maxBytes = state.config?.audioMaxBytes ?? 0;
+  if (maxBytes > 0 && archive.blob.size > maxBytes) {
+    throw new Error(`${role} audio is too large to archive.`);
+  }
+
+  const checksums = await audioChecksums(archive.blob);
+  const audioUpload = await authorizedFetch<AudioUploadResponse>('/v1/audio-assets/upload-url', {
+    method: 'POST',
+    body: {
+      repoId: state.repoId,
+      branchId: state.branchId,
+      role,
+      contentType: archive.contentType,
+      sha256: checksums.sha256,
+      crc32c: checksums.crc32c,
+      codec: archive.codec,
+      container: archive.container,
+      sampleRate: archive.sampleRate,
+      durationMs: archive.durationMs,
+      byteLength: archive.blob.size,
+      qualityProfile: archive.qualityProfile,
+      bitrateKbps: archive.bitrateKbps,
+      channelCount: archive.channelCount
+    }
+  });
+
+  const upload = audioUpload.audioUpload;
+  const response = await fetch(upload.uploadUrl, {
+    method: upload.method,
+    headers: upload.headers,
+    body: archive.blob
+  });
+  if (!response.ok) {
+    throw new Error(`GCS audio upload failed with ${response.status}.`);
+  }
+
+  const registered = await authorizedFetch<AudioAssetResponse>('/v1/audio-assets', {
+    method: 'POST',
+    body: {
+      repoId: state.repoId,
+      uploadId: upload.uploadId
+    }
+  });
+  return registered.audioAsset.id;
+}
+
+async function audioChunksToArchive(chunks: CapturedAudioChunk[]): Promise<AudioArchiveBlob | null> {
+  if (!chunks.length) return null;
+  const pcmSampleRate = parsePcmSampleRate(chunks[0].mimeType);
+  const allPcm = pcmSampleRate !== null && chunks.every(chunk => parsePcmSampleRate(chunk.mimeType) === pcmSampleRate);
+  if (!allPcm) return null;
+
+  const pcmBytes = concatUint8Arrays(chunks.map(chunk => base64ToUint8Array(chunk.data)));
+  const durationMs = Math.round((pcmBytes.byteLength / 2 / pcmSampleRate) * 1000);
+  return compressedArchiveFromPcm16(pcmBytes, pcmSampleRate, durationMs);
+}
+
+type BrowserAudioArchiveEncoding = {
+  mimeType: string;
+  contentType: string;
+  codec: string;
+  container: string;
+  qualityProfile: string;
+  bitrateKbps: number;
+  channelCount: number;
+};
+
+async function compressedArchiveFromPcm16(pcmBytes: Uint8Array, sampleRate: number, durationMs: number): Promise<AudioArchiveBlob | null> {
+  const encoding = preferredAudioArchiveEncoding();
+  if (!encoding) return null;
+  try {
+    const blob = await encodePcm16WithMediaRecorder(pcmBytes, sampleRate, encoding.mimeType, encoding.bitrateKbps, durationMs);
+    if (blob.size <= 0) return null;
+    return {
+      blob,
+      contentType: blob.type || encoding.contentType,
+      codec: encoding.codec,
+      container: encoding.container,
+      qualityProfile: encoding.qualityProfile,
+      bitrateKbps: encoding.bitrateKbps,
+      channelCount: encoding.channelCount,
+      sampleRate,
+      durationMs
+    };
+  } catch {
+    return null;
+  }
+}
+
+function preferredAudioArchiveEncoding(): BrowserAudioArchiveEncoding | null {
+  if (typeof MediaRecorder === 'undefined') return null;
+  const allowedProfiles = new Set(state.config?.audioAllowedQualityProfiles ?? ['voice-hifi']);
+  for (const candidate of AUDIO_ARCHIVE_ENCODINGS) {
+    if (!MediaRecorder.isTypeSupported(candidate.mimeType)) continue;
+    const qualityProfile = resolveEncodingProfile(candidate.codec, candidate.qualityProfile, allowedProfiles);
+    if (!qualityProfile) continue;
+    const policy = state.config?.audioQualityProfiles?.[qualityProfile];
+    return {
+      mimeType: candidate.mimeType,
+      contentType: candidate.contentType,
+      codec: candidate.codec,
+      container: candidate.container,
+      qualityProfile,
+      bitrateKbps: policy?.targetBitrateKbps ?? (candidate.codec === 'aac' ? 128 : 96),
+      channelCount: Math.min(1, policy?.maxChannelCount ?? 1)
+    };
+  }
+  return null;
+}
+
+function resolveEncodingProfile(codec: string, fallbackProfile: string, allowedProfiles: Set<string>): string | null {
+  const defaultProfile = state.config?.audioDefaultQualityProfile;
+  const profiles = state.config?.audioQualityProfiles ?? {};
+  if (defaultProfile && allowedProfiles.has(defaultProfile) && profiles[defaultProfile]?.codec === codec) return defaultProfile;
+  if (allowedProfiles.has(fallbackProfile) && (!profiles[fallbackProfile] || profiles[fallbackProfile].codec === codec)) return fallbackProfile;
+  for (const profile of allowedProfiles) {
+    if (profiles[profile]?.codec === codec) return profile;
+  }
+  return null;
+}
+
+function parsePcmSampleRate(mimeType: string): number | null {
+  if (!mimeType.includes('audio/pcm')) return null;
+  const sampleRate = Number(mimeType.match(/rate=(\d+)/)?.[1] || 0);
+  return Number.isFinite(sampleRate) && sampleRate > 0 ? sampleRate : null;
+}
+
+async function encodePcm16WithMediaRecorder(
+  pcmBytes: Uint8Array,
+  sampleRate: number,
+  mimeType: string,
+  bitrateKbps: number,
+  durationMs: number
+): Promise<Blob> {
+  if (typeof MediaRecorder === 'undefined') throw new Error('MediaRecorder is unavailable');
+  const context = new AudioContext({ sampleRate });
+  await context.resume();
+  const sampleCount = Math.floor(pcmBytes.byteLength / 2);
+  const buffer = context.createBuffer(1, sampleCount, sampleRate);
+  copyPcm16ToAudioChannel(pcmBytes, buffer.getChannelData(0));
+  const destination = context.createMediaStreamDestination();
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.connect(destination);
+
+  try {
+    return await new Promise<Blob>((resolve, reject) => {
+      const encodedChunks: Blob[] = [];
+      const recorder = new MediaRecorder(destination.stream, {
+        mimeType,
+        audioBitsPerSecond: bitrateKbps * 1000
+      });
+      let settled = false;
+      const timeoutMs = Math.max(durationMs + 5_000, 10_000);
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        source.disconnect();
+        destination.stream.getTracks().forEach(track => track.stop());
+        callback();
+      };
+      const timeout = window.setTimeout(() => {
+        if (recorder.state !== 'inactive') recorder.stop();
+        finish(() => reject(new Error('audio archive encoder timed out')));
+      }, timeoutMs);
+
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) encodedChunks.push(event.data);
+      };
+      recorder.onerror = event => {
+        const error = (event as ErrorEvent & { error?: DOMException }).error;
+        finish(() => reject(new Error(error?.message || 'audio archive encoder failed')));
+      };
+      recorder.onstop = () => {
+        const type = recorder.mimeType || mimeType;
+        finish(() => resolve(new Blob(encodedChunks, { type })));
+      };
+      source.onended = () => {
+        if (recorder.state !== 'inactive') recorder.stop();
+      };
+
+      recorder.start();
+      source.start();
+    });
+  } finally {
+    await context.close().catch(() => {});
+  }
+}
+
+function copyPcm16ToAudioChannel(pcmBytes: Uint8Array, channel: Float32Array): void {
+  const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+  for (let i = 0; i < channel.length; i += 1) {
+    channel[i] = view.getInt16(i * 2, true) / 32768;
+  }
+}
+
+function concatUint8Arrays(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output;
+}
+
+async function audioChecksums(blob: Blob): Promise<{ sha256: string; crc32c: string }> {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const digest = await crypto.subtle.digest('SHA-256', buffer.slice(0));
+  return {
+    sha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join(''),
+    crc32c: crc32cBase64(bytes)
+  };
+}
+
+const CRC32C_TABLE = buildCrc32cTable();
+
+function buildCrc32cTable(): Uint32Array {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < table.length; i += 1) {
+    let crc = i;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) ? (0x82f63b78 ^ (crc >>> 1)) : (crc >>> 1);
+    }
+    table[i] = crc >>> 0;
+  }
+  return table;
+}
+
+function crc32cBase64(bytes: Uint8Array): string {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc = CRC32C_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  }
+  crc = (crc ^ 0xffffffff) >>> 0;
+  const out = new Uint8Array([
+    (crc >>> 24) & 0xff,
+    (crc >>> 16) & 0xff,
+    (crc >>> 8) & 0xff,
+    crc & 0xff
+  ]);
+  return btoa(String.fromCharCode(...out));
 }
 
 async function buyCredits(): Promise<void> {

@@ -7,6 +7,21 @@ import {
   type ModelCatalog
 } from './billing/modelCatalog.js';
 import type { BillingConfig } from './billing/usageBilling.js';
+import {
+  DEFAULT_AUDIO_QUALITY_PROFILE,
+  parseAllowedAudioQualityProfiles,
+  parseAudioQualityProfile,
+  type AudioQualityProfile
+} from './domain/audioQuality.js';
+
+export interface AudioStorageConfig {
+  gcsBucket?: string;
+  objectPrefix: string;
+  signedUrlTtlSeconds: number;
+  maxBytes: number;
+  defaultQualityProfile: AudioQualityProfile;
+  allowedQualityProfiles: AudioQualityProfile[];
+}
 
 export interface AppConfig {
   env: string;
@@ -37,6 +52,7 @@ export interface AppConfig {
   turnReservationCreditMicros: number;
   billing: BillingConfig;
   adminEmails: string[];
+  audioStorage: AudioStorageConfig;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -74,6 +90,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     liveSessionTtlSeconds: readInt(env.ARIADNE_LIVE_SESSION_TTL_SECONDS, 75, { min: 30, max: 600 })
   };
   const adminEmails = parseStringList(env.ARIADNE_ADMIN_EMAILS).map(email => email.toLowerCase());
+  const audioStorage: AudioStorageConfig = {
+    gcsBucket: readOptionalTrimmed(env.ARIADNE_AUDIO_GCS_BUCKET),
+    objectPrefix: normalizeObjectPrefix(env.ARIADNE_AUDIO_GCS_PREFIX ?? 'audio'),
+    signedUrlTtlSeconds: readInt(env.ARIADNE_AUDIO_UPLOAD_URL_TTL_SECONDS, 15 * 60, { min: 60, max: 60 * 60 }),
+    maxBytes: readInt(env.ARIADNE_AUDIO_MAX_BYTES, 50 * 1024 * 1024, { min: 1024, max: 10 * 1024 * 1024 * 1024 }),
+    defaultQualityProfile: parseAudioQualityProfile(env.ARIADNE_AUDIO_DEFAULT_QUALITY_PROFILE, DEFAULT_AUDIO_QUALITY_PROFILE),
+    allowedQualityProfiles: parseAllowedAudioQualityProfiles(env.ARIADNE_AUDIO_ALLOWED_QUALITY_PROFILES)
+  };
+  if (!audioStorage.allowedQualityProfiles.includes(audioStorage.defaultQualityProfile)) {
+    throw new Error('ARIADNE_AUDIO_DEFAULT_QUALITY_PROFILE must be present in ARIADNE_AUDIO_ALLOWED_QUALITY_PROFILES');
+  }
 
   if (appEnv === 'production') {
     assertProductionSafe({
@@ -86,7 +113,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       appUrl: billing.appUrl,
       stripeSecretKey: billing.stripeSecretKey,
       stripeWebhookSecret: billing.stripeWebhookSecret,
-      stripeProductId: billing.stripeProductId
+      stripeProductId: billing.stripeProductId,
+      audioGcsBucket: audioStorage.gcsBucket
     });
   }
 
@@ -131,7 +159,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     turnReservationCreditMicros,
     billing,
-    adminEmails
+    adminEmails,
+    audioStorage
   };
 }
 
@@ -146,6 +175,7 @@ function assertProductionSafe(input: {
   stripeSecretKey?: string;
   stripeWebhookSecret?: string;
   stripeProductId?: string;
+  audioGcsBucket?: string;
 }): void {
   const errors: string[] = [];
   if (input.storage !== 'firestore') errors.push('ARIADNE_STORAGE=firestore is required in production');
@@ -158,9 +188,17 @@ function assertProductionSafe(input: {
   if (!input.stripeSecretKey) errors.push('STRIPE_SECRET_KEY is required in production');
   if (!input.stripeWebhookSecret) errors.push('STRIPE_WEBHOOK_SECRET is required in production');
   if (!input.stripeProductId) errors.push('STRIPE_PRODUCT_ID is required in production');
+  if (!input.audioGcsBucket) errors.push('ARIADNE_AUDIO_GCS_BUCKET is required in production');
   if (errors.length) {
     throw new Error(errors.join('; '));
   }
+}
+
+function normalizeObjectPrefix(value: string): string {
+  return value
+    .trim()
+    .replace(/^\/+|\/+$/g, '')
+    .replace(/\/{2,}/g, '/');
 }
 
 function parseCorsOrigins(value: string): string[] | true {
