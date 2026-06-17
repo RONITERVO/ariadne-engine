@@ -8,13 +8,14 @@ The hosted release supports Firebase Google sign-in with prepaid Ariadne credits
 
 ## What is included
 
-- Fastify API with health, config, repo, branch, turn, streaming turn, Live-turn commit, provider-validation, billing, Stripe webhook, and Gemini Live-token routes.
+- Fastify API with health, config, repo, branch, turn, streaming turn, Live-turn commit, provider-validation, billing, Stripe webhook, Gemini Live-token, and player story-map routes.
 - Gemini provider adapter using `@google/genai`, plus a development-only mock adapter.
 - Firebase Auth verification, Firestore story store, Firebase Hosting rewrites, and secure Firestore rules.
 - Paid usage ledger for prepaid credits, normal model token usage, and fixed 30-second Gemini Live sessions with one active paid Live session per user.
 - Server-side Gemini key rotation with per-key concurrency, minute/day limits, and cooldowns.
 - Per-branch mutation leases and expected-head checks so overlapping turns cannot corrupt branch history.
 - Transcript-only Gemini Live browser loop. Browser STT only detects speech start; Gemini Live supplies user/model transcripts and model audio.
+- Player-facing **Ariadne Atlas** at `/map`: a Git-galaxy style story map where repos are planets, branches are orbits, turns are stars, and current world state becomes landmarks.
 - Server-side provider-key guardrails. BYOK keys are accepted only in `x-ariadne-provider-key`, rejected from query/body fields, redacted from logs, and never saved.
 - Production config safety checks. `NODE_ENV=production` requires Firestore, Firebase auth, paid usage, strict CORS, server Gemini keys, and no mock provider.
 - In-memory local dev/test store plus Firestore production store.
@@ -168,6 +169,8 @@ Firestore + object storage
 | `GET /` | serves the built transcript-only browser shell when `web/dist` exists |
 | `GET /health` | health and deployment metadata |
 | `GET /v1/config` | frontend-safe public config |
+| `GET /map` | player-facing Ariadne Atlas story galaxy |
+| `GET /v1/story-map` | compact graph payload for the Atlas; derived from existing repos, branches, timelines, and world state |
 | `POST /v1/provider/gemini/validate-key` | validates a BYOK Gemini key without storing it |
 | `POST /v1/provider/gemini/live-token` | mints a locked Gemini Live ephemeral token from BYOK or paid server keys |
 | `POST /v1/story/live-turn` | commits Gemini Live transcripts, canonizes, and reduces state |
@@ -192,7 +195,7 @@ src/
   server/         Fastify app and routes
   storage/        in-memory local store and Firestore production store
 web/              transcript-only browser frontend
-docs/             architecture, BYOK, security, release docs
+docs/             architecture, BYOK, story atlas, security, release docs
 ```
 
 ## Current limits

@@ -61,6 +61,40 @@ test('admin users route is not public', async t => {
   assert.equal(response.json().error, 'firebase_auth_required');
 });
 
+
+
+test('story map route exposes a player-facing graph without a migration', async t => {
+  const app = await buildApp(testConfig());
+  t.after(() => app.close());
+
+  const created = await app.inject({
+    method: 'POST',
+    url: '/v1/repos',
+    payload: { title: 'Atlas Test', defaultStyle: 'mythic atlas' }
+  });
+  assert.equal(created.statusCode, 201);
+
+  const response = await app.inject({ method: 'GET', url: '/v1/story-map' });
+  assert.equal(response.statusCode, 200);
+  const payload = response.json() as {
+    rootId: string;
+    nodes: Array<{ kind: string; label: string }>;
+    links: Array<{ kind: string }>;
+    stats: { repos: number; branches: number; nodes: number; links: number };
+    tokens: { action: string };
+  };
+
+  assert.equal(payload.tokens.action, 'story.get-map');
+  assert.ok(payload.rootId);
+  assert.ok(payload.nodes.some(node => node.kind === 'repo' && node.label === 'Atlas Test'));
+  assert.ok(payload.nodes.some(node => node.kind === 'branch' && node.label === 'main'));
+  assert.ok(payload.links.some(link => link.kind === 'contains'));
+  assert.equal(payload.stats.repos, 1);
+  assert.equal(payload.stats.branches, 1);
+  assert.ok(payload.stats.nodes >= 3);
+  assert.ok(payload.stats.links >= 2);
+});
+
 test('streaming story route emits realtime deltas and final canonized state', async t => {
   const app = await buildApp(testConfig());
   t.after(() => app.close());
