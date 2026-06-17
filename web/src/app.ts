@@ -14,6 +14,15 @@ import {
   signOutFirebase,
   type FirebaseUser
 } from './firebase';
+import {
+  CLIENT_TOKEN,
+  clientTokenDisplay,
+  fallbackTokenDisplay,
+  sortTokenDisplays,
+  type ClientToken,
+  type TokenDisplay,
+  type TokenSnapshot
+} from './activityTokens';
 
 type PublicConfig = {
   defaultStoryTitle: string;
@@ -209,6 +218,15 @@ let activeTurn: LiveTurn | null = null;
 let liveStarting: Promise<void> | null = null;
 let audioPlayhead = 0;
 let recognitionPausedForLiveTurn = false;
+let tokenFlagOpen = false;
+let latestBackendTokens: TokenSnapshot | null = null;
+const localActivityTokens = new Set<ClientToken>();
+const tokenFlagEls: {
+  root?: HTMLButtonElement;
+  label?: HTMLElement;
+  count?: HTMLElement;
+  panel?: HTMLElement;
+} = {};
 
 if (ADMIN_PATH) {
   startAdminDashboard();
@@ -217,6 +235,8 @@ if (ADMIN_PATH) {
 }
 
 function startTranscriptApp(): void {
+  mountTokenFlag();
+  addLocalToken(CLIENT_TOKEN.UI_GATE_OPEN);
   els.apiKey.value = state.key;
   els.apiKey.addEventListener('input', () => {
     state.key = els.apiKey.value.trim();
@@ -1504,6 +1524,7 @@ function scheduleBoot(): void {
 async function boot(): Promise<void> {
   if (state.booting || state.started) return;
   state.booting = true;
+  addLocalToken(CLIENT_TOKEN.UI_BOOTING);
   state.key = els.apiKey.value.trim();
   state.usingByok = Boolean(state.key);
   setGateStatus('Connecting...');
@@ -1526,6 +1547,7 @@ async function boot(): Promise<void> {
     setGateStatus(messageFrom(error));
   } finally {
     state.booting = false;
+    removeLocalToken(CLIENT_TOKEN.UI_BOOTING);
   }
 }
 
@@ -1568,40 +1590,47 @@ async function ensureRepo(): Promise<void> {
 
 function startTranscriptOnlyMode(): void {
   state.started = true;
+  removeLocalToken(CLIENT_TOKEN.UI_GATE_OPEN);
   els.gate.classList.add('is-hidden');
   els.transcript.classList.add('is-live');
 }
 
 async function startMicrophoneBuffer(): Promise<void> {
   if (audioContext && processor && mediaStream) return;
-  mediaStream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    }
-  });
+  addLocalToken(CLIENT_TOKEN.MEDIA_MICROPHONE_BUFFER);
+  try {
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
+    });
 
-  audioContext = new AudioContext();
-  await audioContext.resume();
-  const source = audioContext.createMediaStreamSource(mediaStream);
-  processor = audioContext.createScriptProcessor(4096, 1, 1);
-  processor.onaudioprocess = event => {
-    const input = event.inputBuffer.getChannelData(0);
-    const now = Date.now();
-    const durationMs = Math.round((input.length / event.inputBuffer.sampleRate) * 1000);
-    const chunk: PcmChunk = {
-      data: float32ToBase64Pcm16(input),
-      mimeType: `audio/pcm;rate=${event.inputBuffer.sampleRate}`,
-      startMs: now - durationMs,
-      endMs: now
+    audioContext = new AudioContext();
+    await audioContext.resume();
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    processor = audioContext.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = event => {
+      const input = event.inputBuffer.getChannelData(0);
+      const now = Date.now();
+      const durationMs = Math.round((input.length / event.inputBuffer.sampleRate) * 1000);
+      const chunk: PcmChunk = {
+        data: float32ToBase64Pcm16(input),
+        mimeType: `audio/pcm;rate=${event.inputBuffer.sampleRate}`,
+        startMs: now - durationMs,
+        endMs: now
+      };
+      pcmChunks.push(chunk);
+      prunePcmChunks(now);
+      sendLiveChunksThrough(now);
     };
-    pcmChunks.push(chunk);
-    prunePcmChunks(now);
-    sendLiveChunksThrough(now);
-  };
-  source.connect(processor);
-  processor.connect(audioContext.destination);
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+  } catch (error) {
+    removeLocalToken(CLIENT_TOKEN.MEDIA_MICROPHONE_BUFFER);
+    throw error;
+  }
 }
 
 function startRecognitionLoop(): void {
@@ -1624,6 +1653,7 @@ function startRecognitionLoop(): void {
   };
   recognition.onend = () => {
     state.recognitionActive = false;
+    removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
     if (state.started && !recognitionPausedForLiveTurn) restartRecognitionSoon();
   };
   restartRecognitionSoon();
@@ -1665,6 +1695,7 @@ async function ensureLiveTurnStarted(): Promise<void> {
 async function startLiveTurn(): Promise<void> {
   const startedAtMs = Date.now();
   const preRollFromMs = startedAtMs - PRE_ROLL_MS;
+  addLocalToken(CLIENT_TOKEN.LIVE_TURN_STARTING);
   try {
     const token = await authorizedFetch<LiveTokenResponse>('/v1/provider/gemini/live-token', {
       method: 'POST',
@@ -1714,11 +1745,15 @@ async function startLiveTurn(): Promise<void> {
     };
 
     activeTurn = turn;
+    removeLocalToken(CLIENT_TOKEN.LIVE_TURN_STARTING);
+    addLocalToken(CLIENT_TOKEN.LIVE_TURN_ACTIVE);
     turn.session.sendRealtimeInput({ activityStart: {} });
     sendLiveChunksThrough(Date.now());
   } catch (error) {
     addLine('system', messageFrom(error));
     activeTurn = null;
+    removeLocalToken(CLIENT_TOKEN.LIVE_TURN_STARTING);
+    removeLocalToken(CLIENT_TOKEN.LIVE_TURN_ACTIVE);
   }
 }
 
@@ -1785,6 +1820,8 @@ function onLiveMessage(message: LiveServerMessage): void {
 async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   if (activeTurn !== turn) return;
   activeTurn = null;
+  removeLocalToken(CLIENT_TOKEN.LIVE_TURN_ACTIVE);
+  addLocalToken(CLIENT_TOKEN.LIVE_TURN_COMMITTING);
   if (turn.tailTimer) window.clearTimeout(turn.tailTimer);
   if (turn.closeTimer) window.clearTimeout(turn.closeTimer);
   if (turn.emptyTurnTimer) window.clearTimeout(turn.emptyTurnTimer);
@@ -1824,6 +1861,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   } catch (error) {
     addLine('system', messageFrom(error));
   } finally {
+    removeLocalToken(CLIENT_TOKEN.LIVE_TURN_COMMITTING);
     resumeRecognitionAfterLiveTurn();
   }
 }
@@ -1903,8 +1941,9 @@ async function authorizedFetch<T>(
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.message ?? payload.error ?? `Request failed with ${response.status}`);
+  const payload = await response.json().catch(() => ({})) as { tokens?: TokenSnapshot; message?: unknown; error?: unknown };
+  ingestBackendTokens(payload.tokens, response.headers.get('x-ariadne-active-tokens'));
+  if (!response.ok) throw new Error(String(payload.message ?? payload.error ?? `Request failed with ${response.status}`));
   return payload as T;
 }
 
@@ -1914,6 +1953,7 @@ function restartRecognitionSoon(): void {
     try {
       recognition.start();
       state.recognitionActive = true;
+      addLocalToken(CLIENT_TOKEN.STT_LISTENING);
     } catch {
       // start() throws if the browser still considers the previous recognition session active.
     }
@@ -1929,6 +1969,7 @@ function pauseRecognitionForLiveTurn(): void {
     // Some browsers throw if recognition has already stopped.
   }
   state.recognitionActive = false;
+  removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
 }
 
 function resumeRecognitionAfterLiveTurn(): void {
@@ -1988,6 +2029,123 @@ function updateGateActions(): void {
 
 function setGateStatus(text: string): void {
   els.status.textContent = text;
+}
+
+function mountTokenFlag(): void {
+  if (tokenFlagEls.root) return;
+
+  const root = document.createElement('button');
+  root.id = 'token-flag';
+  root.className = 'token-flag';
+  root.type = 'button';
+  root.setAttribute('aria-live', 'polite');
+  root.setAttribute('aria-expanded', 'false');
+  root.innerHTML = '<span class="token-flag-dot"></span><span id="token-flag-label"></span><span id="token-flag-count"></span>';
+
+  const panel = document.createElement('div');
+  panel.id = 'token-panel';
+  panel.className = 'token-panel';
+  panel.hidden = true;
+
+  root.addEventListener('click', () => {
+    tokenFlagOpen = !tokenFlagOpen;
+    renderTokenFlag();
+  });
+
+  document.body.append(root, panel);
+  tokenFlagEls.root = root;
+  tokenFlagEls.label = root.querySelector<HTMLElement>('#token-flag-label') ?? undefined;
+  tokenFlagEls.count = root.querySelector<HTMLElement>('#token-flag-count') ?? undefined;
+  tokenFlagEls.panel = panel;
+  renderTokenFlag();
+}
+
+function addLocalToken(token: ClientToken): void {
+  if (localActivityTokens.has(token)) return;
+  localActivityTokens.add(token);
+  renderTokenFlag();
+}
+
+function removeLocalToken(token: ClientToken): void {
+  if (!localActivityTokens.delete(token)) return;
+  renderTokenFlag();
+}
+
+function ingestBackendTokens(snapshot: TokenSnapshot | undefined, headerTokens: string | null): void {
+  if (snapshot?.activeTokens?.length || snapshot?.display?.length || snapshot?.blockerTokens?.length) {
+    latestBackendTokens = snapshot;
+    renderTokenFlag();
+    return;
+  }
+  const activeTokens = (headerTokens ?? '')
+    .split(',')
+    .map(token => token.trim())
+    .filter(Boolean);
+  if (activeTokens.length) {
+    latestBackendTokens = { activeTokens, display: activeTokens.map(token => fallbackTokenDisplay(token, 'backend')) };
+    renderTokenFlag();
+  }
+}
+
+function renderTokenFlag(): void {
+  if (!tokenFlagEls.root || !tokenFlagEls.label || !tokenFlagEls.count || !tokenFlagEls.panel) return;
+
+  const displays = currentTokenDisplays();
+  const primary = displays[0];
+  const tone = primary?.tone ?? 'state';
+  tokenFlagEls.root.dataset.tone = tone;
+  tokenFlagEls.root.setAttribute('aria-expanded', String(tokenFlagOpen));
+  tokenFlagEls.label.textContent = primary?.label ?? 'Idle';
+  tokenFlagEls.count.textContent = displays.length > 1 ? `+${displays.length - 1}` : '';
+  tokenFlagEls.root.title = primary ? `${primary.token} - ${primary.description}` : 'No active tokens';
+
+  tokenFlagEls.panel.hidden = !tokenFlagOpen;
+  if (!tokenFlagOpen) return;
+
+  const list = document.createElement('div');
+  list.className = 'token-panel-list';
+  const action = latestBackendTokens?.action ? tokenSmall(`Backend: ${latestBackendTokens.action}`) : null;
+  for (const display of displays) {
+    const row = document.createElement('div');
+    row.className = 'token-panel-row';
+    row.dataset.tone = display.tone;
+
+    const label = document.createElement('strong');
+    label.textContent = display.label;
+    const code = document.createElement('code');
+    code.textContent = display.token;
+    const description = tokenSmall(display.description);
+    const source = tokenSmall(display.source === 'client' ? 'Client token' : 'Backend token');
+    row.append(label, code, description, source);
+    list.append(row);
+  }
+
+  if (!displays.length) {
+    list.append(tokenSmall('Idle'));
+  }
+
+  tokenFlagEls.panel.replaceChildren(...(action ? [action, list] : [list]));
+}
+
+function currentTokenDisplays(): TokenDisplay[] {
+  const byToken = new Map<string, TokenDisplay>();
+  for (const token of localActivityTokens) {
+    const display = clientTokenDisplay(token);
+    byToken.set(display.token, display);
+  }
+  for (const display of latestBackendTokens?.display ?? []) {
+    byToken.set(display.token, { ...display, source: 'backend' });
+  }
+  for (const token of latestBackendTokens?.activeTokens ?? []) {
+    if (!byToken.has(token)) byToken.set(token, fallbackTokenDisplay(token, 'backend'));
+  }
+  return sortTokenDisplays([...byToken.values()]);
+}
+
+function tokenSmall(text: string): HTMLElement {
+  const small = document.createElement('small');
+  small.textContent = text;
+  return small;
 }
 
 function resolveApiBase(): string {

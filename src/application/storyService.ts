@@ -1,4 +1,12 @@
 import type { AppConfig } from '../config.js';
+import {
+  ACTION_ID,
+  ACTION_TOKEN,
+  ActionGateError,
+  type ActionTokenSnapshot,
+  type ActionTokenSet,
+  createActionTokenSet
+} from '../domain/actionTokens.js';
 import { buildContextCapsule, type ContextCapsule } from '../domain/contextCapsule.js';
 import { decideContextBudget, estimateTokensRoughly } from '../domain/contextBudget.js';
 import { reducePatch } from '../domain/reducer.js';
@@ -16,6 +24,7 @@ export interface ContinueStoryInput {
   expectedHeadTurnId: string | null;
   actorModel?: string;
   canonizerModel?: string;
+  tokens?: ActionTokenSet;
 }
 
 export interface CommitLiveTurnInput {
@@ -29,6 +38,7 @@ export interface CommitLiveTurnInput {
   expectedHeadTurnId: string | null;
   liveModel?: string;
   canonizerModel?: string;
+  tokens?: ActionTokenSet;
 }
 
 export interface ContinueStoryResult {
@@ -44,7 +54,7 @@ export type ContinueStoryStreamEvent =
   | { type: 'assistant_delta'; text: string }
   | { type: 'turn_committed'; turn: TurnCommit }
   | { type: 'canonized'; patch: StoryEventPatch; state: WorldState; continuityWarnings: string[] }
-  | { type: 'done'; assistantTranscript: string; modelMetadata: ModelInvocationMetadata[] };
+  | { type: 'done'; assistantTranscript: string; modelMetadata: ModelInvocationMetadata[]; tokens?: ActionTokenSnapshot };
 
 interface PreparedTurn {
   repo: StoryRepo;
@@ -108,7 +118,7 @@ export class StoryService {
     });
   }
 
-  async buildLiveSystemInstruction(input: { repoId: string; branchId: string }): Promise<string> {
+  async buildLiveSystemInstruction(input: { repoId: string; branchId: string; tokens?: ActionTokenSet }): Promise<string> {
     const prepared = await this.prepareLiveContext(input);
     return JSON.stringify(
       {
@@ -124,11 +134,8 @@ export class StoryService {
   }
 
   async *continueStoryStream(input: ContinueStoryInput): AsyncIterable<ContinueStoryStreamEvent> {
-    const lease = await this.store.acquireBranchMutationLease({
-      repoId: input.repoId,
-      branchId: input.branchId,
-      ttlMs: this.config.branchTurnLockTtlMs
-    });
+    const tokens = turnTokens(input);
+    const lease = await this.acquireBranchMutationLease(input, tokens);
     try {
       const prepared = await this.prepareTurn(input);
       let actor: ActorTurnResult | null = null;
@@ -175,22 +182,42 @@ export class StoryService {
   }
 
   private async prepareTurn(input: ContinueStoryInput): Promise<PreparedTurn> {
+    const tokens = turnTokens(input);
     if (input.userTranscript.length > this.config.maxTranscriptChars) {
-      throw new StoreError(`userTranscript is too long. Max ${this.config.maxTranscriptChars} characters.`, 'invalid');
+      throw tokens.fail(
+        `userTranscript is too long. Max ${this.config.maxTranscriptChars} characters.`,
+        400,
+        'store_invalid',
+        ACTION_TOKEN.CONTEXT_TRANSCRIPT_TOO_LONG
+      );
     }
+    tokens.add(ACTION_TOKEN.CONTEXT_TRANSCRIPT_WITHIN_LIMIT);
 
     const repo = await this.store.getRepo(input.repoId);
-    if (!repo) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+    if (!repo) {
+      throw tokens.fail(`repo not found: ${input.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    }
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
     const branch = await this.store.getBranch(input.branchId);
-    if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
-    if (branch.repoId !== repo.id) throw new StoreError('branch does not belong to repo', 'invalid');
+    if (!branch) {
+      throw tokens.fail(`branch not found: ${input.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    }
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+    if (branch.repoId !== repo.id) {
+      throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+    }
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
     const branchHeadTurnId = branch.headTurnId ?? null;
     if (input.expectedHeadTurnId !== undefined && input.expectedHeadTurnId !== branchHeadTurnId) {
-      throw new StoreError('branch head moved since this turn started', 'conflict');
+      throw tokens.fail('branch head moved since this turn started', 409, 'store_conflict', ACTION_TOKEN.STORY_BRANCH_HEAD_STALE);
     }
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_HEAD_CURRENT);
 
     const state = await this.store.getState(input.branchId);
-    if (!state) throw new StoreError(`branch state not found: ${input.branchId}`, 'not_found');
+    if (!state) {
+      throw tokens.fail(`branch state not found: ${input.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_STATE_MISSING);
+    }
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_STATE_FOUND);
 
     const timeline = await this.store.getTimeline(input.branchId);
     const projected = {
@@ -199,23 +226,38 @@ export class StoryService {
       userTranscript: input.userTranscript
     };
     state.contextBudget = decideContextBudget(estimateTokensRoughly(projected), this.config.budget);
+    addContextBudgetTokens(tokens, state.contextBudget);
     const capsule = buildContextCapsule(state, timeline);
 
     return { repo, branch, expectedHeadTurnId: branchHeadTurnId, state, timeline, capsule };
   }
 
-  private async prepareLiveContext(input: { repoId: string; branchId: string }): Promise<PreparedTurn> {
+  private async prepareLiveContext(input: { repoId: string; branchId: string; tokens?: ActionTokenSet }): Promise<PreparedTurn> {
+    const tokens = input.tokens ?? createActionTokenSet(ACTION_ID.PROVIDER_CREATE_LIVE_TOKEN);
     const repo = await this.store.getRepo(input.repoId);
-    if (!repo) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+    if (!repo) {
+      throw tokens.fail(`repo not found: ${input.repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+    }
+    tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
     const branch = await this.store.getBranch(input.branchId);
-    if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
-    if (branch.repoId !== repo.id) throw new StoreError('branch does not belong to repo', 'invalid');
+    if (!branch) {
+      throw tokens.fail(`branch not found: ${input.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_MISSING);
+    }
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_FOUND);
+    if (branch.repoId !== repo.id) {
+      throw tokens.fail('branch does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+    }
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
 
     const state = await this.store.getState(input.branchId);
-    if (!state) throw new StoreError(`branch state not found: ${input.branchId}`, 'not_found');
+    if (!state) {
+      throw tokens.fail(`branch state not found: ${input.branchId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_BRANCH_STATE_MISSING);
+    }
+    tokens.add(ACTION_TOKEN.STORY_BRANCH_STATE_FOUND);
 
     const timeline = await this.store.getTimeline(input.branchId);
     state.contextBudget = decideContextBudget(estimateTokensRoughly({ state, recentTurns: timeline.slice(-8) }), this.config.budget);
+    addContextBudgetTokens(tokens, state.contextBudget);
     const capsule = buildContextCapsule(state, timeline);
     return { repo, branch, expectedHeadTurnId: branch.headTurnId ?? null, state, timeline, capsule };
   }
@@ -277,14 +319,11 @@ export class StoryService {
   }
 
   private async withBranchMutationLease<T>(
-    input: { repoId: string; branchId: string },
+    input: { repoId: string; branchId: string; tokens?: ActionTokenSet },
     run: () => Promise<T>
   ): Promise<T> {
-    const lease = await this.store.acquireBranchMutationLease({
-      repoId: input.repoId,
-      branchId: input.branchId,
-      ttlMs: this.config.branchTurnLockTtlMs
-    });
+    const tokens = turnTokens(input);
+    const lease = await this.acquireBranchMutationLease(input, tokens);
     try {
       return await run();
     } finally {
@@ -296,5 +335,40 @@ export class StoryService {
     lease: Awaited<ReturnType<StoryStore['acquireBranchMutationLease']>>
   ): Promise<void> {
     await this.store.releaseBranchMutationLease(lease).catch(() => {});
+  }
+
+  private async acquireBranchMutationLease(
+    input: { repoId: string; branchId: string },
+    tokens: ActionTokenSet
+  ): Promise<Awaited<ReturnType<StoryStore['acquireBranchMutationLease']>>> {
+    try {
+      const lease = await this.store.acquireBranchMutationLease({
+        repoId: input.repoId,
+        branchId: input.branchId,
+        ttlMs: this.config.branchTurnLockTtlMs
+      });
+      tokens.add(ACTION_TOKEN.MUTATION_BRANCH_LEASE_ACQUIRED);
+      return lease;
+    } catch (error) {
+      if (error instanceof StoreError && error.code === 'conflict') {
+        throw tokens.fail(error.message, 409, 'store_conflict', ACTION_TOKEN.MUTATION_BRANCH_LEASE_ACTIVE);
+      }
+      throw error;
+    }
+  }
+}
+
+function turnTokens(input: { tokens?: ActionTokenSet }): ActionTokenSet {
+  return input.tokens ?? createActionTokenSet(ACTION_ID.STORY_TURN);
+}
+
+function addContextBudgetTokens(tokens: ActionTokenSet, budget: WorldState['contextBudget']): void {
+  if (!budget) return;
+  if (budget.hardStop) {
+    tokens.block(ACTION_TOKEN.CONTEXT_BUDGET_HARD_STOP);
+  } else if (budget.closureMode) {
+    tokens.add(ACTION_TOKEN.CONTEXT_BUDGET_CLOSURE);
+  } else {
+    tokens.add(ACTION_TOKEN.CONTEXT_BUDGET_STABLE);
   }
 }

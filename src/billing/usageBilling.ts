@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import type { DocumentData, Firestore } from 'firebase-admin/firestore';
 import Stripe from 'stripe';
+import { ACTION_TOKEN, type ActionToken } from '../domain/actionTokens.js';
 import { FieldValue, getFirebaseAdminDb } from '../firebase/admin.js';
 import type { LiveSessionCharge, UsageCharge } from './modelCatalog.js';
 
@@ -54,9 +55,17 @@ export interface LiveReservation {
 }
 
 export class BillingError extends Error {
-  constructor(message: string, public readonly statusCode = 402, public readonly code = 'billing_required') {
+  readonly blockerTokens: ActionToken[];
+
+  constructor(
+    message: string,
+    public readonly statusCode = 402,
+    public readonly code = 'billing_required',
+    blockerTokens: ActionToken[] = []
+  ) {
     super(message);
     this.name = 'BillingError';
+    this.blockerTokens = blockerTokens;
   }
 }
 
@@ -69,7 +78,14 @@ export class UsageBillingService {
   }
 
   async reserveStoryTurn(uid: string, reservationCreditMicros: number, metadata: Record<string, unknown>): Promise<UsageReservation> {
-    if (!this.config.enabled) throw new BillingError('Paid usage is not enabled on this deployment.', 503, 'billing_disabled');
+    if (!this.config.enabled) {
+      throw new BillingError(
+        'Paid usage is not enabled on this deployment.',
+        503,
+        'billing_disabled',
+        [ACTION_TOKEN.BILLING_PAID_USAGE_DISABLED]
+      );
+    }
     const id = randomUUID();
     const amount = Math.max(0, Math.ceil(reservationCreditMicros));
     if (amount <= 0) return this.noopReservation(uid, id);
@@ -80,7 +96,12 @@ export class UsageBillingService {
     await this.db.runTransaction(async tx => {
       const entitlement = normalizeEntitlement(uid, (await tx.get(entitlementRef)).data());
       if (entitlement.remainingCreditMicros < amount) {
-        throw new BillingError('Buy Ariadne credits before running this model turn.', 402, 'ariadne_credits_required');
+        throw new BillingError(
+          'Buy Ariadne credits before running this model turn.',
+          402,
+          'ariadne_credits_required',
+          [ACTION_TOKEN.BILLING_CREDITS_INSUFFICIENT]
+        );
       }
       tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(entitlementRef, {
@@ -108,7 +129,14 @@ export class UsageBillingService {
   }
 
   async reserveLiveSession(uid: string, charge: LiveSessionCharge): Promise<LiveReservation> {
-    if (!this.config.enabled) throw new BillingError('Paid usage is not enabled on this deployment.', 503, 'billing_disabled');
+    if (!this.config.enabled) {
+      throw new BillingError(
+        'Paid usage is not enabled on this deployment.',
+        503,
+        'billing_disabled',
+        [ACTION_TOKEN.BILLING_PAID_USAGE_DISABLED]
+      );
+    }
     const id = randomUUID();
     const amount = Math.max(0, Math.ceil(charge.creditMicros));
     const now = Date.now();
@@ -119,10 +147,20 @@ export class UsageBillingService {
     await this.db.runTransaction(async tx => {
       const entitlement = normalizeEntitlement(uid, (await tx.get(entitlementRef)).data());
       if (entitlement.activeLiveSessionId && (entitlement.activeLiveSessionExpiresAtMs ?? 0) > now) {
-        throw new BillingError('A Gemini Live session is already active for this account.', 429, 'live_session_active');
+        throw new BillingError(
+          'A Gemini Live session is already active for this account.',
+          429,
+          'live_session_active',
+          [ACTION_TOKEN.LIVE_SESSION_ACTIVE]
+        );
       }
       if (entitlement.remainingCreditMicros < amount) {
-        throw new BillingError('Buy Ariadne credits before starting Gemini Live.', 402, 'ariadne_credits_required');
+        throw new BillingError(
+          'Buy Ariadne credits before starting Gemini Live.',
+          402,
+          'ariadne_credits_required',
+          [ACTION_TOKEN.BILLING_CREDITS_INSUFFICIENT]
+        );
       }
       tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(entitlementRef, {
@@ -249,7 +287,12 @@ export class UsageBillingService {
       const extra = Math.max(0, usedCreditMicros - reservedCreditMicros);
       const unreservedRemaining = entitlement.paidCreditMicros - entitlement.usedCreditMicros - entitlement.reservedCreditMicros;
       if (extra > unreservedRemaining) {
-        throw new BillingError('Buy more Ariadne credits before saving this model turn.', 402, 'ariadne_credits_required');
+        throw new BillingError(
+          'Buy more Ariadne credits before saving this model turn.',
+          402,
+          'ariadne_credits_required',
+          [ACTION_TOKEN.BILLING_CREDITS_INSUFFICIENT]
+        );
       }
       tx.set(this.userRef(uid), userTouchData(uid), { merge: true });
       tx.set(entitlementRef, {
@@ -458,7 +501,9 @@ export class UsageBillingService {
   }
 
   protected requireStripe(): Stripe {
-    if (!this.config.stripeSecretKey) throw new BillingError('Stripe is not configured.', 500, 'stripe_not_configured');
+    if (!this.config.stripeSecretKey) {
+      throw new BillingError('Stripe is not configured.', 500, 'stripe_not_configured');
+    }
     return new Stripe(this.config.stripeSecretKey);
   }
 

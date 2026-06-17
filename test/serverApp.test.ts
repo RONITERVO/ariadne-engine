@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../src/config.js';
+import { ACTION_TOKEN } from '../src/domain/actionTokens.js';
 import { buildApp } from '../src/server/app.js';
 
 function testConfig() {
@@ -25,7 +26,9 @@ test('server rejects provider keys on non-provider routes', async t => {
   });
 
   assert.equal(response.statusCode, 400);
-  assert.match(response.json().error, /provider_key_unexpected/);
+  const payload = response.json();
+  assert.match(payload.error, /provider_key_unexpected/);
+  assert.ok(payload.tokens.blockerTokens.includes(ACTION_TOKEN.PROVIDER_KEY_UNEXPECTED));
 });
 
 test('server rejects provider secrets in request bodies and query strings', async t => {
@@ -87,12 +90,15 @@ test('streaming story route emits realtime deltas and final canonized state', as
   const events = streamed.body
     .trim()
     .split('\n')
-    .map(line => JSON.parse(line) as { type: string; text?: string; assistantTranscript?: string });
+    .map(line => JSON.parse(line) as { type: string; text?: string; assistantTranscript?: string; tokens?: { activeTokens?: string[] } });
 
   assert.ok(events.some(event => event.type === 'assistant_delta' && event.text));
   assert.ok(events.some(event => event.type === 'turn_committed'));
   assert.ok(events.some(event => event.type === 'canonized'));
   assert.ok(events.some(event => event.type === 'done' && event.assistantTranscript));
+  const done = events.find(event => event.type === 'done');
+  assert.ok(done?.tokens?.activeTokens?.includes(ACTION_TOKEN.PROVIDER_BYOK_KEY));
+  assert.ok(done?.tokens?.activeTokens?.includes(ACTION_TOKEN.MUTATION_BRANCH_LEASE_ACQUIRED));
 });
 
 test('story turn routes require the prepared branch head', async t => {
