@@ -39,6 +39,7 @@ import { InMemoryStoryStore } from '../storage/inMemoryStoryStore.js';
 import type { StoryStore } from '../storage/storyStore.js';
 import { StoreError } from '../storage/storyStore.js';
 import { StoryService, type ContinueStoryStreamEvent } from '../application/storyService.js';
+import { buildStoryMap } from '../application/storyMapService.js';
 import {
   CreateRepoBodySchema,
   ForkBranchBodySchema,
@@ -205,6 +206,10 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
   }));
 
   app.get('/', async (_request, reply) => serveWebFile(reply, 'index.html'));
+  app.get('/map', async (_request, reply) => serveWebFile(reply, 'index.html'));
+  app.get('/map/*', async (_request, reply) => serveWebFile(reply, 'index.html'));
+  app.get('/admin', async (_request, reply) => serveWebFile(reply, 'index.html'));
+  app.get('/admin/*', async (_request, reply) => serveWebFile(reply, 'index.html'));
   app.get('/assets/*', async (request, reply) => {
     const wildcard = (request.params as { '*': string })['*'];
     return serveWebFile(reply, `assets/${wildcard}`);
@@ -312,6 +317,13 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     const tokens = createActionTokenSet(ACTION_ID.STORY_LIST_REPOS);
     const user = await resolveStoryUser(request, config, tokens);
     return { repos: await store.listRepos(user?.uid), tokens: tokens.snapshot() };
+  });
+
+  app.get('/v1/story-map', async request => {
+    const tokens = createActionTokenSet(ACTION_ID.STORY_GET_MAP);
+    const user = await resolveStoryUser(request, config, tokens);
+    const map = await buildStoryMap(store, user?.uid);
+    return { ...map, tokens: tokens.snapshot() };
   });
 
   app.post('/v1/repos', async (request, reply) => {
@@ -591,6 +603,7 @@ function actionIdFromRequest(request: FastifyRequest): ActionId {
   if (method === 'POST' && pathname === '/v1/provider/gemini/live-token') return ACTION_ID.PROVIDER_CREATE_LIVE_TOKEN;
   if (method === 'POST' && pathname === '/v1/provider/gemini/live-session/end') return ACTION_ID.PROVIDER_END_LIVE_SESSION;
   if (method === 'GET' && pathname === '/v1/repos') return ACTION_ID.STORY_LIST_REPOS;
+  if (method === 'GET' && pathname === '/v1/story-map') return ACTION_ID.STORY_GET_MAP;
   if (method === 'POST' && pathname === '/v1/repos') return ACTION_ID.STORY_CREATE_REPO;
   if (method === 'POST' && pathname === '/v1/branches/fork') return ACTION_ID.STORY_FORK_BRANCH;
   if (method === 'GET' && pathname === '/v1/billing/me') return ACTION_ID.BILLING_GET_ENTITLEMENT;

@@ -61,6 +61,7 @@ export const ACTION_ID = {
   STORY_CREATE_REPO: 'story.create-repo',
   STORY_LIST_REPOS: 'story.list-repos',
   STORY_GET_REPO: 'story.get-repo',
+  STORY_GET_MAP: 'story.get-map',
   STORY_FORK_BRANCH: 'story.fork-branch',
   STORY_GET_TIMELINE: 'story.get-timeline',
   STORY_TURN: 'story.turn',

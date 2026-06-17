@@ -23,6 +23,7 @@ import {
   type TokenDisplay,
   type TokenSnapshot
 } from './activityTokens';
+import { startStoryAtlasApp } from './storyAtlas';
 
 type PublicConfig = {
   defaultStoryTitle: string;
@@ -188,6 +189,7 @@ const state: RepoState = {
   firebaseUser: null
 };
 const ADMIN_PATH = window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/');
+const STORY_ATLAS_PATH = window.location.pathname === '/map' || window.location.pathname.startsWith('/map/');
 
 const els = {
   gate: byId<HTMLElement>('key-gate'),
@@ -220,12 +222,15 @@ const tokenFlagEls: {
 
 if (ADMIN_PATH) {
   startAdminDashboard();
+} else if (STORY_ATLAS_PATH) {
+  startStoryAtlasApp({ apiBase: state.apiBase });
 } else {
   startTranscriptApp();
 }
 
 function startTranscriptApp(): void {
   mountTokenFlag();
+  mountStoryMapLink();
   addLocalToken(CLIENT_TOKEN.UI_GATE_OPEN);
   els.apiKey.value = state.key;
   updateProviderTokenFromKey();
@@ -247,6 +252,17 @@ function startTranscriptApp(): void {
   });
 
   if (state.key || !isFirebaseConfigured()) scheduleBoot();
+}
+
+function mountStoryMapLink(): void {
+  if (document.getElementById('story-map-link')) return;
+  const link = document.createElement('a');
+  link.id = 'story-map-link';
+  link.className = 'story-map-link';
+  link.href = '/map';
+  link.textContent = 'Atlas';
+  link.setAttribute('aria-label', 'Open Ariadne story atlas');
+  document.body.append(link);
 }
 
 function startAdminDashboard(): void {
