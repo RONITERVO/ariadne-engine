@@ -91,6 +91,16 @@ type AdminUsersResponse = {
   users: AdminUserSummary[];
 };
 
+type BillingEntitlement = {
+  uid: string;
+  paidCreditMicros: number;
+  usedCreditMicros: number;
+  reservedCreditMicros: number;
+  remainingCreditMicros: number;
+  activeLiveSessionId?: string;
+  activeLiveSessionExpiresAtMs?: number;
+};
+
 type AdminUserDetailResponse = {
   user: AdminUserSummary;
   documents: Record<string, AdminDocument[]>;
@@ -118,6 +128,7 @@ type RepoState = {
   key: string;
   config: PublicConfig | null;
   firebaseUser: FirebaseUser | null;
+  entitlement: BillingEntitlement | null;
 };
 
 type LiveTokenResponse = {
@@ -346,7 +357,8 @@ const state: RepoState = {
   apiBase: resolveApiBase(),
   key: sessionStorage.getItem(STORAGE.key) ?? '',
   config: null,
-  firebaseUser: null
+  firebaseUser: null,
+  entitlement: null
 };
 const ADMIN_PATH = window.location.pathname === '/admin' || window.location.pathname.startsWith('/admin/');
 const STORY_ATLAS_PATH = window.location.pathname === '/map' || window.location.pathname.startsWith('/map/');
@@ -357,6 +369,7 @@ const els = {
   signIn: byId<HTMLButtonElement>('sign-in'),
   signOut: byId<HTMLButtonElement>('sign-out'),
   buyCredits: byId<HTMLButtonElement>('buy-credits'),
+  startStory: byId<HTMLButtonElement>('start-story'),
   status: byId<HTMLElement>('gate-status'),
   transcript: byId<HTMLElement>('transcript')
 };
@@ -411,20 +424,18 @@ function startTranscriptApp(): void {
     state.key = els.apiKey.value.trim();
     updateProviderTokenFromKey();
     sessionStorage.setItem(STORAGE.key, state.key);
-    scheduleBoot();
   });
-  els.apiKey.addEventListener('paste', () => window.setTimeout(scheduleBoot, 0));
   els.signIn.addEventListener('click', () => void signInWithGoogle().catch(error => setGateStatus(messageFrom(error))));
   els.signOut.addEventListener('click', () => void signOutFirebase().catch(error => setGateStatus(messageFrom(error))));
   els.buyCredits.addEventListener('click', () => void buyCredits());
+  els.startStory.addEventListener('click', () => scheduleBoot());
+  updateGateActions();
 
   onFirebaseAuthStateChanged(user => {
     state.firebaseUser = user;
     updateGateActions();
-    if (user && !hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) scheduleBoot();
+    void refreshBillingEntitlement();
   });
-
-  if (state.key || !isFirebaseConfigured()) scheduleBoot();
 }
 
 function mountStoryMapLink(): void {
@@ -1701,6 +1712,7 @@ function scheduleBoot(): void {
 async function boot(): Promise<void> {
   if (hasLocalToken(CLIENT_TOKEN.UI_BOOTING) || hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) return;
   addLocalToken(CLIENT_TOKEN.UI_BOOTING);
+  updateGateActions();
   state.key = els.apiKey.value.trim();
   updateProviderTokenFromKey();
   setGateStatus('Connecting...');
@@ -1731,6 +1743,7 @@ async function boot(): Promise<void> {
     setGateStatus(messageFrom(error));
   } finally {
     removeLocalToken(CLIENT_TOKEN.UI_BOOTING);
+    updateGateActions();
   }
 }
 
@@ -2518,6 +2531,22 @@ async function buyCredits(): Promise<void> {
   }
 }
 
+async function refreshBillingEntitlement(): Promise<void> {
+  if (!isFirebaseConfigured() || !state.firebaseUser) {
+    state.entitlement = null;
+    updateGateActions();
+    return;
+  }
+
+  try {
+    state.entitlement = await authorizedFetch<BillingEntitlement>('/v1/billing/me', { method: 'GET' });
+  } catch {
+    state.entitlement = null;
+  } finally {
+    updateGateActions();
+  }
+}
+
 async function playAudioChunk(base64: string, mimeType: string): Promise<void> {
   const context = audioContext ?? new AudioContext();
   audioContext = context;
@@ -2858,9 +2887,18 @@ function setLineText(line: HTMLElement, text: string, options: { scroll?: boolea
 
 function updateGateActions(): void {
   const configured = isFirebaseConfigured();
+  const isBooting = hasLocalToken(CLIENT_TOKEN.UI_BOOTING);
   els.signIn.hidden = !configured || Boolean(state.firebaseUser);
   els.signOut.hidden = !configured || !state.firebaseUser;
   els.buyCredits.hidden = !configured || !state.firebaseUser;
+  els.buyCredits.textContent = state.entitlement
+    ? `Buy credits (${formatCredits(state.entitlement.remainingCreditMicros)} left)`
+    : 'Buy credits';
+  els.buyCredits.title = state.entitlement
+    ? `Remaining credits: ${formatCredits(state.entitlement.remainingCreditMicros)}`
+    : 'Buy Ariadne credits';
+  els.startStory.disabled = isBooting;
+  els.startStory.textContent = isBooting ? 'Starting...' : 'Start story';
 }
 
 function setGateStatus(text: string): void {

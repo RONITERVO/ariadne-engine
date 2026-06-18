@@ -362,7 +362,6 @@ const atlasState: {
   filterSet: Set<string>;
   filter: AtlasFilterKey;
   scale: CosmicScaleKey;
-  tourStep: number;
 } = {
   apiBase: '',
   user: null,
@@ -378,14 +377,17 @@ const atlasState: {
   hitSet: new Set(),
   filterSet: new Set(),
   filter: 'all',
-  scale: 'observable',
-  tourStep: 0
+  scale: 'observable'
 };
 
 let renderer: GalaxyRenderer | null = null;
 let scaleRenderSignature = '';
-let tourTimerId: number | null = null;
 let replayTimerId: number | null = null;
+let atlasLoadPromise: Promise<void> | null = null;
+let atlasAutoRefreshInstalled = false;
+let lastAtlasLoadStartedAtMs = 0;
+
+const ATLAS_AUTO_REFRESH_MIN_MS = 15_000;
 
 export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   atlasState.apiBase = options.apiBase.replace(/\/$/, '');
@@ -411,9 +413,6 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
           <nav class="atlas-actions" aria-label="Atlas actions">
             <a class="atlas-link" href="/">Return</a>
             <button id="atlas-sign-in" type="button">Sign in</button>
-            <button id="atlas-sign-out" type="button" hidden>Sign out</button>
-            <button id="atlas-tour" type="button">Tour</button>
-            <button id="atlas-refresh" type="button">Refresh</button>
           </nav>
         </header>
 
@@ -423,11 +422,6 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
             <span>Search universe</span>
             <input id="atlas-search" type="search" placeholder="Find a story world, galaxy, star, character, location, fact, or thread" autocomplete="off" />
           </label>
-          <div class="atlas-zoom-actions" aria-label="Zoom controls">
-            <button id="atlas-zoom-out" type="button" aria-label="Zoom out">-</button>
-            <button id="atlas-reset" type="button">Reset</button>
-            <button id="atlas-zoom-in" type="button" aria-label="Zoom in">+</button>
-          </div>
           <nav id="atlas-filter-nav" class="atlas-filter-nav" aria-label="Atlas story filters"></nav>
           <details class="atlas-time-machine">
             <summary>Time-machine</summary>
@@ -437,10 +431,6 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
             </label>
             <button id="atlas-rewind-search" type="button">Find rewind point</button>
             <div id="atlas-rewind-results" class="atlas-rewind-results" aria-live="polite"></div>
-          </details>
-          <details class="atlas-help">
-            <summary>Controls</summary>
-            <p>Drag to orbit, right-drag to pan, wheel or pinch to zoom. Use 1-5 for cosmic scale, + / - for zoom, R to reset, T for tour. Timeline panels can replay a branch star by star.</p>
           </details>
           <div id="atlas-results" class="atlas-results" aria-live="polite"></div>
         </div>
@@ -458,14 +448,15 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   renderer?.destroy();
   renderer = new GalaxyRenderer(byId<HTMLCanvasElement>('atlas-canvas'));
 
-  els.signIn.addEventListener('click', () => void signInWithGoogle().catch(error => setAtlasStatus(messageFrom(error))));
-  els.signOut.addEventListener('click', () => void signOutFirebase().catch(error => setAtlasStatus(messageFrom(error))));
-  els.refresh.addEventListener('click', () => void loadAtlas());
-  els.tour.addEventListener('click', () => toggleTour());
+  els.signIn.addEventListener('click', () => {
+    const action = atlasState.user ? signOutFirebase : signInWithGoogle;
+    void action().catch(error => setAtlasStatus(messageFrom(error)));
+  });
   renderScaleNav();
   renderFilterNav();
   renderLegend();
   window.addEventListener('keydown', handleAtlasKeydown);
+  installAtlasAutoRefresh();
   els.search.addEventListener('input', () => {
     atlasState.query = els.search.value.trim().toLowerCase();
     updateSearchHighlight();
@@ -478,13 +469,6 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
       void runTimeMachineSearch();
     }
   });
-  els.zoomIn.addEventListener('click', () => zoomAtlas(1.3));
-  els.zoomOut.addEventListener('click', () => zoomAtlas(1 / 1.3));
-  els.reset.addEventListener('click', () => {
-    stopTour();
-    resetAtlasView();
-  });
-
   if (isFirebaseConfigured() && !atlasState.simulated) {
     onFirebaseAuthStateChanged(user => {
       atlasState.user = user;
@@ -497,8 +481,31 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   }
 }
 
-async function loadAtlas(): Promise<void> {
-  setAtlasStatus(atlasState.simulated ? 'Loading simulated cluster...' : 'Loading atlas...');
+function installAtlasAutoRefresh(): void {
+  if (atlasAutoRefreshInstalled) return;
+  atlasAutoRefreshInstalled = true;
+  window.addEventListener('focus', refreshAtlasIfStale);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshAtlasIfStale();
+  });
+}
+
+function refreshAtlasIfStale(): void {
+  if (atlasState.simulated || document.hidden) return;
+  if (Date.now() - lastAtlasLoadStartedAtMs < ATLAS_AUTO_REFRESH_MIN_MS) return;
+  void loadAtlas({ quiet: true });
+}
+
+async function loadAtlas(options: { quiet?: boolean } = {}): Promise<void> {
+  atlasLoadPromise ??= loadAtlasInternal(options).finally(() => {
+    atlasLoadPromise = null;
+  });
+  return atlasLoadPromise;
+}
+
+async function loadAtlasInternal(options: { quiet?: boolean } = {}): Promise<void> {
+  lastAtlasLoadStartedAtMs = Date.now();
+  if (!options.quiet) setAtlasStatus(atlasState.simulated ? 'Loading simulated cluster...' : 'Loading atlas...');
   try {
     const graph = atlasState.simulated ? simulatedStoryMap() : await atlasFetch<StoryMapResponse>('/v1/story-map');
     document.querySelector('.atlas-empty')?.remove();
@@ -513,7 +520,6 @@ async function loadAtlas(): Promise<void> {
     atlasState.query = atlasEls().search.value.trim().toLowerCase();
     atlasState.filter = 'all';
     atlasState.scale = 'observable';
-    atlasState.tourStep = 0;
     updateSearchHighlight();
     updateFilterHighlight();
     renderAtlasStats(graph);
@@ -535,7 +541,6 @@ async function loadAtlas(): Promise<void> {
     renderA11yLayer(null);
     renderDetail('');
     renderer?.stop();
-    stopTour();
     setAtlasStatus(messageFrom(error));
   }
 }
@@ -762,7 +767,6 @@ class GalaxyRenderer {
     }, { signal });
     this.canvas.addEventListener('wheel', event => {
       event.preventDefault();
-      stopTour();
       const next = copyView(atlasState.targetView);
       next.distance = clamp(next.distance * Math.exp(event.deltaY * CAMERA.zoom), CAMERA.minDistance, CAMERA.maxDistance);
       atlasState.targetView = next;
@@ -777,7 +781,6 @@ class GalaxyRenderer {
   private handlePointerDown(event: PointerEvent): void {
     if (event.pointerType === 'mouse' && event.button > 2) return;
     event.preventDefault();
-    stopTour();
     this.yawVelocity = 0;
     this.pitchVelocity = 0;
     this.panVelocity = { x: 0, y: 0, z: 0 };
@@ -966,7 +969,7 @@ class GalaxyRenderer {
     this.camera.lookAt(focus);
 
     const nextScale = scaleForDistance(atlasState.view.distance);
-    if (nextScale !== atlasState.scale && !tourTimerId) {
+    if (nextScale !== atlasState.scale) {
       atlasState.scale = nextScale;
       renderScaleNav();
     }
@@ -1733,7 +1736,6 @@ function centerOnNode(nodeId: string, snap = false): void {
 }
 
 function zoomAtlas(factor: number): void {
-  stopTour();
   atlasState.targetView.distance = clamp(atlasState.targetView.distance / factor, CAMERA.minDistance, CAMERA.maxDistance);
   atlasState.scale = scaleForDistance(atlasState.targetView.distance);
   renderScaleNav();
@@ -1853,7 +1855,7 @@ function focusNodeForScale(scale: CosmicScale): PositionedNode | null {
 function renderScaleNav(force = false): void {
   const nav = document.getElementById('atlas-scale-nav');
   if (!nav) return;
-  const signature = `${atlasState.scale}:${atlasState.graph?.stats.nodes ?? 0}:${Boolean(tourTimerId)}`;
+  const signature = `${atlasState.scale}:${atlasState.graph?.stats.nodes ?? 0}`;
   if (!force && signature === scaleRenderSignature) return;
   scaleRenderSignature = signature;
   nav.replaceChildren(...COSMIC_SCALES.map((scale, index) => {
@@ -1867,13 +1869,9 @@ function renderScaleNav(force = false): void {
     button.querySelector('strong')!.textContent = scale.label;
     button.querySelector('small')!.textContent = scale.eyebrow;
     button.title = scale.hint;
-    button.addEventListener('click', () => {
-      stopTour();
-      focusCosmicScale(scale.key);
-    });
+    button.addEventListener('click', () => focusCosmicScale(scale.key));
     return button;
   }));
-  updateTourButton();
 }
 
 function renderLegend(): void {
@@ -1902,38 +1900,6 @@ function renderLegend(): void {
   }));
 }
 
-function toggleTour(): void {
-  if (tourTimerId) {
-    stopTour();
-    return;
-  }
-  atlasState.tourStep = 0;
-  advanceTour();
-  tourTimerId = window.setInterval(advanceTour, 3200);
-  updateTourButton();
-}
-
-function advanceTour(): void {
-  const scale = COSMIC_SCALES[atlasState.tourStep % COSMIC_SCALES.length];
-  atlasState.tourStep += 1;
-  focusCosmicScale(scale.key);
-  setAtlasStatus(`Touring ${scale.label}: ${scale.hint}`);
-}
-
-function stopTour(): void {
-  if (!tourTimerId) return;
-  window.clearInterval(tourTimerId);
-  tourTimerId = null;
-  updateTourButton();
-}
-
-function updateTourButton(): void {
-  const button = document.getElementById('atlas-tour') as HTMLButtonElement | null;
-  if (!button) return;
-  button.textContent = tourTimerId ? 'Stop tour' : 'Tour';
-  button.setAttribute('aria-pressed', String(Boolean(tourTimerId)));
-}
-
 function handleAtlasKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   const tag = target?.tagName.toLowerCase();
@@ -1941,7 +1907,6 @@ function handleAtlasKeydown(event: KeyboardEvent): void {
   const index = Number(event.key) - 1;
   if (Number.isInteger(index) && index >= 0 && index < COSMIC_SCALES.length) {
     event.preventDefault();
-    stopTour();
     focusCosmicScale(COSMIC_SCALES[index].key);
     return;
   }
@@ -1953,11 +1918,7 @@ function handleAtlasKeydown(event: KeyboardEvent): void {
     zoomAtlas(1 / 1.22);
   } else if (event.key.toLowerCase() === 'r') {
     event.preventDefault();
-    stopTour();
     resetAtlasView();
-  } else if (event.key.toLowerCase() === 't') {
-    event.preventDefault();
-    toggleTour();
   }
 }
 
@@ -1972,7 +1933,6 @@ function updateSearchHighlight(): void {
 }
 
 function setAtlasFilter(key: AtlasFilterKey): void {
-  stopTour();
   atlasState.filter = key;
   updateFilterHighlight();
   renderFilterNav(true);
@@ -2079,8 +2039,9 @@ function renderA11yLayer(graph: StoryMapResponse | null): void {
 function renderAuthActions(): void {
   const els = atlasEls();
   const configured = isFirebaseConfigured() && !atlasState.simulated;
-  els.signIn.hidden = !configured || Boolean(atlasState.user);
-  els.signOut.hidden = !configured || !atlasState.user;
+  els.signIn.hidden = !configured;
+  els.signIn.textContent = atlasState.user ? 'Sign out' : 'Sign in';
+  els.signIn.title = atlasState.user ? 'Sign out of Ariadne Atlas' : 'Sign in to Ariadne Atlas';
 }
 
 function renderAtlasStats(graph: StoryMapResponse | null): void {
@@ -2439,7 +2400,6 @@ function startBranchReplay(branchId: string, turns: TimelineTurn[]): void {
     setAtlasStatus('No visible timeline stars are available to replay.');
     return;
   }
-  stopTour();
   stopReplay();
   let index = 0;
   const step = () => {
@@ -2997,16 +2957,10 @@ function setAtlasStatus(text: string): void {
 
 function atlasEls(): {
   signIn: HTMLButtonElement;
-  signOut: HTMLButtonElement;
-  refresh: HTMLButtonElement;
-  tour: HTMLButtonElement;
   search: HTMLInputElement;
   rewind: HTMLInputElement;
   rewindSearch: HTMLButtonElement;
   rewindResults: HTMLElement;
-  zoomIn: HTMLButtonElement;
-  zoomOut: HTMLButtonElement;
-  reset: HTMLButtonElement;
   status: HTMLElement;
   stats: HTMLElement;
   map: HTMLElement;
@@ -3018,16 +2972,10 @@ function atlasEls(): {
 } {
   return {
     signIn: byId<HTMLButtonElement>('atlas-sign-in'),
-    signOut: byId<HTMLButtonElement>('atlas-sign-out'),
-    refresh: byId<HTMLButtonElement>('atlas-refresh'),
-    tour: byId<HTMLButtonElement>('atlas-tour'),
     search: byId<HTMLInputElement>('atlas-search'),
     rewind: byId<HTMLInputElement>('atlas-rewind'),
     rewindSearch: byId<HTMLButtonElement>('atlas-rewind-search'),
     rewindResults: byId<HTMLElement>('atlas-rewind-results'),
-    zoomIn: byId<HTMLButtonElement>('atlas-zoom-in'),
-    zoomOut: byId<HTMLButtonElement>('atlas-zoom-out'),
-    reset: byId<HTMLButtonElement>('atlas-reset'),
     status: byId<HTMLElement>('atlas-status'),
     stats: byId<HTMLElement>('atlas-stats'),
     map: byId<HTMLElement>('atlas-map'),

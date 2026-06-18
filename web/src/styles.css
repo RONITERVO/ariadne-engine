@@ -852,12 +852,8 @@ canvas#atlas-canvas.is-panning {
 .atlas-actions *,
 .atlas-search,
 .atlas-search *,
-.atlas-zoom-actions,
-.atlas-zoom-actions *,
 .atlas-filter-nav,
 .atlas-filter-nav *,
-.atlas-help,
-.atlas-help *,
 .atlas-time-machine,
 .atlas-time-machine *,
 .atlas-results,
@@ -902,8 +898,7 @@ canvas#atlas-canvas.is-panning {
   min-width: 0;
 }
 
-.atlas-actions,
-.atlas-zoom-actions {
+.atlas-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -913,7 +908,6 @@ canvas#atlas-canvas.is-panning {
 .atlas-link,
 .atlas-empty a,
 .atlas-actions button,
-.atlas-zoom-actions button,
 .atlas-filter-nav button,
 .atlas-secondary-action {
   display: inline-grid;
@@ -935,19 +929,12 @@ canvas#atlas-canvas.is-panning {
 .atlas-link:hover,
 .atlas-empty a:hover,
 .atlas-actions button:hover,
-.atlas-zoom-actions button:hover,
 .atlas-filter-nav button:hover,
 .atlas-secondary-action:hover,
 .atlas-danger-action:hover {
   border-color: rgb(255 255 255 / 30%);
   background: rgb(40 45 50 / 82%);
   box-shadow: 0 0 18px rgb(139 184 199 / 16%), 0 8px 24px rgb(0 0 0 / 34%);
-}
-
-.atlas-zoom-actions button {
-  min-width: 38px;
-  justify-content: center;
-  padding: 0 11px;
 }
 
 .atlas-filter-nav {
@@ -978,30 +965,6 @@ canvas#atlas-canvas.is-panning {
   background: linear-gradient(135deg, rgb(94 74 29 / 68%), rgb(22 28 38 / 64%));
   box-shadow: 0 0 18px rgb(255 241 176 / 13%), inset 0 1px 0 rgb(255 255 255 / 8%);
 }
-
-.atlas-help {
-  width: min(420px, calc(100vw - 48px));
-  border: 1px solid rgb(255 255 255 / 9%);
-  border-radius: 10px;
-  padding: 9px 11px;
-  color: #b8c7c8;
-  background: rgb(7 10 16 / 56%);
-  box-shadow: 0 12px 30px rgb(0 0 0 / 32%);
-  font-size: 0.78rem;
-  backdrop-filter: blur(16px);
-}
-
-.atlas-help summary {
-  color: #e6ece9;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.atlas-help p {
-  margin: 8px 0 0;
-  line-height: 1.5;
-}
-
 
 .atlas-time-machine {
   display: grid;
@@ -1993,8 +1956,7 @@ canvas#atlas-canvas.is-panning {
     font-size: clamp(2rem, 10vw, 3.2rem);
   }
 
-  .atlas-actions,
-  .atlas-zoom-actions {
+  .atlas-actions {
     justify-content: flex-start;
   }
 
@@ -2006,7 +1968,6 @@ canvas#atlas-canvas.is-panning {
   .atlas-results,
   .atlas-scale-nav,
   .atlas-filter-nav,
-  .atlas-help,
   .atlas-time-machine {
     width: min(100%, calc(100vw - 32px));
   }
