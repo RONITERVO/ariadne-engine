@@ -3,10 +3,7 @@ import * as THREE from 'three';
 import {
   getFirebaseIdToken,
   isFirebaseConfigured,
-  onFirebaseAuthStateChanged,
-  signInWithGoogle,
-  signOutFirebase,
-  type FirebaseUser
+  onFirebaseAuthStateChanged
 } from './firebase';
 
 export type StoryAtlasOptions = {
@@ -348,7 +345,6 @@ const CAMERA = {
 
 const atlasState: {
   apiBase: string;
-  user: FirebaseUser | null;
   graph: StoryMapResponse | null;
   positioned: Map<string, PositionedNode>;
   orbits: OrbitRing[];
@@ -364,7 +360,6 @@ const atlasState: {
   scale: CosmicScaleKey;
 } = {
   apiBase: '',
-  user: null,
   graph: null,
   positioned: new Map(),
   orbits: [],
@@ -404,18 +399,6 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
       </section>
 
       <section class="atlas-ui-layer">
-        <header class="atlas-header">
-          <div class="atlas-title-block">
-            <p class="eyebrow">Ariadne Atlas / Galaxy mode</p>
-            <h1>Observable Universe</h1>
-            <p class="atlas-subtitle">Zoom from superclusters and filaments into galaxies, local branches, solar-system turns, and canon landmarks.</p>
-          </div>
-          <nav class="atlas-actions" aria-label="Atlas actions">
-            <a class="atlas-link" href="/">Return</a>
-            <button id="atlas-sign-in" type="button">Sign in</button>
-          </nav>
-        </header>
-
         <div class="atlas-controls-left">
           <nav id="atlas-scale-nav" class="atlas-scale-nav" aria-label="Cosmic zoom scale"></nav>
           <form id="atlas-search-form" class="atlas-search" role="search">
@@ -443,10 +426,6 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   renderer?.destroy();
   renderer = new GalaxyRenderer(byId<HTMLCanvasElement>('atlas-canvas'));
 
-  els.signIn.addEventListener('click', () => {
-    const action = atlasState.user ? signOutFirebase : signInWithGoogle;
-    void action().catch(error => setAtlasStatus(messageFrom(error)));
-  });
   renderScaleNav();
   renderFilterNav();
   renderLegend();
@@ -463,13 +442,10 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
     void runTimeMachineSearch();
   });
   if (isFirebaseConfigured() && !atlasState.simulated) {
-    onFirebaseAuthStateChanged(user => {
-      atlasState.user = user;
-      renderAuthActions();
+    onFirebaseAuthStateChanged(() => {
       void loadAtlas();
     });
   } else {
-    renderAuthActions();
     void loadAtlas();
   }
 }
@@ -2029,14 +2005,6 @@ function renderA11yLayer(graph: StoryMapResponse | null): void {
   }
 }
 
-function renderAuthActions(): void {
-  const els = atlasEls();
-  const configured = isFirebaseConfigured() && !atlasState.simulated;
-  els.signIn.hidden = !configured;
-  els.signIn.textContent = atlasState.user ? 'Sign out' : 'Sign in';
-  els.signIn.title = atlasState.user ? 'Sign out of Ariadne Atlas' : 'Sign in to Ariadne Atlas';
-}
-
 function renderAtlasStats(graph: StoryMapResponse | null): void {
   const stats = atlasEls().stats;
   if (!graph) {
@@ -2156,7 +2124,9 @@ function actionList(node: StoryMapNode, graph: StoryMapResponse): HTMLElement | 
   actions.className = 'atlas-action-stack';
 
   if (node.kind === 'library') {
+    actions.classList.add('atlas-action-stack--library');
     appendAction(actions, 'Start new story', 'atlas-primary-action', () => void startNewStoryFromAtlas());
+    appendAction(actions, 'Return', 'atlas-secondary-action', () => returnToStartPage());
   }
 
   const continueTarget = continueTargetFor(node, graph);
@@ -2204,6 +2174,10 @@ function appendAction(parent: HTMLElement, label: string, className: string, onC
   action.addEventListener('click', onClick);
   parent.append(action);
   return action;
+}
+
+function returnToStartPage(): void {
+  window.location.href = '/';
 }
 
 function branchIdForNode(node: StoryMapNode, graph: StoryMapResponse): string | null {
@@ -2949,7 +2923,6 @@ function setAtlasStatus(text: string): void {
 }
 
 function atlasEls(): {
-  signIn: HTMLButtonElement;
   searchForm: HTMLFormElement;
   search: HTMLInputElement;
   rewindResults: HTMLElement;
@@ -2963,7 +2936,6 @@ function atlasEls(): {
   legend: HTMLElement;
 } {
   return {
-    signIn: byId<HTMLButtonElement>('atlas-sign-in'),
     searchForm: byId<HTMLFormElement>('atlas-search-form'),
     search: byId<HTMLInputElement>('atlas-search'),
     rewindResults: byId<HTMLElement>('atlas-rewind-results'),
