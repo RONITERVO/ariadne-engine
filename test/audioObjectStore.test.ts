@@ -27,6 +27,7 @@ function config(): AudioStorageConfig {
 const uploadInput: PrepareAudioUploadInput = {
   repoId: 'repo-1',
   branchId: 'branch-1',
+  turnId: 'turn-1',
   role: 'user',
   contentType: 'audio/webm;codecs=opus',
   sha256: 'ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789',
@@ -57,6 +58,7 @@ test('GCS audio upload URLs are one-write, exact-size, cacheable, and quality-pr
   );
   assert.equal(upload.asset.contentType, 'audio/webm;codecs=opus');
   assert.equal(upload.asset.sha256, uploadInput.sha256.toLowerCase());
+  assert.equal(upload.asset.turnId, 'turn-1');
   assert.equal(upload.asset.crc32c, 'AAAAAA==');
   assert.equal(upload.asset.qualityProfile, 'voice-hifi');
   assert.equal(upload.asset.bitrateKbps, 96);
@@ -67,6 +69,7 @@ test('GCS audio upload URLs are one-write, exact-size, cacheable, and quality-pr
   assert.equal(upload.headers['x-goog-if-generation-match'], '0');
   assert.equal(upload.headers['x-goog-hash'], 'crc32c=AAAAAA==');
   assert.equal(upload.headers['x-goog-meta-ariadne-upload-id'], upload.uploadId);
+  assert.equal(upload.headers['x-goog-meta-ariadne-turn-id'], 'turn-1');
   assert.equal(upload.headers['x-goog-meta-ariadne-content-type'], 'audio/webm;codecs=opus');
   assert.equal(upload.headers['x-goog-meta-ariadne-quality-profile'], 'voice-hifi');
   assert.equal(upload.headers['x-goog-meta-ariadne-bitrate-kbps'], '96');
@@ -84,6 +87,7 @@ test('GCS audio upload URLs are one-write, exact-size, cacheable, and quality-pr
     'x-goog-meta-ariadne-upload-id': upload.uploadId,
     'x-goog-meta-ariadne-repo-id': 'repo-1',
     'x-goog-meta-ariadne-branch-id': 'branch-1',
+    'x-goog-meta-ariadne-turn-id': 'turn-1',
     'x-goog-meta-ariadne-role': 'user',
     'x-goog-meta-ariadne-content-type': 'audio/webm;codecs=opus',
     'x-goog-meta-ariadne-sha256': uploadInput.sha256.toLowerCase(),
@@ -223,6 +227,7 @@ function metadataFor(asset: RegisterAudioAssetInput, extra: Partial<GcsObjectMet
       'ariadne-upload-id': asset.uploadId ?? '',
       'ariadne-repo-id': asset.repoId,
       'ariadne-branch-id': asset.branchId ?? '',
+      'ariadne-turn-id': asset.turnId ?? '',
       'ariadne-role': asset.role,
       'ariadne-content-type': asset.contentType ?? '',
       'ariadne-sha256': asset.sha256,

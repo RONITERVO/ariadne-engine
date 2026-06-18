@@ -295,7 +295,7 @@ Use the Ariadne admin dashboard before using the Firestore data tab for user sup
 
 Firestore is the raw storage inspector. The canonical story tree now lives under `users/{uid}/storyRepos/{repoId}/...`; lookup documents in `storyRepoIndex`, `storyBranchIndex`, and `storyTurnIndex` exist only so API routes can jump from public IDs to canonical paths.
 
-For the tester-only clean break, clear old launch-test Firestore data before using the v2 schema. The script dry-runs by default:
+For a tester/admin empty-baseline deployment, reset Firestore only after the team confirms there are no real user saves. The script dry-runs by default:
 
 ```powershell
 npm run admin:clear-firestore-data
@@ -314,7 +314,7 @@ Deploy rules and indexes only:
 firebase deploy --project ariadne-engine-rt --only firestore
 ```
 
-Export Firestore before risky data migrations. Replace the bucket with the team's backup bucket:
+Export Firestore before destructive data operations. Replace the bucket with the team's backup bucket:
 
 ```powershell
 gcloud firestore export gs://YOUR_BACKUP_BUCKET/ariadne/$(Get-Date -Format yyyyMMdd-HHmmss) `
@@ -328,7 +328,7 @@ List backup schedules:
 firebase firestore:backups:schedules:list --project ariadne-engine-rt
 ```
 
-Delete launch-test data only when the team intentionally wants a clean empty production project. Do not run this after real users exist. Prefer the reset script because it recursively removes v2 user subcollections and old v1 flat collections:
+Delete tester/admin data only when the team intentionally wants a clean empty production project. Do not run this after real users exist. Prefer the reset script because it recursively removes user subcollections, global index documents, and known legacy tester schemas:
 
 ```powershell
 node scripts/clear-firestore-data.mjs ariadne-engine-rt --dry-run

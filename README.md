@@ -14,7 +14,7 @@ The hosted release supports Firebase Google sign-in with prepaid Ariadne credits
 - Paid usage ledger for prepaid credits, normal model token usage, and fixed 30-second Gemini Live sessions with one active paid Live session per user.
 - Server-side Gemini key rotation with per-key concurrency, minute/day limits, and cooldowns.
 - Per-branch mutation leases and expected-head checks so overlapping turns cannot corrupt branch history.
-- Transcript-only Gemini Live browser loop. A local in-browser Whisper detector identifies speech turn boundaries; Gemini Live supplies user/model transcripts and model audio. Live commits upload preserved user/model audio to GCS through one-time upload intents and link verified audio asset manifests to turn commits.
+- Transcript-only Gemini Live browser loop. A local in-browser Whisper detector identifies speech turn boundaries; Gemini Live supplies user/model transcripts and model audio. Live turns commit and canonize transcripts first; preserved user/model audio is encoded, uploaded, verified, and linked later through a background pending/verified asset pipeline.
 - Player-facing **Ariadne Atlas** at `/map`: a Google Galaxy-style story universe where repos are galaxies, branches are orbits, turns are stars, canon state becomes landmarks, and users can search, rewind, fork, replay, compare, export, or delete from the map.
 - Server-side provider-key guardrails. BYOK keys are accepted only in `x-ariadne-provider-key`, rejected from query/body fields, redacted from logs, and never saved.
 - Production config safety checks. `NODE_ENV=production` requires Firestore, Firebase auth, paid usage, strict CORS, server Gemini keys, and no mock provider.
@@ -121,7 +121,7 @@ For any public deployment:
 5. Keep `ARIADNE_ALLOW_MOCK_PROVIDER=false`.
 6. Set `ARIADNE_PAID_USAGE_ENABLED=true`, `ARIADNE_FIREBASE_AUTH_REQUIRED=true`, `GEMINI_API_KEYS`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRODUCT_ID`, and `APP_URL`.
 7. Do not log request bodies containing transcripts unless users have explicitly opted in.
-8. Store compressed audio in a private GCS bucket through one-time signed browser upload intents with exact-size, one-write, CRC32C, quality-profile, and server-side SHA-256 verification, then save only verified object metadata in Firestore.
+8. Store compressed audio in a private GCS bucket through one-time signed browser upload intents with exact-size, one-write, CRC32C, quality-profile, and server-side SHA-256 verification. Keep this off the gameplay path: transcript commits/canonization proceed first, while audio upload intents move from pending to verified and later link object metadata to turns.
 9. Keep provider keys in `x-ariadne-provider-key`; `Authorization: Bearer` is reserved for Firebase ID tokens.
 10. Update `ARIADNE_MODEL_CATALOG_JSON` whenever enforced Gemini models or prices change.
 
@@ -143,8 +143,9 @@ Transcript-only browser
   |-- auto-creates/continues a branch
   |-- uses local browser Whisper only to detect speech turn boundaries
   |-- sends Live audio to Gemini after speech is detected
-  |-- uploads compressed preserved turn audio directly to GCS through short-lived one-time signed upload intents
-  `-- renders Gemini user/model transcripts
+  |-- commits/canonizes Gemini user/model transcripts as the gameplay path
+  |-- starts compressed preserved turn audio upload/verification in the background
+  `-- renders pending/verified transcript audio status
 
 Ariadne API
   |-- rejects provider keys from query/body/non-provider routes
@@ -161,7 +162,7 @@ Firestore + object storage
   |-- branch heads are mutable refs
   |-- branch mutation locks reject overlapping turns
   |-- snapshots are caches
-  `-- audio metadata is attached to turns and export manifests
+  `-- pending/verified audio metadata is attached to turns and export manifests after verification
 ```
 
 ## Key routes
@@ -177,8 +178,8 @@ Firestore + object storage
 | `GET /v1/repos/:repoId/export` | downloadable JSON or Markdown story archive |
 | `DELETE /v1/repos/:repoId` | user data deletion for a story world |
 | `POST /v1/audio-assets/upload-url` | creates a short-lived one-time signed GCS upload intent for preserved turn audio |
-| `POST /v1/audio-assets` | completes an upload intent and registers verified preserved audio object metadata for a repo/branch |
-| `GET /v1/repos/:repoId/audio-assets` | lists preserved audio manifests |
+| `POST /v1/audio-assets` | completes an upload intent, verifies preserved audio, and links metadata to the target turn when present |
+| `GET /v1/repos/:repoId/audio-assets` | lists verified audio manifests plus pending/verified upload intents |
 | `GET /v1/branches/compare` | compares two branches and state divergence |
 | `GET /v1/branches/:branchId/canon` | canon debugger payload with compiled branch state |
 | `POST /v1/provider/gemini/validate-key` | validates a BYOK Gemini key without storing it |
@@ -210,7 +211,7 @@ docs/             architecture, BYOK, story atlas, security, release docs
 
 ## 1.0 boundary
 
-This release is a complete non-voice-control 1.0: branchable story commits, the Google Galaxy map, visual fork/rewind/compare/replay controls, user export/delete workflows, canon debugger routes, billing hooks, Gemini Live token flow, signed GCS audio upload intents with CRC32C and server-side SHA-256 verification, object cleanup on repo deletion, and audio asset manifests are implemented. BYOK keys are not persisted. Voice-native branch commands are intentionally marked as v1.1. Timeline audio replay and transcript/audio timestamp alignment remain v1.1 work.
+This release is a complete non-voice-control 1.0: branchable story commits, the Google Galaxy map, visual fork/rewind/compare/replay controls, user export/delete workflows, canon debugger routes, billing hooks, Gemini Live token flow, transcript-first Live commits, signed GCS audio upload intents with CRC32C and server-side SHA-256 verification, object cleanup on repo deletion, and pending/verified audio asset manifests are implemented. BYOK keys are not persisted. Voice-native branch commands are intentionally marked as v1.1. Timeline audio replay and transcript/audio timestamp alignment remain v1.1 work.
 
 ## License
 

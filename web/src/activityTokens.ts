@@ -15,7 +15,8 @@ export const CLIENT_TOKEN = {
   LIVE_INPUT_CLOSED: 'live:input-closed',
   LIVE_SESSION_OPEN: 'live:session-open',
   LIVE_SESSION_CLOSED: 'live:session-closed',
-  LIVE_TURN_COMMITTING: 'live:turn-committing'
+  LIVE_TURN_COMMITTING: 'live:turn-committing',
+  AUDIO_ASSET_PIPELINE: 'audio:asset-pipeline'
 } as const;
 
 export type ClientToken = typeof CLIENT_TOKEN[keyof typeof CLIENT_TOKEN];
@@ -158,6 +159,13 @@ const CLIENT_TOKEN_DISPLAY: Record<ClientToken, Omit<TokenDisplay, 'token' | 'so
     description: 'Saving the Live transcript and canonizing the branch state.',
     tone: 'work',
     priority: 12
+  },
+  [CLIENT_TOKEN.AUDIO_ASSET_PIPELINE]: {
+    category: 'audio',
+    label: 'Audio pending',
+    description: 'Preserving and verifying turn audio after the transcript commit.',
+    tone: 'state',
+    priority: 70
   }
 };
 

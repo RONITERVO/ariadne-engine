@@ -54,7 +54,7 @@ Create these Secret Manager secrets before deploying `cloudbuild.api.yaml`:
 
 ## GCS Audio Storage
 
-GCS is the production audio source store. Ariadne uses a server-issued upload intent rather than trusting client-supplied manifests: Cloud Run creates a one-time upload ticket, signs a short-lived browser `PUT` URL, signs the required GCS headers, and persists a pending `audioUploads/{uploadId}` document. The browser computes SHA-256 and CRC32C, uploads directly to GCS with the returned headers, then completes the ticket. The API verifies bucket, prefix, signed metadata, exact byte length, MIME type, CRC32C, selected quality profile, server-streamed SHA-256, generation, metageneration, ETag, and KMS key reference before saving the durable `audioAssets/{assetId}` manifest.
+GCS is the production audio source store. Ariadne uses a server-issued upload intent rather than trusting client-supplied manifests: after the transcript turn is committed and canonized, Cloud Run creates a one-time upload ticket, signs a short-lived browser `PUT` URL, signs the required GCS headers including the turn id, and persists a pending `audioUploads/{uploadId}` document. The browser computes SHA-256 and CRC32C, uploads directly to GCS with the returned headers, then completes the ticket. The API verifies bucket, prefix, signed metadata, exact byte length, MIME type, CRC32C, selected quality profile, server-streamed SHA-256, generation, metageneration, ETag, and KMS key reference before saving the durable `audioAssets/{assetId}` manifest and linking it back to the turn.
 
 The public deployment uses `gs://ariadne-engine-rt-audio` with the `live-audio/` prefix:
 
@@ -89,6 +89,7 @@ gcloud storage buckets update gs://ariadne-engine-rt-audio --cors-file=gcs.audio
       "x-goog-meta-ariadne-upload-id",
       "x-goog-meta-ariadne-repo-id",
       "x-goog-meta-ariadne-branch-id",
+      "x-goog-meta-ariadne-turn-id",
       "x-goog-meta-ariadne-role",
       "x-goog-meta-ariadne-sha256",
       "x-goog-meta-ariadne-crc32c",
@@ -126,7 +127,7 @@ Use lifecycle rules to manage retention and cost. The checked-in `gcs.audio.life
 gcloud storage buckets update gs://ariadne-engine-rt-audio --lifecycle-file=gcs.audio.lifecycle.json
 ```
 
-The default upload profile is `voice-hifi`: Opus in WebM/Ogg, mono, target 96 kbps, capped at 128 kbps plus mux overhead. `music-hifi` and `aac-hifi` are allowed for stereo/music and browser fallback; `lossless-master` exists in code but is not enabled by default. Pending upload tickets expire after the signed URL TTL and should be inspected in `audioUploads` during operations. Repo deletion calls the object store before removing Firestore documents, deleting all GCS objects under the repo prefix so private raw audio is not left behind after a user deletes a story world. If Ariadne later needs global low-latency playback, streaming derivatives, or transcription alignment, add a media pipeline on top of GCS while keeping GCS as the durable source.
+The default upload profile is `voice-hifi`: Opus in WebM/Ogg, mono, target 96 kbps, capped at 128 kbps plus mux overhead. `music-hifi` and `aac-hifi` are allowed for stereo/music and browser fallback; `lossless-master` exists in code but is not enabled by default. Pending upload tickets expire after the signed URL TTL and should be inspected in `audioUploads` during operations. These tickets are not gameplay blockers: a user can continue creating turns while older audio work remains pending. Repo deletion calls the object store before removing Firestore documents, deleting all GCS objects under the repo prefix so private raw audio is not left behind after a user deletes a story world. If Ariadne later needs global low-latency playback, streaming derivatives, or transcription alignment, add a media pipeline on top of GCS while keeping GCS as the durable source.
 
 Firestore stores durable state in the v2 user-rooted, repo-centered schema:
 
@@ -174,7 +175,7 @@ npm run dev:web
 
 The frontend API base defaults to `http://localhost:3000` when Vite serves on port 5173. Override with `VITE_ARIADNE_API_BASE`, `VITE_API_BASE_URL`, or `?api=https://your-api.example`.
 
-When `audioStorageEnabled` is true in `/v1/config`, the hosted frontend archives the per-turn microphone audio sent to Gemini Live and assistant audio returned by Gemini. It encodes PCM chunks with `MediaRecorder` into the configured compressed profile, preferring Opus WebM/Ogg and falling back to AAC MP4 when available. If the browser cannot produce a cost-safe compressed archive, it skips the audio archive instead of uploading WAV/PCM. The frontend then computes SHA-256 and CRC32C, requests signed GCS upload intents from `/v1/audio-assets/upload-url`, uploads directly to GCS with the exact signed headers returned by the API, completes each ticket through `/v1/audio-assets`, and sends the returned asset IDs with `/v1/story/live-turn`.
+When `audioStorageEnabled` is true in `/v1/config`, the hosted frontend archives the per-turn microphone audio sent to Gemini Live and assistant audio returned by Gemini only after `/v1/story/live-turn` has committed and canonized the transcripts. It encodes PCM chunks with `MediaRecorder` into the configured compressed profile, preferring Opus WebM/Ogg and falling back to AAC MP4 when available. If the browser cannot produce a cost-safe compressed archive, it skips the audio archive instead of uploading WAV/PCM. The frontend then computes SHA-256 and CRC32C, requests signed GCS upload intents from `/v1/audio-assets/upload-url` with the committed `turnId`, uploads directly to GCS with the exact signed headers returned by the API, and completes each ticket through `/v1/audio-assets`. The transcript line can show audio as pending until the verified asset is linked back to the turn.
 
 For a production-style single-process deployment, run `npm run build`; the Fastify API serves the built transcript shell from `/` and immutable Vite assets from `/assets/*`. The Docker image copies `web/dist` for this path.
 

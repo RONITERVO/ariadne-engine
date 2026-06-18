@@ -10,7 +10,7 @@ const token = getGcloudAccessToken();
 const apiBase = `https://firestore.googleapis.com/v1/projects/${project}/databases/${encodeURIComponent(database)}`;
 
 const rootCollections = [
-  // Current v2 root collections. Deleting `users` recurses into storyRepos, billingAccounts,
+  // Current production root collections. Deleting `users` recurses into storyRepos, billingAccounts,
   // turns, branchState, stateSnapshots, canonPatches, warnings, locks, and usage ledgers.
   'users',
   'storyRepoIndex',
@@ -18,7 +18,7 @@ const rootCollections = [
   'storyTurnIndex',
   'billingEventIndex',
 
-  // Older tester/experimental schemas; kept here so a clean-break reset really removes old data.
+  // Older tester/experimental schemas; kept here so a clean reset really removes old data.
   'storyRepos',
   'branches',
   'turns',

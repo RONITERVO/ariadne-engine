@@ -25,8 +25,6 @@ export interface CommitTurnInput {
   expectedHeadTurnId: string | null;
   userTranscript: string;
   assistantTranscript: string;
-  userAudioAssetId?: string | null;
-  assistantAudioAssetId?: string | null;
   modelMetadata?: ModelInvocationMetadata[];
 }
 
@@ -34,6 +32,7 @@ export interface CreateAudioUploadIntentInput {
   uploadId: string;
   repoId: string;
   branchId?: string | null;
+  turnId?: string | null;
   ownerUserId?: string | null;
   role: AudioUploadIntent['role'];
   storageProvider: 'gcs';
@@ -57,6 +56,14 @@ export interface CompleteAudioUploadIntentInput {
   repoId: string;
   uploadId: string;
   verification: AudioObjectVerification;
+}
+
+export interface LinkAudioAssetToTurnInput {
+  repoId: string;
+  branchId: string;
+  turnId: string;
+  role: AudioUploadIntent['role'];
+  audioAssetId: string;
 }
 
 export interface BranchMutationLeaseInput {
@@ -92,10 +99,13 @@ export interface StoryStore {
   deleteRepo(repoId: string): Promise<void>;
   createAudioUploadIntent(input: CreateAudioUploadIntentInput): Promise<AudioUploadIntent>;
   getAudioUploadIntent(repoId: string, uploadId: string): Promise<AudioUploadIntent | null>;
+  listAudioUploadIntents(repoId: string, branchId?: string): Promise<AudioUploadIntent[]>;
   completeAudioUploadIntent(input: CompleteAudioUploadIntentInput): Promise<AudioAsset>;
   saveAudioAsset(input: RegisterAudioAssetInput): Promise<AudioAsset>;
   getAudioAsset(repoId: string, assetId: string): Promise<AudioAsset | null>;
   listAudioAssets(repoId: string, branchId?: string): Promise<AudioAsset[]>;
+  getTurn(turnId: string): Promise<TurnCommit | null>;
+  linkAudioAssetToTurn(input: LinkAudioAssetToTurnInput): Promise<TurnCommit>;
   acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease>;
   releaseBranchMutationLease(lease: BranchMutationLease): Promise<void>;
   commitTurn(input: CommitTurnInput): Promise<TurnCommit>;

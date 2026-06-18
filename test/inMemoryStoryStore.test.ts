@@ -122,6 +122,80 @@ test('in-memory store serializes branch mutations', async () => {
   });
 });
 
+test('in-memory store verifies audio upload size before linking turn audio', async () => {
+  const store = new InMemoryStoryStore();
+  const { repo, branch } = await store.createRepo({ title: 'Audio Links', ownerUserId: 'user-123' });
+  const turn = await store.commitTurn({
+    repoId: repo.id,
+    branchId: branch.id,
+    expectedHeadTurnId: null,
+    userTranscript: 'Record this turn.',
+    assistantTranscript: 'The turn is ready for archive.'
+  });
+
+  await store.createAudioUploadIntent({
+    uploadId: 'upload-1',
+    repoId: repo.id,
+    branchId: branch.id,
+    turnId: turn.id,
+    ownerUserId: 'user-123',
+    role: 'user',
+    storageProvider: 'gcs',
+    storageUri: 'gs://audio/repo/user.webm',
+    contentType: 'audio/webm;codecs=opus',
+    sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    crc32c: 'AAAAAA==',
+    codec: 'opus',
+    container: 'webm',
+    qualityProfile: 'voice-hifi',
+    bitrateKbps: 96,
+    channelCount: 1,
+    sampleRate: 48000,
+    durationMs: 250,
+    byteLength: 12000,
+    expiresAt: new Date(Date.now() + 60_000).toISOString()
+  });
+
+  await assert.rejects(
+    () =>
+      store.completeAudioUploadIntent({
+        repoId: repo.id,
+        uploadId: 'upload-1',
+        verification: {
+          byteLength: 11999,
+          contentType: 'audio/webm;codecs=opus',
+          crc32c: 'AAAAAA=='
+        }
+      }),
+    /byte length/
+  );
+  assert.equal((await store.listAudioAssets(repo.id)).length, 0);
+  assert.equal((await store.getTimeline(branch.id))[0].userAudioAssetId, null);
+
+  const asset = await store.completeAudioUploadIntent({
+    repoId: repo.id,
+    uploadId: 'upload-1',
+    verification: {
+      byteLength: 12000,
+      contentType: 'audio/webm;codecs=opus',
+      crc32c: 'AAAAAA==',
+      generation: '1',
+      metageneration: '1',
+      etag: 'etag'
+    }
+  });
+
+  assert.equal(asset.turnId, turn.id);
+  assert.equal(asset.branchId, branch.id);
+  const linkedTurn = (await store.getTimeline(branch.id))[0];
+  assert.equal(linkedTurn.userAudioAssetId, asset.id);
+  assert.ok(linkedTurn.updatedAt);
+  const uploads = await store.listAudioUploadIntents(repo.id, branch.id);
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].status, 'verified');
+  assert.equal(uploads[0].audioAssetId, asset.id);
+});
+
 test('in-memory store rejects canon patches with mismatched repo ids', async () => {
   const store = new InMemoryStoryStore();
   const first = await store.createRepo({ title: 'First' });

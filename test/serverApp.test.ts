@@ -63,7 +63,7 @@ test('admin users route is not public', async t => {
   assert.equal(response.json().error, 'firebase_auth_required');
 });
 
-test('audio upload URLs register verified GCS manifests and link live turns', async t => {
+test('live transcript commits do not wait for background audio verification', async t => {
   const audioObjects = new FakeAudioObjectStore();
   const app = await buildApp(testConfig(), { audioObjects });
   t.after(() => app.close());
@@ -81,48 +81,6 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
   assert.equal(created.statusCode, 201);
   const repo = created.json() as { repo: { id: string }; branch: { id: string } };
 
-  const upload = await app.inject({
-    method: 'POST',
-    url: '/v1/audio-assets/upload-url',
-    payload: {
-      repoId: repo.repo.id,
-      branchId: repo.branch.id,
-      role: 'user',
-      contentType: 'audio/webm;codecs=opus',
-      sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-      crc32c: 'AAAAAA==',
-      codec: 'opus',
-      container: 'webm',
-      qualityProfile: 'voice-hifi',
-      bitrateKbps: 96,
-      channelCount: 1,
-      sampleRate: 48000,
-      durationMs: 250,
-      byteLength: 12000
-    }
-  });
-  assert.equal(upload.statusCode, 201);
-  const uploadPayload = upload.json() as { audioUpload: PreparedAudioUpload; tokens: { activeTokens: string[] } };
-  assert.equal(uploadPayload.audioUpload.method, 'PUT');
-  assert.equal(uploadPayload.audioUpload.asset.storageUri, `gs://fake-audio/${repo.repo.id}/user.webm`);
-  assert.equal(uploadPayload.audioUpload.headers['content-type'], 'audio/webm;codecs=opus');
-  assert.equal(uploadPayload.audioUpload.headers['x-goog-content-length-range'], '12000,12000');
-  assert.equal(uploadPayload.audioUpload.asset.qualityProfile, 'voice-hifi');
-  assert.ok(uploadPayload.tokens.activeTokens.includes(ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED));
-
-  const registered = await app.inject({
-    method: 'POST',
-    url: '/v1/audio-assets',
-    payload: { repoId: repo.repo.id, uploadId: uploadPayload.audioUpload.uploadId }
-  });
-  assert.equal(registered.statusCode, 201);
-  assert.equal(audioObjects.verified.length, 1);
-  const audioAsset = (registered.json() as { audioAsset: { id: string; storageUri: string; uploadId: string; crc32c?: string; qualityProfile?: string }; tokens: { activeTokens: string[] } }).audioAsset;
-  assert.equal(audioAsset.storageUri, uploadPayload.audioUpload.asset.storageUri);
-  assert.equal(audioAsset.uploadId, uploadPayload.audioUpload.uploadId);
-  assert.equal(audioAsset.crc32c, 'AAAAAA==');
-  assert.equal(audioAsset.qualityProfile, 'voice-hifi');
-
   const liveTurn = await app.inject({
     method: 'POST',
     url: '/v1/story/live-turn',
@@ -131,13 +89,112 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
       repoId: repo.repo.id,
       branchId: repo.branch.id,
       expectedHeadTurnId: null,
-      userTranscript: 'Archive this user audio.',
-      assistantTranscript: 'The audio is now part of the branch.',
-      userAudioAssetId: audioAsset.id
+      userTranscript: 'Commit the transcript before archival.',
+      assistantTranscript: 'The story continues while audio is preserved later.'
     }
   });
   assert.equal(liveTurn.statusCode, 201);
-  assert.equal((liveTurn.json() as { turn: { userAudioAssetId: string } }).turn.userAudioAssetId, audioAsset.id);
+  const committed = liveTurn.json() as { turn: { id: string; userAudioAssetId: string | null } };
+  assert.equal(committed.turn.userAudioAssetId, null);
+
+  const audioUploadPayload = {
+    repoId: repo.repo.id,
+    branchId: repo.branch.id,
+    turnId: committed.turn.id,
+    role: 'user',
+    contentType: 'audio/webm;codecs=opus',
+    sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    crc32c: 'AAAAAA==',
+    codec: 'opus',
+    container: 'webm',
+    qualityProfile: 'voice-hifi',
+    bitrateKbps: 96,
+    channelCount: 1,
+    sampleRate: 48000,
+    durationMs: 250,
+    byteLength: 12000
+  };
+
+  const turnUploadWithoutBranch = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets/upload-url',
+    payload: {
+      ...audioUploadPayload,
+      branchId: null
+    }
+  });
+  assert.equal(turnUploadWithoutBranch.statusCode, 400);
+  assert.match(turnUploadWithoutBranch.json().message, /turnId audio uploads require branchId/);
+
+  const systemTurnUpload = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets/upload-url',
+    payload: {
+      ...audioUploadPayload,
+      role: 'system'
+    }
+  });
+  assert.equal(systemTurnUpload.statusCode, 400);
+  assert.match(systemTurnUpload.json().message, /system audio cannot be linked/);
+
+  const upload = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets/upload-url',
+    payload: audioUploadPayload
+  });
+  assert.equal(upload.statusCode, 201);
+  const uploadPayload = upload.json() as { audioUpload: PreparedAudioUpload; tokens: { activeTokens: string[] } };
+  assert.equal(uploadPayload.audioUpload.method, 'PUT');
+  assert.equal(uploadPayload.audioUpload.asset.storageUri, `gs://fake-audio/${repo.repo.id}/user.webm`);
+  assert.equal(uploadPayload.audioUpload.headers['content-type'], 'audio/webm;codecs=opus');
+  assert.equal(uploadPayload.audioUpload.headers['x-goog-content-length-range'], '12000,12000');
+  assert.equal(uploadPayload.audioUpload.headers['x-goog-meta-ariadne-turn-id'], committed.turn.id);
+  assert.equal(uploadPayload.audioUpload.asset.turnId, committed.turn.id);
+  assert.equal(uploadPayload.audioUpload.asset.qualityProfile, 'voice-hifi');
+  assert.ok(uploadPayload.tokens.activeTokens.includes(ACTION_TOKEN.AUDIO_UPLOAD_URL_CREATED));
+
+  const pendingAudio = await app.inject({
+    method: 'GET',
+    url: `/v1/repos/${encodeURIComponent(repo.repo.id)}/audio-assets?branchId=${encodeURIComponent(repo.branch.id)}`
+  });
+  assert.equal(pendingAudio.statusCode, 200);
+  const pendingPayload = pendingAudio.json() as { audioAssets: unknown[]; audioUploads: Array<{ status: string; turnId?: string | null }> };
+  assert.equal(pendingPayload.audioAssets.length, 0);
+  assert.equal(pendingPayload.audioUploads.length, 1);
+  assert.equal(pendingPayload.audioUploads[0].status, 'pending');
+  assert.equal(pendingPayload.audioUploads[0].turnId, committed.turn.id);
+
+  const registered = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets',
+    payload: { repoId: repo.repo.id, uploadId: uploadPayload.audioUpload.uploadId }
+  });
+  assert.equal(registered.statusCode, 201);
+  assert.equal(audioObjects.verified.length, 1);
+  assert.equal(audioObjects.verified[0].turnId, committed.turn.id);
+  const audioAsset = (registered.json() as { audioAsset: { id: string; storageUri: string; uploadId: string; crc32c?: string; qualityProfile?: string; turnId?: string | null }; tokens: { activeTokens: string[] } }).audioAsset;
+  assert.equal(audioAsset.storageUri, uploadPayload.audioUpload.asset.storageUri);
+  assert.equal(audioAsset.uploadId, uploadPayload.audioUpload.uploadId);
+  assert.equal(audioAsset.crc32c, 'AAAAAA==');
+  assert.equal(audioAsset.qualityProfile, 'voice-hifi');
+  assert.equal(audioAsset.turnId, committed.turn.id);
+
+  const timeline = await app.inject({
+    method: 'GET',
+    url: `/v1/branches/${encodeURIComponent(repo.branch.id)}/timeline`
+  });
+  assert.equal(timeline.statusCode, 200);
+  assert.equal((timeline.json() as { timeline: Array<{ userAudioAssetId?: string | null }> }).timeline[0].userAudioAssetId, audioAsset.id);
+
+  const verifiedAudio = await app.inject({
+    method: 'GET',
+    url: `/v1/repos/${encodeURIComponent(repo.repo.id)}/audio-assets?branchId=${encodeURIComponent(repo.branch.id)}`
+  });
+  assert.equal(verifiedAudio.statusCode, 200);
+  const verifiedPayload = verifiedAudio.json() as { audioAssets: unknown[]; audioUploads: Array<{ status: string; audioAssetId?: string | null }> };
+  assert.equal(verifiedPayload.audioAssets.length, 1);
+  assert.equal(verifiedPayload.audioUploads[0].status, 'verified');
+  assert.equal(verifiedPayload.audioUploads[0].audioAssetId, audioAsset.id);
 
   const playback = await app.inject({
     method: 'GET',
@@ -157,7 +214,7 @@ test('audio upload URLs register verified GCS manifests and link live turns', as
 
 
 
-test('story map route exposes a player-facing graph without a migration', async t => {
+test('story map route exposes a player-facing graph from committed story data', async t => {
   const app = await buildApp(testConfig());
   t.after(() => app.close());
 
@@ -464,6 +521,7 @@ class FakeAudioObjectStore implements AudioObjectStore {
         'x-goog-meta-ariadne-upload-id': uploadId,
         'x-goog-meta-ariadne-repo-id': input.repoId,
         'x-goog-meta-ariadne-branch-id': input.branchId ?? '',
+        'x-goog-meta-ariadne-turn-id': input.turnId ?? '',
         'x-goog-meta-ariadne-role': input.role,
         'x-goog-meta-ariadne-sha256': input.sha256,
         'x-goog-meta-ariadne-crc32c': input.crc32c ?? '',
@@ -479,6 +537,7 @@ class FakeAudioObjectStore implements AudioObjectStore {
         uploadId,
         repoId: input.repoId,
         branchId: input.branchId ?? null,
+        turnId: input.turnId ?? null,
         role: input.role,
         storageProvider: 'gcs',
         storageUri,

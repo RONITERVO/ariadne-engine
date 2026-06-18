@@ -14,6 +14,7 @@
       "x-goog-meta-ariadne-upload-id",
       "x-goog-meta-ariadne-repo-id",
       "x-goog-meta-ariadne-branch-id",
+      "x-goog-meta-ariadne-turn-id",
       "x-goog-meta-ariadne-role",
       "x-goog-meta-ariadne-sha256",
       "x-goog-meta-ariadne-crc32c",

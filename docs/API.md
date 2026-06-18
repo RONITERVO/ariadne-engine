@@ -63,9 +63,8 @@ Returns frontend-safe public configuration. It never returns provider keys or se
 }
 ```
 
-`webSpeechLanguage` is a legacy public field name. It is now used only as the
-optional Gemini Live transcription language hint; local browser Whisper handles
-speech turn detection separately.
+`webSpeechLanguage` is used only as the optional Gemini Live transcription
+language hint; local browser Whisper handles speech turn detection separately.
 
 ## Provider
 
@@ -212,7 +211,7 @@ Deletes the repo and its branches, turns, snapshots, branch locks, audio manifes
 
 ### `POST /v1/audio-assets/upload-url`
 
-Creates a short-lived, server-issued GCS upload intent and a signed `PUT` URL for one preserved audio object. The browser computes SHA-256 and CRC32C before calling this route, uploads the bytes directly to GCS using **all** returned headers, then completes the ticket through `POST /v1/audio-assets`.
+Creates a short-lived, server-issued GCS upload intent and a signed `PUT` URL for one preserved audio object. In the Live browser flow this happens after `/v1/story/live-turn` succeeds, using the committed turn id. The browser computes SHA-256 and CRC32C before calling this route, uploads the bytes directly to GCS using **all** returned headers, then completes the ticket through `POST /v1/audio-assets`.
 
 Production defaults are cost-managed. Uncompressed WAV/PCM is rejected by the GCS upload policy; clients should upload Opus WebM/Ogg or AAC MP4 using an allowed quality profile. The default `voice-hifi` profile targets 96 kbps Opus mono and allows up to 128 kbps plus mux overhead.
 
@@ -220,6 +219,7 @@ Production defaults are cost-managed. Uncompressed WAV/PCM is rejected by the GC
 {
   "repoId": "...",
   "branchId": "...",
+  "turnId": "...",
   "role": "user",
   "contentType": "audio/webm;codecs=opus",
   "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -262,6 +262,7 @@ Response:
       "x-goog-meta-ariadne-upload-id": "server-issued-one-time-ticket",
       "x-goog-meta-ariadne-repo-id": "...",
       "x-goog-meta-ariadne-branch-id": "...",
+      "x-goog-meta-ariadne-turn-id": "...",
       "x-goog-meta-ariadne-role": "user",
       "x-goog-meta-ariadne-content-type": "audio/webm;codecs=opus",
       "x-goog-meta-ariadne-sha256": "...",
@@ -279,6 +280,7 @@ Response:
       "uploadId": "server-issued-one-time-ticket",
       "repoId": "...",
       "branchId": "...",
+      "turnId": "...",
       "role": "user",
       "storageProvider": "gcs",
       "storageUri": "gs://bucket/live-audio/repos/.../branches/.../user/voice-hifi/2026-06-17/uploads/object.webm",
@@ -301,7 +303,7 @@ Response:
 
 ### `POST /v1/audio-assets`
 
-Completes an uploaded GCS audio intent. In production, the client sends only the repo ID and upload ID. Ariadne loads the stored upload intent, verifies that the GCS object exists in the configured bucket/prefix, checks the server-signed metadata, byte length, MIME type, CRC32C, quality profile, server-streamed SHA-256, generation, metageneration, ETag, and KMS key reference, then writes the durable audio manifest. The completion call is idempotent after a ticket has already been verified.
+Completes an uploaded GCS audio intent. In production, the client sends only the repo ID and upload ID. Ariadne loads the stored upload intent, verifies that the GCS object exists in the configured bucket/prefix, checks the server-signed metadata, byte length, MIME type, CRC32C, quality profile, server-streamed SHA-256, generation, metageneration, ETag, and KMS key reference, then writes the durable audio manifest. If the upload intent has a `turnId`, the verified manifest is linked back to that turn's `userAudioAssetId` or `assistantAudioAssetId`. The completion call is idempotent after a ticket has already been verified.
 
 ```json
 {
@@ -316,6 +318,7 @@ When GCS audio storage is disabled for local development, this route also accept
 {
   "repoId": "...",
   "branchId": "...",
+  "turnId": "...",
   "role": "user",
   "storageProvider": "external",
   "storageUri": "gs://bucket/path/user-turn-1.webm",
@@ -336,7 +339,18 @@ When GCS audio storage is disabled for local development, this route also accept
 
 ### `GET /v1/repos/:repoId/audio-assets`
 
-Lists audio manifests for a repo. Add `?branchId=...` to narrow the list to one branch.
+Lists verified audio manifests and pending/verified upload intents for a repo. Add `?branchId=...` to narrow the list to one branch.
+
+```json
+{
+  "audioAssets": [
+    { "id": "...", "repoId": "...", "branchId": "...", "turnId": "...", "role": "user", "verifiedAt": "..." }
+  ],
+  "audioUploads": [
+    { "id": "...", "repoId": "...", "branchId": "...", "turnId": "...", "role": "user", "status": "pending" }
+  ]
+}
+```
 
 ### `GET /v1/repos/:repoId/audio-assets/:assetId/playback-url`
 
@@ -426,7 +440,7 @@ If an error occurs after streaming has started, the stream emits an error event 
 
 ### `POST /v1/story/live-turn`
 
-Commits a Gemini Live turn after the browser receives Gemini Live user and model transcripts. The backend does not regenerate actor narration; it runs the canonizer and saves the turn.
+Commits a Gemini Live turn after the browser receives Gemini Live user and model transcripts. This is the gameplay path: the backend does not regenerate actor narration; it runs the canonizer and saves the turn. Audio preservation should not block this request. The browser should start `/v1/audio-assets/upload-url` only after this route returns the committed turn id.
 
 ```json
 {
@@ -435,13 +449,11 @@ Commits a Gemini Live turn after the browser receives Gemini Live user and model
   "liveSessionId": "...",
   "expectedHeadTurnId": null,
   "userTranscript": "I open the silver door.",
-  "assistantTranscript": "The silver door exhales moonlit dust.",
-  "userAudioAssetId": "optional-audio-id",
-  "assistantAudioAssetId": "optional-audio-id"
+  "assistantTranscript": "The silver door exhales moonlit dust."
 }
 ```
 
-Use the `branchHeadTurnId` returned by `/v1/provider/gemini/live-token` as `expectedHeadTurnId`. If the branch moves before the Live turn commits, the backend rejects the stale commit. Audio asset IDs are optional links to metadata previously registered through `/v1/audio-assets`.
+Use the `branchHeadTurnId` returned by `/v1/provider/gemini/live-token` as `expectedHeadTurnId`. If the branch moves before the Live turn commits, the backend rejects the stale commit. The request carries transcripts only; audio links attach later through verified background upload intents with `turnId`.
 
 ## Branching
 
