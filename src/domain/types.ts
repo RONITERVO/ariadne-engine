@@ -23,6 +23,7 @@ export interface AudioUploadIntent {
   id: ID;
   repoId: ID;
   branchId?: ID | null;
+  turnId?: ID | null;
   ownerUserId?: ID | null;
   role: AudioRole;
   storageProvider: 'gcs';
@@ -50,6 +51,7 @@ export interface AudioAsset {
   id: ID;
   repoId: ID;
   branchId?: ID | null;
+  turnId?: ID | null;
   uploadId?: ID | null;
   role: AudioRole;
   storageProvider?: 'gcs' | 'external' | null;
@@ -235,6 +237,7 @@ export interface RegisterAudioAssetInput {
   uploadId?: ID | null;
   repoId: ID;
   branchId?: ID | null;
+  turnId?: ID | null;
   role: AudioRole;
   storageProvider?: 'gcs' | 'external' | null;
   storageUri: string;

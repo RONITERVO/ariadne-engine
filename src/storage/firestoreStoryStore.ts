@@ -226,6 +226,14 @@ export class FirestoreStoryStore implements StoryStore {
         if (!branchLoc) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
         if (branchLoc.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
       }
+      let turnLoc: TurnLoc | null = null;
+      if (input.turnId) {
+        turnLoc = await this.locateTurnTx(tx, input.turnId);
+        if (!turnLoc) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
+        if (turnLoc.repoId !== input.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
+        if (input.branchId && turnLoc.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+        if (!audioFieldForRole(input.role)) throw new StoreError('system audio cannot be linked to a turn transcript', 'invalid');
+      }
       const uploadRef = this.audioUploadRef(repoLoc, input.uploadId);
       const existing = await tx.get(uploadRef);
       if (existing.exists) throw new StoreError(`audio upload already exists: ${input.uploadId}`, 'conflict');
@@ -233,7 +241,8 @@ export class FirestoreStoryStore implements StoryStore {
       const intent: AudioUploadIntent = {
         id: input.uploadId,
         repoId: input.repoId,
-        branchId: input.branchId ?? null,
+        branchId: input.branchId ?? turnLoc?.branchId ?? null,
+        turnId: input.turnId ?? null,
         ownerUserId: input.ownerUserId ?? repo.ownerUserId ?? null,
         role: input.role,
         storageProvider: input.storageProvider,
@@ -270,6 +279,15 @@ export class FirestoreStoryStore implements StoryStore {
     return snapshot.exists ? cleanAudioUploadIntent(snapshot.data()) : null;
   }
 
+  async listAudioUploadIntents(repoId: string, branchId?: string): Promise<AudioUploadIntent[]> {
+    const repoLoc = await this.locateRepo(repoId);
+    if (!repoLoc) throw new StoreError(`repo not found: ${repoId}`, 'not_found');
+    let query: Query<DocumentData, DocumentData> = this.repoRef(repoLoc).collection(COLLECTIONS.audioUploads);
+    if (branchId !== undefined) query = query.where('branchId', '==', branchId);
+    const snapshot = await query.get();
+    return snapshot.docs.map(doc => cleanAudioUploadIntent(doc.data())).filter(isPresent).sort(sortByCreatedAt);
+  }
+
   async completeAudioUploadIntent(input: CompleteAudioUploadIntentInput): Promise<AudioAsset> {
     return this.db.runTransaction(async tx => {
       const repoLoc = await this.locateRepoTx(tx, input.repoId);
@@ -294,10 +312,21 @@ export class FirestoreStoryStore implements StoryStore {
       if (input.verification.byteLength !== intent.byteLength) {
         throw new StoreError('audio object byte length does not match upload intent', 'invalid');
       }
+      let turnLoc: TurnLoc | null = null;
+      let turnLinkField: 'userAudioAssetId' | 'assistantAudioAssetId' | null = null;
+      if (intent.turnId) {
+        turnLinkField = audioFieldForRole(intent.role);
+        if (!turnLinkField) throw new StoreError('system audio cannot be linked to a turn transcript', 'invalid');
+        turnLoc = await this.locateTurnTx(tx, intent.turnId);
+        if (!turnLoc) throw new StoreError(`turn not found: ${intent.turnId}`, 'not_found');
+        if (turnLoc.repoId !== intent.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
+        if (intent.branchId && turnLoc.branchId !== intent.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+      }
       const asset: AudioAsset = {
         id: randomUUID(),
         repoId: intent.repoId,
         branchId: intent.branchId ?? null,
+        turnId: intent.turnId ?? null,
         uploadId: intent.id,
         role: intent.role,
         storageProvider: intent.storageProvider,
@@ -324,6 +353,10 @@ export class FirestoreStoryStore implements StoryStore {
       };
       tx.set(this.audioAssetRef(repoLoc, asset.id), storyDoc(asset, 'audio_asset'));
       tx.set(uploadRef, { status: 'verified', audioAssetId: asset.id, verifiedAt: now, updatedAt: now }, { merge: true });
+      if (turnLoc && turnLinkField) {
+        tx.set(this.turnRef(turnLoc), { [turnLinkField]: asset.id, updatedAt: now }, { merge: true });
+        tx.set(this.turnIndexRef(turnLoc.turnId), { [turnLinkField]: asset.id, updatedAt: now }, { merge: true });
+      }
       tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
       tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
       return clone(asset);
@@ -343,11 +376,22 @@ export class FirestoreStoryStore implements StoryStore {
         if (!branchLoc) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
         if (branchLoc.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
       }
+      let turnLoc: TurnLoc | null = null;
+      let turnLinkField: 'userAudioAssetId' | 'assistantAudioAssetId' | null = null;
+      if (input.turnId) {
+        turnLinkField = audioFieldForRole(input.role);
+        if (!turnLinkField) throw new StoreError('system audio cannot be linked to a turn transcript', 'invalid');
+        turnLoc = await this.locateTurnTx(tx, input.turnId);
+        if (!turnLoc) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
+        if (turnLoc.repoId !== input.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
+        if (input.branchId && turnLoc.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+      }
       const now = new Date().toISOString();
       const asset: AudioAsset = {
         id: randomUUID(),
         repoId: input.repoId,
-        branchId: input.branchId ?? null,
+        branchId: input.branchId ?? turnLoc?.branchId ?? null,
+        turnId: input.turnId ?? null,
         uploadId: input.uploadId ?? null,
         role: input.role,
         storageProvider: input.storageProvider ?? 'external',
@@ -373,6 +417,10 @@ export class FirestoreStoryStore implements StoryStore {
         createdAt: now
       };
       tx.set(this.audioAssetRef(repoLoc, asset.id), storyDoc(asset, 'audio_asset'));
+      if (turnLoc && turnLinkField) {
+        tx.set(this.turnRef(turnLoc), { [turnLinkField]: asset.id, updatedAt: now }, { merge: true });
+        tx.set(this.turnIndexRef(turnLoc.turnId), { [turnLinkField]: asset.id, updatedAt: now }, { merge: true });
+      }
       tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
       tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
       return clone(asset);
@@ -394,6 +442,43 @@ export class FirestoreStoryStore implements StoryStore {
     if (branchId !== undefined) query = query.where('branchId', '==', branchId);
     const snapshot = await query.get();
     return snapshot.docs.map(doc => cleanAudioAsset(doc.data())).filter(isPresent).sort(sortByCreatedAt);
+  }
+
+  async linkAudioAssetToTurn(input: {
+    repoId: string;
+    branchId: string;
+    turnId: string;
+    role: AudioUploadIntent['role'];
+    audioAssetId: string;
+  }): Promise<TurnCommit> {
+    return this.db.runTransaction(async tx => {
+      const field = audioFieldForRole(input.role);
+      if (!field) throw new StoreError('only user and assistant audio can be linked to a turn transcript', 'invalid');
+      const turnLoc = await this.locateTurnTx(tx, input.turnId);
+      if (!turnLoc) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
+      if (turnLoc.repoId !== input.repoId || turnLoc.branchId !== input.branchId) {
+        throw new StoreError('turn does not belong to branch or repo', 'invalid');
+      }
+      const repoLoc = await this.locateRepoTx(tx, input.repoId);
+      if (!repoLoc) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
+      const turnSnapshot = await tx.get(this.turnRef(turnLoc));
+      const assetSnapshot = await tx.get(this.audioAssetRef(repoLoc, input.audioAssetId));
+      const turn = cleanTurn(turnSnapshot.data());
+      if (!turn) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
+      const asset = cleanAudioAsset(assetSnapshot.data());
+      if (!asset) throw new StoreError(`audio asset not found: ${input.audioAssetId}`, 'not_found');
+      if (asset.repoId !== input.repoId) throw new StoreError('audio asset does not belong to repo', 'invalid');
+      if (asset.branchId && asset.branchId !== input.branchId) throw new StoreError('audio asset does not belong to branch', 'invalid');
+      if (asset.turnId && asset.turnId !== input.turnId) throw new StoreError('audio asset does not belong to turn', 'invalid');
+      if (asset.role !== input.role) throw new StoreError('audio asset role does not match turn transcript role', 'invalid');
+      const now = new Date().toISOString();
+      const linkedTurn = { ...turn, [field]: asset.id };
+      tx.set(this.turnRef(turnLoc), { [field]: asset.id, updatedAt: now }, { merge: true });
+      tx.set(this.turnIndexRef(input.turnId), { [field]: asset.id, updatedAt: now }, { merge: true });
+      tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
+      tx.set(this.repoIndexRef(input.repoId), { updatedAt: now }, { merge: true });
+      return clone(linkedTurn);
+    });
   }
 
   async acquireBranchMutationLease(input: BranchMutationLeaseInput): Promise<BranchMutationLease> {
@@ -477,8 +562,8 @@ export class FirestoreStoryStore implements StoryStore {
         ownerUserId: repo.ownerUserId ?? branch.ownerUserId ?? null,
         parentTurnId,
         turnIndex: parent ? parent.turnIndex + 1 : 1,
-        userAudioAssetId: input.userAudioAssetId ?? null,
-        assistantAudioAssetId: input.assistantAudioAssetId ?? null,
+        userAudioAssetId: null,
+        assistantAudioAssetId: null,
         userTranscript: input.userTranscript,
         assistantTranscript: input.assistantTranscript,
         stateStatus: 'pending',
@@ -733,7 +818,7 @@ export class FirestoreStoryStore implements StoryStore {
     return snapshot.exists ? turnLocFromIndex(turnId, snapshot.data()) : null;
   }
 
-  private async getTurn(turnId: string): Promise<TurnCommit | null> {
+  async getTurn(turnId: string): Promise<TurnCommit | null> {
     const loc = await this.locateTurn(turnId);
     if (!loc) return null;
     const snapshot = await this.turnRef(loc).get();
@@ -892,6 +977,7 @@ function cleanAudioAsset(data: DocumentData | undefined): AudioAsset | null {
     id,
     repoId,
     branchId: nullableString(data.branchId),
+    turnId: nullableString(data.turnId),
     uploadId: nullableString(data.uploadId),
     role: (stringFrom(data.role) || 'user') as AudioAsset['role'],
     storageProvider: (stringFrom(data.storageProvider) || null) as AudioAsset['storageProvider'],
@@ -928,6 +1014,7 @@ function cleanAudioUploadIntent(data: DocumentData | undefined): AudioUploadInte
     id,
     repoId,
     branchId: nullableString(data.branchId),
+    turnId: nullableString(data.turnId),
     ownerUserId: normalizeOwnerUserId(data.ownerUserId),
     role: (stringFrom(data.role) || 'user') as AudioUploadIntent['role'],
     storageProvider: 'gcs',
@@ -989,4 +1076,15 @@ function isPresent<T>(value: T | null | undefined): value is T {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+function audioFieldForRole(role: AudioUploadIntent['role']): 'userAudioAssetId' | 'assistantAudioAssetId' | null {
+  switch (role) {
+    case 'user':
+      return 'userAudioAssetId';
+    case 'assistant':
+      return 'assistantAudioAssetId';
+    case 'system':
+      return null;
+  }
 }

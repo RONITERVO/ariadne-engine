@@ -46,9 +46,9 @@ The first Google Galaxy release includes the controls needed for the app's adver
 - Filter the universe by current branch, branch heads, unresolved/open threads, and canon landmarks.
 - Use in-map help for keyboard, mouse, and touch navigation shortcuts.
 
-## Why no migration is required
+## Derived Read Model
 
-The Atlas is derived from existing documents:
+The Atlas is derived from committed story documents:
 
 ```text
 StoryRepo

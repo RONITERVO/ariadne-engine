@@ -451,11 +451,20 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       }
       tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
     }
+    if (body.turnId) {
+      await assertTurnAudioLinkTarget(store, {
+        repoId: repo.id,
+        branchId: body.branchId ?? null,
+        turnId: body.turnId,
+        role: body.role
+      }, tokens);
+    }
     const audioUpload = await audioObjects.prepareUpload(body);
     await store.createAudioUploadIntent({
       uploadId: audioUpload.uploadId,
       repoId: body.repoId,
       branchId: body.branchId ?? null,
+      turnId: body.turnId ?? null,
       ownerUserId: repo.ownerUserId ?? user?.uid ?? null,
       role: body.role,
       storageProvider: 'gcs',
@@ -530,6 +539,14 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
       }
       tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
     }
+    if ('turnId' in body && body.turnId) {
+      await assertTurnAudioLinkTarget(store, {
+        repoId: repo.id,
+        branchId: body.branchId ?? null,
+        turnId: body.turnId,
+        role: body.role
+      }, tokens);
+    }
     const audioAsset = await store.saveAudioAsset(body);
     return sendWithTokens(reply, { audioAsset }, tokens, 201);
   });
@@ -543,7 +560,12 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
     if (!repo) throw tokens.fail(`repo not found: ${repoId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
     tokens.add(ACTION_TOKEN.STORY_REPO_FOUND);
     assertRepoAccess(repo, user, config, tokens);
-    return { audioAssets: await store.listAudioAssets(repoId, typeof query.branchId === 'string' ? query.branchId : undefined), tokens: tokens.snapshot() };
+    const branchId = typeof query.branchId === 'string' ? query.branchId : undefined;
+    const [audioAssets, audioUploads] = await Promise.all([
+      store.listAudioAssets(repoId, branchId),
+      store.listAudioUploadIntents(repoId, branchId)
+    ]);
+    return { audioAssets, audioUploads, tokens: tokens.snapshot() };
   });
 
   app.get('/v1/repos/:repoId/audio-assets/:assetId/playback-url', async (request, reply) => {
@@ -794,8 +816,6 @@ export async function buildApp(config: AppConfig, deps: AppDeps = {}): Promise<F
         assistantTranscript: body.assistantTranscript,
         liveSessionId: body.liveSessionId,
         expectedHeadTurnId: body.expectedHeadTurnId,
-        userAudioAssetId: body.userAudioAssetId ?? null,
-        assistantAudioAssetId: body.assistantAudioAssetId ?? null,
         providerKey: access.providerKey,
         provider: access.provider,
         tokens
@@ -909,6 +929,7 @@ function audioManifestFromIntent(intent: AudioUploadIntent): RegisterAudioAssetI
     uploadId: intent.id,
     repoId: intent.repoId,
     branchId: intent.branchId ?? null,
+    turnId: intent.turnId ?? null,
     role: intent.role,
     storageProvider: intent.storageProvider,
     storageUri: intent.storageUri,
@@ -1038,6 +1059,27 @@ async function assertStoryAccess(
   tokens.add(ACTION_TOKEN.STORY_BRANCH_BELONGS_TO_REPO);
   assertRepoAccess(repo, user, config, tokens);
   return { repo, branch };
+}
+
+async function assertTurnAudioLinkTarget(
+  store: StoryStore,
+  input: { repoId: string; branchId?: string | null; turnId: string; role: RegisterAudioAssetInput['role'] },
+  tokens: ActionTokenSet
+): Promise<void> {
+  if (!input.branchId) {
+    throw tokens.fail('turnId audio uploads require branchId.', 400, 'store_invalid', ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+  }
+  if (input.role === 'system') {
+    throw tokens.fail('system audio cannot be linked to a turn transcript.', 400, 'store_invalid', ACTION_TOKEN.REQUEST_BODY_VALIDATED);
+  }
+  const turn = await store.getTurn(input.turnId);
+  if (!turn) throw tokens.fail(`turn not found: ${input.turnId}`, 404, 'store_not_found', ACTION_TOKEN.STORY_REPO_MISSING);
+  if (turn.repoId !== input.repoId) {
+    throw tokens.fail('turn does not belong to repo', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+  }
+  if (turn.branchId !== input.branchId) {
+    throw tokens.fail('turn does not belong to branch', 400, 'store_invalid', ACTION_TOKEN.STORY_BRANCH_REPO_MISMATCH);
+  }
 }
 
 type ProviderExecution =

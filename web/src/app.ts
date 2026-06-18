@@ -174,6 +174,7 @@ type CapturedAudioChunk = {
 type AudioUploadAsset = {
   repoId: string;
   branchId?: string | null;
+  turnId?: string | null;
   role: 'user' | 'assistant' | 'system';
   storageUri: string;
   contentType?: string | null;
@@ -205,6 +206,7 @@ type AudioUploadResponse = {
 type AudioAssetResponse = {
   audioAsset: {
     id: string;
+    turnId?: string | null;
   };
 };
 
@@ -268,6 +270,7 @@ type TranscriptRole = 'user' | 'model' | 'system';
 type TranscriptLineOptions = {
   scroll?: boolean;
   audioAssetId?: string | null;
+  audioStatus?: 'pending' | 'verified' | 'failed' | null;
   turnId?: string;
   turnIndex?: number;
 };
@@ -381,6 +384,7 @@ let transcriptPlaybackLine: HTMLElement | null = null;
 let transcriptPlaybackRequestId = 0;
 let whisperPlaybackResetTimer: number | null = null;
 let hydratedTranscriptBranchId: string | null = null;
+let audioAssetPipelineCount = 0;
 const localActivityTokens = new Set<ClientToken>();
 const tokenFlagEls: {
   root?: HTMLButtonElement;
@@ -2155,11 +2159,6 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   }
   try {
     if (!state.repoId || !state.branchId || !userTranscript || !assistantTranscript) return;
-    const audioAssetIds = await uploadLiveTurnAudioAssets(turn).catch(error => {
-      addLine('system', `audio archive skipped: ${messageFrom(error)}`);
-      return {} as { userAudioAssetId?: string; assistantAudioAssetId?: string };
-    });
-
     const result = await authorizedFetch<LiveTurnCommitResponse>('/v1/story/live-turn', {
       method: 'POST',
       providerKey: providerKeyForRequests(),
@@ -2169,15 +2168,16 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
         liveSessionId: turn.sessionId ?? undefined,
         expectedHeadTurnId: turn.expectedHeadTurnId,
         userTranscript,
-        assistantTranscript,
-        userAudioAssetId: audioAssetIds.userAudioAssetId,
-        assistantAudioAssetId: audioAssetIds.assistantAudioAssetId
+        assistantTranscript
       }
     });
     if (result.turn?.id) {
-      setLineAudioAsset(turn.userLine, result.turn.userAudioAssetId ?? audioAssetIds.userAudioAssetId);
-      setLineAudioAsset(turn.assistantLine, result.turn.assistantAudioAssetId ?? audioAssetIds.assistantAudioAssetId);
+      setLineTurnId(turn.userLine, result.turn.id);
+      setLineTurnId(turn.assistantLine, result.turn.id);
+      setLineAudioAsset(turn.userLine, result.turn.userAudioAssetId);
+      setLineAudioAsset(turn.assistantLine, result.turn.assistantAudioAssetId);
       persistStoryCursor(state.repoId, state.branchId);
+      startBackgroundLiveTurnAudioPipeline(turn, result.turn.id, state.repoId, state.branchId);
     }
   } catch (error) {
     addLine('system', messageFrom(error));
@@ -2188,19 +2188,73 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   }
 }
 
-async function uploadLiveTurnAudioAssets(turn: LiveTurn): Promise<{ userAudioAssetId?: string; assistantAudioAssetId?: string }> {
-  if (!state.config?.audioStorageEnabled || !state.repoId || !state.branchId) return {};
-
-  const result: { userAudioAssetId?: string; assistantAudioAssetId?: string } = {};
-  const userAssetId = await uploadCapturedAudio('user', turn.userAudioChunks);
-  if (userAssetId) result.userAudioAssetId = userAssetId;
-  const assistantAssetId = await uploadCapturedAudio('assistant', turn.assistantAudioChunks);
-  if (assistantAssetId) result.assistantAudioAssetId = assistantAssetId;
-  return result;
+function startBackgroundLiveTurnAudioPipeline(turn: LiveTurn, turnId: string, repoId: string, branchId: string): void {
+  if (!state.config?.audioStorageEnabled) return;
+  const userChunks = [...turn.userAudioChunks];
+  const assistantChunks = [...turn.assistantAudioChunks];
+  if (!userChunks.length && !assistantChunks.length) return;
+  if (userChunks.length) setLineAudioStatus(turn.userLine, 'pending');
+  if (assistantChunks.length) setLineAudioStatus(turn.assistantLine, 'pending');
+  beginAudioAssetPipeline();
+  void uploadLiveTurnAudioAssets({
+    repoId,
+    branchId,
+    turnId,
+    userChunks,
+    assistantChunks,
+    userLine: turn.userLine,
+    assistantLine: turn.assistantLine
+  }).catch(error => {
+    addLine('system', `audio archive skipped: ${messageFrom(error)}`);
+  }).finally(() => {
+    endAudioAssetPipeline();
+  });
 }
 
-async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedAudioChunk[]): Promise<string | undefined> {
-  if (!state.repoId || !state.branchId || !chunks.length) return undefined;
+async function uploadLiveTurnAudioAssets(input: {
+  repoId: string;
+  branchId: string;
+  turnId: string;
+  userChunks: CapturedAudioChunk[];
+  assistantChunks: CapturedAudioChunk[];
+  userLine: HTMLElement | null;
+  assistantLine: HTMLElement | null;
+}): Promise<void> {
+  const failures: string[] = [];
+  await Promise.all([
+    uploadCapturedAudioForLine(input, 'user', input.userChunks, input.userLine).catch(error => failures.push(`user: ${messageFrom(error)}`)),
+    uploadCapturedAudioForLine(input, 'assistant', input.assistantChunks, input.assistantLine).catch(error => failures.push(`assistant: ${messageFrom(error)}`))
+  ]);
+  if (failures.length) throw new Error(failures.join('; '));
+}
+
+async function uploadCapturedAudioForLine(
+  input: { repoId: string; branchId: string; turnId: string },
+  role: 'user' | 'assistant',
+  chunks: CapturedAudioChunk[],
+  line: HTMLElement | null
+): Promise<void> {
+  let assetId: string | undefined;
+  try {
+    assetId = await uploadCapturedAudio(input, role, chunks);
+  } catch (error) {
+    setLineAudioStatus(line, 'failed');
+    throw error;
+  }
+  if (assetId) {
+    setLineAudioAsset(line, assetId);
+    setLineAudioStatus(line, 'verified');
+  } else {
+    setLineAudioStatus(line, null);
+  }
+}
+
+async function uploadCapturedAudio(
+  input: { repoId: string; branchId: string; turnId: string },
+  role: 'user' | 'assistant',
+  chunks: CapturedAudioChunk[]
+): Promise<string | undefined> {
+  if (!chunks.length) return undefined;
   const archive = await audioChunksToArchive(chunks);
   if (!archive || archive.blob.size <= 0) return undefined;
   const maxBytes = state.config?.audioMaxBytes ?? 0;
@@ -2212,8 +2266,9 @@ async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedA
   const audioUpload = await authorizedFetch<AudioUploadResponse>('/v1/audio-assets/upload-url', {
     method: 'POST',
     body: {
-      repoId: state.repoId,
-      branchId: state.branchId,
+      repoId: input.repoId,
+      branchId: input.branchId,
+      turnId: input.turnId,
       role,
       contentType: archive.contentType,
       sha256: checksums.sha256,
@@ -2242,7 +2297,7 @@ async function uploadCapturedAudio(role: 'user' | 'assistant', chunks: CapturedA
   const registered = await authorizedFetch<AudioAssetResponse>('/v1/audio-assets', {
     method: 'POST',
     body: {
-      repoId: state.repoId,
+      repoId: input.repoId,
       uploadId: upload.uploadId
     }
   });
@@ -2686,13 +2741,32 @@ function createLine(role: TranscriptRole, text: string, options: TranscriptLineO
   if (options.turnId) line.dataset.turnId = options.turnId;
   if (options.turnIndex !== undefined) line.dataset.turnIndex = String(options.turnIndex);
   setLineText(line, text, { scroll: false });
+  if (options.audioStatus) setLineAudioStatus(line, options.audioStatus);
   setLineAudioAsset(line, options.audioAssetId);
   return line;
+}
+
+function setLineTurnId(line: HTMLElement | null, turnId: string | null | undefined): void {
+  if (!line || !turnId) return;
+  line.dataset.turnId = turnId;
+}
+
+function setLineAudioStatus(line: HTMLElement | null, status: 'pending' | 'verified' | 'failed' | null | undefined): void {
+  if (!line) return;
+  line.classList.toggle('audio-pending', status === 'pending');
+  line.classList.toggle('audio-verified', status === 'verified');
+  line.classList.toggle('audio-failed', status === 'failed');
+  if (status) {
+    line.dataset.audioStatus = status;
+  } else {
+    delete line.dataset.audioStatus;
+  }
 }
 
 function setLineAudioAsset(line: HTMLElement | null, assetId: string | null | undefined): void {
   if (!line || !assetId) return;
   line.dataset.audioAssetId = assetId;
+  setLineAudioStatus(line, 'verified');
   line.classList.add('playable');
   line.tabIndex = 0;
   line.setAttribute('role', 'button');
@@ -2843,6 +2917,16 @@ function closeLiveSession(turn: LiveTurn): void {
 
 function clearTurnTokens(turn: LiveTurn): void {
   for (const token of [...turn.tokens]) removeTurnToken(turn, token);
+}
+
+function beginAudioAssetPipeline(): void {
+  audioAssetPipelineCount += 1;
+  addLocalToken(CLIENT_TOKEN.AUDIO_ASSET_PIPELINE);
+}
+
+function endAudioAssetPipeline(): void {
+  audioAssetPipelineCount = Math.max(0, audioAssetPipelineCount - 1);
+  if (audioAssetPipelineCount === 0) removeLocalToken(CLIENT_TOKEN.AUDIO_ASSET_PIPELINE);
 }
 
 function mountTokenFlag(): void {

@@ -117,9 +117,7 @@ export const LiveTurnBodySchema = z.object({
   liveSessionId: z.string().trim().min(1).max(160).optional(),
   expectedHeadTurnId: z.string().min(1).nullable(),
   userTranscript: z.string().trim().min(1),
-  assistantTranscript: z.string().trim().min(1),
-  userAudioAssetId: z.string().trim().min(1).max(160).nullable().optional(),
-  assistantAudioAssetId: z.string().trim().min(1).max(160).nullable().optional()
+  assistantTranscript: z.string().trim().min(1)
 });
 
 export const ForkBranchBodySchema = z.object({
@@ -146,6 +144,7 @@ const AudioManifestBodySchema = z.object({
   uploadId: z.string().trim().min(1).max(160).nullable().optional(),
   repoId: AudioMetadataStringSchema,
   branchId: AudioMetadataStringSchema.nullable().optional(),
+  turnId: AudioMetadataStringSchema.nullable().optional(),
   role: z.enum(['user', 'assistant', 'system']),
   storageProvider: z.enum(['gcs', 'external']).nullable().optional(),
   storageUri: GcsStorageUriSchema,
@@ -179,6 +178,7 @@ export const AudioAssetBodySchema = z.union([AudioUploadRegistrationBodySchema, 
 export const AudioUploadUrlBodySchema = z.object({
   repoId: AudioMetadataStringSchema,
   branchId: AudioMetadataStringSchema.nullable().optional(),
+  turnId: AudioMetadataStringSchema.nullable().optional(),
   role: z.enum(['user', 'assistant', 'system']),
   contentType: AudioContentTypeSchema,
   sha256: AudioSha256Schema,

@@ -19,6 +19,7 @@ const AUDIO_CACHE_CONTROL = 'private, max-age=31536000, immutable';
 export interface PrepareAudioUploadInput {
   repoId: string;
   branchId?: string | null;
+  turnId?: string | null;
   role: AudioRole;
   contentType: string;
   sha256: string;
@@ -185,6 +186,7 @@ export class GcsAudioObjectStore implements AudioObjectStore {
         uploadId,
         repoId: normalized.repoId,
         branchId: normalized.branchId ?? null,
+        turnId: normalized.turnId ?? null,
         role: normalized.role,
         storageProvider: 'gcs',
         storageUri,
@@ -267,6 +269,7 @@ export class GcsAudioObjectStore implements AudioObjectStore {
     if (expected.uploadId) assertMetadata(custom, 'ariadne-upload-id', expected.uploadId);
     assertMetadata(custom, 'ariadne-repo-id', expected.repoId);
     assertMetadata(custom, 'ariadne-branch-id', expected.branchId ?? '');
+    assertMetadata(custom, 'ariadne-turn-id', expected.turnId ?? '');
     assertMetadata(custom, 'ariadne-role', expected.role);
     assertMetadata(custom, 'ariadne-content-type', expected.contentType);
     assertMetadata(custom, 'ariadne-sha256', expected.sha256);
@@ -443,6 +446,7 @@ function uploadHeaders(input: NormalizedAudioInput, uploadId: string): Record<st
     'x-goog-meta-ariadne-upload-id': uploadId,
     'x-goog-meta-ariadne-repo-id': input.repoId,
     'x-goog-meta-ariadne-branch-id': input.branchId ?? '',
+    'x-goog-meta-ariadne-turn-id': input.turnId ?? '',
     'x-goog-meta-ariadne-role': input.role,
     'x-goog-meta-ariadne-content-type': input.contentType,
     'x-goog-meta-ariadne-sha256': input.sha256,
@@ -493,6 +497,7 @@ function normalizeCommonInput(
     ...input,
     repoId: normalizeMetadataValue(input.repoId, 'repoId'),
     branchId: input.branchId === undefined || input.branchId === null ? input.branchId : normalizeMetadataValue(input.branchId, 'branchId'),
+    turnId: input.turnId === undefined || input.turnId === null ? input.turnId : normalizeMetadataValue(input.turnId, 'turnId'),
     contentType: normalizeHeaderValue(input.contentType ?? '', 'contentType').toLowerCase(),
     sha256: normalizeSha256(input.sha256),
     crc32c: normalizeOptionalCrc32c(input.crc32c),
@@ -537,6 +542,7 @@ function expectedManifest(input: RegisterAudioAssetInput, intent?: AudioUploadIn
     uploadId: intent.id,
     repoId: intent.repoId,
     branchId: intent.branchId ?? null,
+    turnId: intent.turnId ?? null,
     role: intent.role,
     storageProvider: intent.storageProvider,
     storageUri: intent.storageUri,

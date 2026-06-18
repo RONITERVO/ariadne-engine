@@ -274,6 +274,18 @@ input:focus {
   text-underline-offset: 4px;
 }
 
+.line.audio-pending .text {
+  text-decoration: underline dotted #4f6d73;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+.line.audio-failed .text {
+  text-decoration: underline dotted #6e4545;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
 .line.playable:hover .text,
 .line.playable:focus-visible .text,
 .line.is-playing-audio .text {

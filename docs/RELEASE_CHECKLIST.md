@@ -7,16 +7,16 @@
 - [x] Gemini BYOK keys are accepted only in `x-ariadne-provider-key`, redacted, and not persisted.
 - [x] Hosted paid usage, Firebase Auth, credit ledger, Stripe Checkout, and Stripe webhook routes are present.
 - [x] Gemini Live token flow is present.
-- [x] Live transcript commits support optional user/model audio asset IDs.
+- [x] Live transcript commits are transcript/canon-first; user/model audio preservation runs as a pending/verified background asset pipeline.
 - [x] `/map` provides the Google Galaxy story navigation surface.
 - [x] `/map` supports visual branch checkout, fork, timeline replay, branch compare, canon debug, export, delete, and semantic rewind.
 - [x] `/v1/story-search` supports time-machine search over transcripts and canon landmarks.
 - [x] `/v1/repos/:repoId/export` supports JSON and Markdown archives.
 - [x] `/v1/repos/:repoId` deletion removes the repo and related local/Firestore story records.
 - [x] `/v1/audio-assets/upload-url` creates server-issued GCS upload intents with required CRC32C, exact-size signed upload bounds, compressed quality-profile enforcement, signed object preconditions, and server-side SHA-256 verification.
-- [x] `/v1/audio-assets` completes one-time GCS upload tickets and stores verified preserved-audio manifests.
+- [x] `/v1/audio-assets` completes one-time GCS upload tickets, stores verified preserved-audio manifests, and links them back to turns when the intent has a `turnId`.
 - [x] Repo deletion removes stored GCS audio objects under the repo prefix before deleting story records.
-- [x] `/v1/repos/:repoId/audio-assets` lists preserved-audio manifests.
+- [x] `/v1/repos/:repoId/audio-assets` lists verified preserved-audio manifests and pending/verified upload intents.
 - [x] Tests cover search/export/audio/canon/compare/delete release routes.
 - [x] Voice-native branch commands are explicitly marked as v1.1.
 
