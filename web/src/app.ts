@@ -292,6 +292,12 @@ const WHISPER_MIN_AUDIO_MS = 1200;
 const WHISPER_REQUEST_INTERVAL_MS = 900;
 const WHISPER_BUFFER_MS = 7000;
 const WHISPER_POST_PLAYBACK_MUTE_MS = 1400;
+const WHISPER_LIVE_TURN_RESUME_COOLDOWN_MS = 2500;
+const WHISPER_PLAYBACK_RESUME_COOLDOWN_MS = 1200;
+const WHISPER_MIN_RMS = 0.004;
+const WHISPER_MIN_PEAK = 0.025;
+const WHISPER_ACTIVE_SAMPLE_THRESHOLD = 0.012;
+const WHISPER_MIN_ACTIVE_SAMPLE_RATIO = 0.01;
 const AUDIO_ARCHIVE_ENCODINGS = [
   { mimeType: 'audio/webm;codecs=opus', contentType: 'audio/webm;codecs=opus', codec: 'opus', container: 'webm', qualityProfile: 'voice-hifi' },
   { mimeType: 'audio/ogg;codecs=opus', contentType: 'audio/ogg;codecs=opus', codec: 'opus', container: 'ogg', qualityProfile: 'voice-hifi' },
@@ -362,6 +368,7 @@ let whisperWorker: Worker | null = null;
 let whisperReady = false;
 let whisperBusy = false;
 let whisperRequestId = 0;
+let ignoreWhisperResultsThroughId = 0;
 let lastWhisperRequestAtMs = 0;
 let whisperMutedUntilMs = 0;
 let activeTurn: LiveTurn | null = null;
@@ -372,6 +379,7 @@ let latestBackendTokens: TokenSnapshot | null = null;
 let transcriptPlaybackAudio: HTMLAudioElement | null = null;
 let transcriptPlaybackLine: HTMLElement | null = null;
 let transcriptPlaybackRequestId = 0;
+let whisperPlaybackResetTimer: number | null = null;
 let hydratedTranscriptBranchId: string | null = null;
 const localActivityTokens = new Set<ClientToken>();
 const tokenFlagEls: {
@@ -1879,6 +1887,7 @@ function startWhisperTurnDetection(): void {
     whisperReady = false;
     whisperBusy = false;
     whisperWorker = null;
+    ignoreWhisperResultsThroughId = whisperRequestId;
     removeLocalToken(CLIENT_TOKEN.WHISPER_LOADING);
     removeLocalToken(CLIENT_TOKEN.WHISPER_READY);
     removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
@@ -1900,20 +1909,30 @@ function onWhisperWorkerMessage(message: WhisperWorkerToMainMessage): void {
     return;
   }
   if (message.type === 'error') {
+    const stale = isStaleWhisperMessage(message.id);
     whisperBusy = false;
     removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
+    if (stale) {
+      requestWhisperTurnCheck(Date.now());
+      return;
+    }
     addLine('system', `local Whisper unavailable: ${message.message}`);
     return;
   }
 
   whisperBusy = false;
   removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
+  if (isStaleWhisperMessage(message.id)) {
+    requestWhisperTurnCheck(Date.now());
+    return;
+  }
   handleWhisperDetectionText(message.text);
   requestWhisperTurnCheck(Date.now());
 }
 
 function requestWhisperTurnCheck(now: number, force = false): void {
   if (!whisperWorker || !whisperReady || whisperBusy || !hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) return;
+  if (liveStarting && !activeTurn) return;
   if (isSpeechDetectorPaused() || now < whisperMutedUntilMs || isLiveAudioPlaybackActive()) return;
   if (!force && now - lastWhisperRequestAtMs < WHISPER_REQUEST_INTERVAL_MS) return;
 
@@ -2035,6 +2054,7 @@ async function startLiveTurn(): Promise<void> {
   } catch (error) {
     addLine('system', messageFrom(error));
     activeTurn = null;
+    resetWhisperDetectionWindow(Date.now(), WHISPER_LIVE_TURN_RESUME_COOLDOWN_MS);
     removeLocalToken(CLIENT_TOKEN.LIVE_TURN_STARTING);
     removeLocalToken(CLIENT_TOKEN.LIVE_TURN_ACTIVE);
   }
@@ -2050,7 +2070,6 @@ function scheduleTurnTail(): void {
       if (activeTurn !== turn) return;
       sendLiveChunksThrough(Date.now());
       closeLiveInput(turn);
-      pauseSpeechDetectorForLiveTurn();
       turn.session.sendRealtimeInput({ activityEnd: {} });
       turn.session.sendRealtimeInput({ audioStreamEnd: true });
       turn.emptyTurnTimer = window.setTimeout(() => {
@@ -2477,8 +2496,10 @@ function queueAudioBuffer(context: AudioContext, buffer: AudioBuffer): void {
   const startAt = Math.max(context.currentTime, audioPlayhead);
   source.start(startAt);
   audioPlayhead = startAt + buffer.duration;
-  whisperAudioChunks = [];
-  whisperMutedUntilMs = Math.max(whisperMutedUntilMs, Date.now() + Math.ceil(buffer.duration * 1000) + WHISPER_POST_PLAYBACK_MUTE_MS);
+  const now = Date.now();
+  const playbackRemainingMs = Math.ceil(Math.max(0, audioPlayhead - context.currentTime) * 1000);
+  resetWhisperDetectionWindow(now, playbackRemainingMs + WHISPER_POST_PLAYBACK_MUTE_MS);
+  scheduleWhisperPlaybackReset(now + playbackRemainingMs + WHISPER_POST_PLAYBACK_MUTE_MS);
 }
 
 function isLiveAudioPlaybackActive(): boolean {
@@ -2522,22 +2543,50 @@ function isSpeechDetectorPaused(): boolean {
   return hasLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_LIVE_TURN) || hasLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_PLAYBACK);
 }
 
+function isStaleWhisperMessage(id: number | undefined): boolean {
+  return typeof id === 'number' && id <= ignoreWhisperResultsThroughId;
+}
+
+function resetWhisperDetectionWindow(now = Date.now(), cooldownMs = 0): void {
+  whisperAudioChunks = [];
+  pcmChunks = [];
+  ignoreWhisperResultsThroughId = Math.max(ignoreWhisperResultsThroughId, whisperRequestId);
+  lastWhisperRequestAtMs = now;
+  if (cooldownMs > 0) whisperMutedUntilMs = Math.max(whisperMutedUntilMs, now + cooldownMs);
+  removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
+}
+
+function scheduleWhisperPlaybackReset(untilMs: number): void {
+  if (whisperPlaybackResetTimer) window.clearTimeout(whisperPlaybackResetTimer);
+  whisperPlaybackResetTimer = window.setTimeout(() => {
+    whisperPlaybackResetTimer = null;
+    const now = Date.now();
+    if (now + 25 < whisperMutedUntilMs) {
+      scheduleWhisperPlaybackReset(whisperMutedUntilMs);
+      return;
+    }
+    resetWhisperDetectionWindow(now);
+  }, Math.max(0, untilMs - Date.now()));
+}
+
 function pauseSpeechDetectorForLiveTurn(): void {
   addLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_LIVE_TURN);
+  resetWhisperDetectionWindow(Date.now());
 }
 
 function resumeSpeechDetectorAfterLiveTurn(): void {
   removeLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_LIVE_TURN);
-  requestWhisperTurnCheck(Date.now(), true);
+  resetWhisperDetectionWindow(Date.now(), WHISPER_LIVE_TURN_RESUME_COOLDOWN_MS);
 }
 
 function pauseSpeechDetectorForTranscriptPlayback(): void {
   addLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_PLAYBACK);
+  resetWhisperDetectionWindow(Date.now());
 }
 
 function resumeSpeechDetectorAfterTranscriptPlayback(): void {
   removeLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_PLAYBACK);
-  requestWhisperTurnCheck(Date.now(), true);
+  resetWhisperDetectionWindow(Date.now(), WHISPER_PLAYBACK_RESUME_COOLDOWN_MS);
 }
 
 function prunePcmChunks(now: number): void {
@@ -2562,7 +2611,23 @@ function recentWhisperAudio(now: number): Float32Array | null {
   if (!chunks.length) return null;
   const durationMs = chunks[chunks.length - 1].endMs - chunks[0].startMs;
   if (durationMs < WHISPER_MIN_AUDIO_MS) return null;
-  return concatFloat32Arrays(chunks.map(chunk => chunk.samples));
+  const audio = concatFloat32Arrays(chunks.map(chunk => chunk.samples));
+  return hasAudibleWhisperEnergy(audio) ? audio : null;
+}
+
+function hasAudibleWhisperEnergy(samples: Float32Array): boolean {
+  if (!samples.length) return false;
+  let sumSquares = 0;
+  let peak = 0;
+  let activeSamples = 0;
+  for (const sample of samples) {
+    const value = Math.abs(sample);
+    sumSquares += value * value;
+    peak = Math.max(peak, value);
+    if (value >= WHISPER_ACTIVE_SAMPLE_THRESHOLD) activeSamples += 1;
+  }
+  const rms = Math.sqrt(sumSquares / samples.length);
+  return rms >= WHISPER_MIN_RMS && peak >= WHISPER_MIN_PEAK && activeSamples / samples.length >= WHISPER_MIN_ACTIVE_SAMPLE_RATIO;
 }
 
 function resampleLinear(input: Float32Array, sourceRate: number, targetRate: number): Float32Array {
@@ -2767,6 +2832,7 @@ function closeLiveInput(turn: LiveTurn): void {
   if (!turnHasToken(turn, CLIENT_TOKEN.LIVE_INPUT_OPEN) && !turnHasToken(turn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)) return;
   removeTurnToken(turn, CLIENT_TOKEN.LIVE_INPUT_OPEN);
   addTurnToken(turn, CLIENT_TOKEN.LIVE_INPUT_CLOSED);
+  pauseSpeechDetectorForLiveTurn();
 }
 
 function closeLiveSession(turn: LiveTurn): void {
