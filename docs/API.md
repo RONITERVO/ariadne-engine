@@ -63,6 +63,10 @@ Returns frontend-safe public configuration. It never returns provider keys or se
 }
 ```
 
+`webSpeechLanguage` is a legacy public field name. It is now used only as the
+optional Gemini Live transcription language hint; local browser Whisper handles
+speech turn detection separately.
+
 ## Provider
 
 ### `POST /v1/provider/gemini/validate-key`

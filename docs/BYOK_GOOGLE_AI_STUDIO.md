@@ -19,7 +19,7 @@ Ariadne supports BYOK alongside hosted paid usage: the user can supply their own
 
 Browser code is inspectable. Durable API keys can be extracted from client-side apps. BYOK means the user is choosing to enter their key, but the app should still minimize risk. For normal and streaming story turns, Ariadne proxies requests through its backend so it can keep prompts, reducers, auth policy, persistence, and logging policy server-side.
 
-For realtime Gemini Live sessions, Ariadne exposes `/v1/provider/gemini/live-token`, which mints a short-lived Live API token. The browser connects to Gemini Live using that token, not the durable key. Browser speech recognition is used only to detect speech start; Gemini Live supplies the user/model transcripts and model audio.
+For realtime Gemini Live sessions, Ariadne exposes `/v1/provider/gemini/live-token`, which mints a short-lived Live API token. The browser connects to Gemini Live using that token, not the durable key. Local in-browser Whisper is used only to detect speech turn boundaries; Gemini Live supplies the user/model transcripts and model audio.
 
 ## Key lifecycle
 

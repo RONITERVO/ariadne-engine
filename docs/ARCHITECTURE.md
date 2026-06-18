@@ -13,7 +13,7 @@ Ariadne ships with a Firebase paid path plus BYOK fallback:
 ```text
 Transcript-only browser
   -> user signs in for credits or pastes Google AI Studio key
-  -> browser STT detects speech start only
+  -> local browser Whisper detects speech turn boundaries only
   -> Ariadne mints a locked Gemini Live token
   -> browser sends pre-roll/tail PCM to Gemini Live
   -> Gemini Live returns user/model transcripts and model audio
@@ -35,7 +35,7 @@ Firebase Hosting
 
 ### 1. Browser shell
 
-The browser app is intentionally small. It collects Firebase sign-in or a BYOK key once, hides the setup gate, auto-creates or continues a repo/branch, and then shows only user/model/system transcript lines. Browser SpeechRecognition is only a speech-start detector. Gemini Live is the transcript/audio source.
+The browser app is intentionally small. It collects Firebase sign-in or a BYOK key once, hides the setup gate, auto-creates or continues a repo/branch, and then shows only user/model/system transcript lines. A local in-browser Whisper worker is only a speech turn-boundary detector. Gemini Live is the transcript/audio source.
 
 ### 2. API gateway
 

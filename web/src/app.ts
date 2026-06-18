@@ -153,39 +153,15 @@ type LatestStoryResponse = {
   } | null;
 };
 
-type SpeechRecognitionResultLike = {
-  isFinal: boolean;
-  0?: { transcript?: string };
-};
-
-type SpeechRecognitionEventLike = Event & {
-  resultIndex: number;
-  results: ArrayLike<SpeechRecognitionResultLike>;
-};
-
-type SpeechRecognitionErrorEventLike = Event & {
-  error?: string;
-  message?: string;
-};
-
-type SpeechRecognitionLike = EventTarget & {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  maxAlternatives: number;
-  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
-  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
-  onend: (() => void) | null;
-  start(): void;
-  stop(): void;
-  abort(): void;
-};
-
-type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
 type PcmChunk = {
   data: string;
   mimeType: string;
+  startMs: number;
+  endMs: number;
+};
+
+type WhisperAudioChunk = {
+  samples: Float32Array;
   startMs: number;
   endMs: number;
 };
@@ -281,6 +257,12 @@ type LiveTurn = {
   assistantLine: HTMLElement | null;
 };
 
+type WhisperWorkerToMainMessage =
+  | { type: 'ready'; model: string }
+  | { type: 'loading'; model: string; file?: string; progress?: number }
+  | { type: 'result'; id: number; text: string; elapsedMs: number }
+  | { type: 'error'; id?: number; message: string };
+
 type TranscriptRole = 'user' | 'model' | 'system';
 
 type TranscriptLineOptions = {
@@ -298,11 +280,18 @@ const STORAGE = {
   clientId: 'ariadne.clientId'
 } as const;
 
-const PRE_ROLL_MS = 2000;
-const POST_ROLL_MS = 2000;
-const SPEECH_IDLE_MS = 1500;
+const PRE_ROLL_MS = 6000;
+const POST_ROLL_MS = 1500;
+const SPEECH_IDLE_MS = 2500;
 const PCM_BUFFER_MS = 10_000;
 const EMPTY_LIVE_TURN_TIMEOUT_MS = 12_000;
+const WHISPER_MODEL = 'onnx-community/whisper-tiny.en';
+const WHISPER_SAMPLE_RATE = 16_000;
+const WHISPER_WINDOW_MS = 2600;
+const WHISPER_MIN_AUDIO_MS = 1200;
+const WHISPER_REQUEST_INTERVAL_MS = 900;
+const WHISPER_BUFFER_MS = 7000;
+const WHISPER_POST_PLAYBACK_MUTE_MS = 1400;
 const AUDIO_ARCHIVE_ENCODINGS = [
   { mimeType: 'audio/webm;codecs=opus', contentType: 'audio/webm;codecs=opus', codec: 'opus', container: 'webm', qualityProfile: 'voice-hifi' },
   { mimeType: 'audio/ogg;codecs=opus', contentType: 'audio/ogg;codecs=opus', codec: 'opus', container: 'ogg', qualityProfile: 'voice-hifi' },
@@ -363,12 +352,18 @@ const els = {
   transcript: byId<HTMLElement>('transcript')
 };
 
-let recognition: SpeechRecognitionLike | null = null;
 let bootDebounce: number | undefined;
 let audioContext: AudioContext | null = null;
 let processor: ScriptProcessorNode | null = null;
 let mediaStream: MediaStream | null = null;
 let pcmChunks: PcmChunk[] = [];
+let whisperAudioChunks: WhisperAudioChunk[] = [];
+let whisperWorker: Worker | null = null;
+let whisperReady = false;
+let whisperBusy = false;
+let whisperRequestId = 0;
+let lastWhisperRequestAtMs = 0;
+let whisperMutedUntilMs = 0;
 let activeTurn: LiveTurn | null = null;
 let liveStarting: Promise<void> | null = null;
 let audioPlayhead = 0;
@@ -1716,7 +1711,7 @@ async function boot(): Promise<void> {
     await hydrateBranchTranscript();
     try {
       await startMicrophoneBuffer();
-      startRecognitionLoop();
+      startWhisperTurnDetection();
     } catch (error) {
       addLine('system', `microphone unavailable: ${messageFrom(error)}`);
     }
@@ -1861,8 +1856,11 @@ async function startMicrophoneBuffer(): Promise<void> {
         endMs: now
       };
       pcmChunks.push(chunk);
+      appendWhisperAudio(input, event.inputBuffer.sampleRate, now - durationMs, now);
       prunePcmChunks(now);
+      pruneWhisperAudioChunks(now);
       sendLiveChunksThrough(now);
+      requestWhisperTurnCheck(now);
     };
     source.connect(processor);
     processor.connect(audioContext.destination);
@@ -1872,53 +1870,92 @@ async function startMicrophoneBuffer(): Promise<void> {
   }
 }
 
-function startRecognitionLoop(): void {
-  const Ctor = speechRecognitionCtor();
-  if (!Ctor) {
-    addLine('system', 'speech recognition unavailable');
+function startWhisperTurnDetection(): void {
+  if (whisperWorker) return;
+  addLocalToken(CLIENT_TOKEN.WHISPER_LOADING);
+  whisperWorker = new Worker(new URL('./whisperWorker.ts', import.meta.url), { type: 'module' });
+  whisperWorker.onmessage = event => onWhisperWorkerMessage(event.data as WhisperWorkerToMainMessage);
+  whisperWorker.onerror = event => {
+    removeLocalToken(CLIENT_TOKEN.WHISPER_LOADING);
+    removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
+    addLine('system', `local Whisper unavailable: ${event.message || 'worker failed'}`);
+  };
+  whisperWorker.postMessage({ type: 'init', model: WHISPER_MODEL });
+}
+
+function onWhisperWorkerMessage(message: WhisperWorkerToMainMessage): void {
+  if (message.type === 'loading') {
+    addLocalToken(CLIENT_TOKEN.WHISPER_LOADING);
+    return;
+  }
+  if (message.type === 'ready') {
+    whisperReady = true;
+    removeLocalToken(CLIENT_TOKEN.WHISPER_LOADING);
+    addLocalToken(CLIENT_TOKEN.WHISPER_READY);
+    requestWhisperTurnCheck(Date.now(), true);
+    return;
+  }
+  if (message.type === 'error') {
+    whisperBusy = false;
+    removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
+    addLine('system', `local Whisper unavailable: ${message.message}`);
     return;
   }
 
-  recognition = new Ctor();
-  recognition.lang = state.config?.webSpeechLanguage || navigator.language || 'en-US';
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.maxAlternatives = 1;
-  recognition.onresult = onSpeechResult;
-  recognition.onerror = event => {
-    if (event.error === 'no-speech' || event.error === 'aborted') return;
-    const label = event.error ? `speech recognition: ${event.error}` : 'speech recognition interrupted';
-    addLine('system', event.message ? `${label} ${event.message}` : label);
-  };
-  recognition.onend = () => {
-    removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
-    if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED) && !isRecognitionPaused()) {
-      restartRecognitionSoon();
-    }
-  };
-  restartRecognitionSoon();
+  whisperBusy = false;
+  removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
+  handleWhisperDetectionText(message.text);
+  requestWhisperTurnCheck(Date.now());
 }
 
-function onSpeechResult(event: SpeechRecognitionEventLike): void {
-  if (activeTurn && turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)) return;
-  let heardText = '';
-  let finalText = '';
+function requestWhisperTurnCheck(now: number, force = false): void {
+  if (!whisperWorker || !whisperReady || whisperBusy || !hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) return;
+  if (isSpeechDetectorPaused() || now < whisperMutedUntilMs || isLiveAudioPlaybackActive()) return;
+  if (!force && now - lastWhisperRequestAtMs < WHISPER_REQUEST_INTERVAL_MS) return;
 
-  for (let i = event.resultIndex; i < event.results.length; i += 1) {
-    const result = event.results[i];
-    const transcript = result?.[0]?.transcript?.trim() ?? '';
-    if (!transcript) continue;
-    heardText = `${heardText} ${transcript}`.trim();
-    if (result.isFinal) finalText = `${finalText} ${transcript}`.trim();
+  const audio = recentWhisperAudio(now);
+  if (!audio) return;
+
+  whisperBusy = true;
+  lastWhisperRequestAtMs = now;
+  addLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
+  const id = ++whisperRequestId;
+  whisperWorker.postMessage({ type: 'transcribe', id, audio: audio.buffer }, [audio.buffer]);
+}
+
+function handleWhisperDetectionText(text: string): void {
+  if (!isLikelySpeechTranscript(text) || Date.now() < whisperMutedUntilMs || isLiveAudioPlaybackActive()) return;
+
+  if (activeTurn) {
+    if (!turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)) scheduleTurnTail();
+    return;
   }
 
-  if (!heardText) return;
-  const triggerText = finalText || heardText;
-  if (!shouldStartLiveTurn(triggerText, Boolean(finalText))) return;
-
+  if (liveStarting || isSpeechDetectorPaused()) return;
   void ensureLiveTurnStarted().then(() => {
     if (activeTurn && !turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED)) scheduleTurnTail();
   });
+}
+
+function isLikelySpeechTranscript(text: string): boolean {
+  const clean = text
+    .replace(/\[[^\]]+\]/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!/[A-Za-z0-9]/.test(clean)) return false;
+  if (clean.length < 2) return false;
+
+  const normalized = clean.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  return ![
+    'you',
+    'thank you',
+    'thanks for watching',
+    'music',
+    'silence',
+    'subtitles'
+  ].includes(normalized);
 }
 
 async function ensureLiveTurnStarted(): Promise<void> {
@@ -2009,7 +2046,7 @@ function scheduleTurnTail(): void {
       if (activeTurn !== turn) return;
       sendLiveChunksThrough(Date.now());
       closeLiveInput(turn);
-      pauseRecognitionForLiveTurn();
+      pauseSpeechDetectorForLiveTurn();
       turn.session.sendRealtimeInput({ activityEnd: {} });
       turn.session.sendRealtimeInput({ audioStreamEnd: true });
       turn.emptyTurnTimer = window.setTimeout(() => {
@@ -2124,7 +2161,7 @@ async function finalizeLiveTurn(turn: LiveTurn): Promise<void> {
   } finally {
     removeLocalToken(CLIENT_TOKEN.LIVE_TURN_COMMITTING);
     clearTurnTokens(turn);
-    resumeRecognitionAfterLiveTurn();
+    resumeSpeechDetectorAfterLiveTurn();
   }
 }
 
@@ -2436,6 +2473,12 @@ function queueAudioBuffer(context: AudioContext, buffer: AudioBuffer): void {
   const startAt = Math.max(context.currentTime, audioPlayhead);
   source.start(startAt);
   audioPlayhead = startAt + buffer.duration;
+  whisperAudioChunks = [];
+  whisperMutedUntilMs = Math.max(whisperMutedUntilMs, Date.now() + Math.ceil(buffer.duration * 1000) + WHISPER_POST_PLAYBACK_MUTE_MS);
+}
+
+function isLiveAudioPlaybackActive(): boolean {
+  return Boolean(audioContext && audioPlayhead > audioContext.currentTime + 0.1);
 }
 
 async function publicFetch<T>(path: string, options: { method: 'GET' | 'POST'; body?: unknown }): Promise<T> {
@@ -2471,64 +2514,77 @@ async function authorizedFetch<T>(
   return payload as T;
 }
 
-function restartRecognitionSoon(): void {
-  window.setTimeout(() => {
-    if (
-      !recognition ||
-      hasLocalToken(CLIENT_TOKEN.STT_LISTENING) ||
-      isRecognitionPaused() ||
-      (activeTurn ? turnHasToken(activeTurn, CLIENT_TOKEN.LIVE_INPUT_CLOSED) : false)
-    ) {
-      return;
-    }
-    try {
-      recognition.start();
-      addLocalToken(CLIENT_TOKEN.STT_LISTENING);
-    } catch {
-      // start() throws if the browser still considers the previous recognition session active.
-    }
-  }, 180);
+function isSpeechDetectorPaused(): boolean {
+  return hasLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_LIVE_TURN) || hasLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_PLAYBACK);
 }
 
-function isRecognitionPaused(): boolean {
-  return hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN) || hasLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK);
+function pauseSpeechDetectorForLiveTurn(): void {
+  addLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_LIVE_TURN);
 }
 
-function pauseRecognitionForLiveTurn(): void {
-  addLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN);
-  if (!recognition) return;
-  try {
-    recognition.abort();
-  } catch {
-    // Some browsers throw if recognition has already stopped.
-  }
-  removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
+function resumeSpeechDetectorAfterLiveTurn(): void {
+  removeLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_LIVE_TURN);
+  requestWhisperTurnCheck(Date.now(), true);
 }
 
-function resumeRecognitionAfterLiveTurn(): void {
-  removeLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN);
-  if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) restartRecognitionSoon();
+function pauseSpeechDetectorForTranscriptPlayback(): void {
+  addLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_PLAYBACK);
 }
 
-function pauseRecognitionForTranscriptPlayback(): void {
-  addLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK);
-  if (!recognition) return;
-  try {
-    recognition.abort();
-  } catch {
-    // Some browsers throw if recognition has already stopped.
-  }
-  removeLocalToken(CLIENT_TOKEN.STT_LISTENING);
-}
-
-function resumeRecognitionAfterTranscriptPlayback(): void {
-  removeLocalToken(CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK);
-  if (hasLocalToken(CLIENT_TOKEN.APP_TRANSCRIPT_STARTED)) restartRecognitionSoon();
+function resumeSpeechDetectorAfterTranscriptPlayback(): void {
+  removeLocalToken(CLIENT_TOKEN.WHISPER_PAUSED_FOR_PLAYBACK);
+  requestWhisperTurnCheck(Date.now(), true);
 }
 
 function prunePcmChunks(now: number): void {
   const cutoff = now - PCM_BUFFER_MS;
   while (pcmChunks.length && pcmChunks[0].endMs < cutoff) pcmChunks.shift();
+}
+
+function appendWhisperAudio(input: Float32Array, sampleRate: number, startMs: number, endMs: number): void {
+  const samples = sampleRate === WHISPER_SAMPLE_RATE ? new Float32Array(input) : resampleLinear(input, sampleRate, WHISPER_SAMPLE_RATE);
+  if (!samples.length) return;
+  whisperAudioChunks.push({ samples, startMs, endMs });
+}
+
+function pruneWhisperAudioChunks(now: number): void {
+  const cutoff = now - WHISPER_BUFFER_MS;
+  while (whisperAudioChunks.length && whisperAudioChunks[0].endMs < cutoff) whisperAudioChunks.shift();
+}
+
+function recentWhisperAudio(now: number): Float32Array | null {
+  const cutoff = now - WHISPER_WINDOW_MS;
+  const chunks = whisperAudioChunks.filter(chunk => chunk.endMs >= cutoff);
+  if (!chunks.length) return null;
+  const durationMs = chunks[chunks.length - 1].endMs - chunks[0].startMs;
+  if (durationMs < WHISPER_MIN_AUDIO_MS) return null;
+  return concatFloat32Arrays(chunks.map(chunk => chunk.samples));
+}
+
+function resampleLinear(input: Float32Array, sourceRate: number, targetRate: number): Float32Array {
+  if (sourceRate <= 0 || targetRate <= 0 || !input.length) return new Float32Array();
+  const outputLength = Math.max(1, Math.round((input.length * targetRate) / sourceRate));
+  const output = new Float32Array(outputLength);
+  const scale = sourceRate / targetRate;
+  for (let i = 0; i < output.length; i += 1) {
+    const position = i * scale;
+    const before = Math.floor(position);
+    const after = Math.min(before + 1, input.length - 1);
+    const weight = position - before;
+    output[i] = input[before] * (1 - weight) + input[after] * weight;
+  }
+  return output;
+}
+
+function concatFloat32Arrays(chunks: Float32Array[]): Float32Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const output = new Float32Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return output;
 }
 
 function appendTranscript(existing: string, delta: string): string {
@@ -2537,13 +2593,6 @@ function appendTranscript(existing: string, delta: string): string {
   if (!existing) return clean;
   if (existing.endsWith(clean)) return existing;
   return `${existing} ${clean}`.replace(/\s+/g, ' ').trim();
-}
-
-function shouldStartLiveTurn(text: string, isFinal: boolean): boolean {
-  const clean = text.replace(/\s+/g, ' ').trim();
-  if (!/[A-Za-z0-9]/.test(clean)) return false;
-  if (isFinal) return clean.length >= 2;
-  return clean.length >= 12 && clean.split(' ').length >= 2;
 }
 
 function updateOrCreateLine(existing: HTMLElement | null, role: TranscriptRole, text: string, interim: boolean): HTMLElement {
@@ -2620,7 +2669,7 @@ async function playTranscriptLineAudio(line: HTMLElement): Promise<void> {
 
 async function playTranscriptPlaybackUrl(line: HTMLElement, url: string): Promise<void> {
   stopTranscriptPlayback();
-  pauseRecognitionForTranscriptPlayback();
+  pauseSpeechDetectorForTranscriptPlayback();
   const audio = new Audio(url);
   transcriptPlaybackAudio = audio;
   transcriptPlaybackLine = line;
@@ -2631,7 +2680,7 @@ async function playTranscriptPlaybackUrl(line: HTMLElement, url: string): Promis
     line.classList.remove('is-playing-audio');
     transcriptPlaybackAudio = null;
     transcriptPlaybackLine = null;
-    resumeRecognitionAfterTranscriptPlayback();
+    resumeSpeechDetectorAfterTranscriptPlayback();
   };
   audio.addEventListener('ended', cleanup, { once: true });
   audio.addEventListener('error', () => {
@@ -2656,7 +2705,7 @@ function stopTranscriptPlayback(): void {
   audio.pause();
   audio.removeAttribute('src');
   audio.load();
-  resumeRecognitionAfterTranscriptPlayback();
+  resumeSpeechDetectorAfterTranscriptPlayback();
 }
 
 function setLineText(line: HTMLElement, text: string, options: { scroll?: boolean } = {}): void {
@@ -2858,14 +2907,6 @@ function getClientId(): string {
   } catch {
     return '';
   }
-}
-
-function speechRecognitionCtor(): SpeechRecognitionCtor | null {
-  const global = window as Window & {
-    SpeechRecognition?: SpeechRecognitionCtor;
-    webkitSpeechRecognition?: SpeechRecognitionCtor;
-  };
-  return global.SpeechRecognition ?? global.webkitSpeechRecognition ?? null;
 }
 
 function float32ToBase64Pcm16(input: Float32Array): string {
