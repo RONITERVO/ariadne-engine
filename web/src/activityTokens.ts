@@ -4,9 +4,11 @@ export const CLIENT_TOKEN = {
   UI_GATE_OPEN: 'ui:gate-open',
   UI_BOOTING: 'ui:booting',
   MEDIA_MICROPHONE_BUFFER: 'media:microphone-buffer',
-  STT_LISTENING: 'stt:listening',
-  STT_PAUSED_FOR_LIVE_TURN: 'stt:paused-for-live-turn',
-  STT_PAUSED_FOR_PLAYBACK: 'stt:paused-for-playback',
+  WHISPER_LOADING: 'whisper:loading',
+  WHISPER_READY: 'whisper:ready',
+  WHISPER_TRANSCRIBING: 'whisper:transcribing',
+  WHISPER_PAUSED_FOR_LIVE_TURN: 'whisper:paused-for-live-turn',
+  WHISPER_PAUSED_FOR_PLAYBACK: 'whisper:paused-for-playback',
   LIVE_TURN_STARTING: 'live:turn-starting',
   LIVE_TURN_ACTIVE: 'live:turn-active',
   LIVE_INPUT_OPEN: 'live:input-open',
@@ -73,24 +75,38 @@ const CLIENT_TOKEN_DISPLAY: Record<ClientToken, Omit<TokenDisplay, 'token' | 'so
     tone: 'ready',
     priority: 80
   },
-  [CLIENT_TOKEN.STT_LISTENING]: {
-    category: 'stt',
-    label: 'Listening',
-    description: 'Browser speech recognition is active.',
+  [CLIENT_TOKEN.WHISPER_LOADING]: {
+    category: 'whisper',
+    label: 'Loading Whisper',
+    description: 'Loading the local browser Whisper model for speech turn detection.',
+    tone: 'work',
+    priority: 18
+  },
+  [CLIENT_TOKEN.WHISPER_READY]: {
+    category: 'whisper',
+    label: 'Whisper ready',
+    description: 'Local browser Whisper is ready to detect speech turns.',
     tone: 'ready',
+    priority: 19
+  },
+  [CLIENT_TOKEN.WHISPER_TRANSCRIBING]: {
+    category: 'whisper',
+    label: 'Whisper scanning',
+    description: 'Local browser Whisper is checking recent microphone audio for speech.',
+    tone: 'work',
     priority: 20
   },
-  [CLIENT_TOKEN.STT_PAUSED_FOR_LIVE_TURN]: {
-    category: 'stt',
-    label: 'STT paused',
-    description: 'Browser speech recognition is paused while Gemini Live owns the turn input.',
+  [CLIENT_TOKEN.WHISPER_PAUSED_FOR_LIVE_TURN]: {
+    category: 'whisper',
+    label: 'Whisper paused',
+    description: 'Local browser Whisper is paused while Gemini Live finishes the current turn.',
     tone: 'state',
     priority: 21
   },
-  [CLIENT_TOKEN.STT_PAUSED_FOR_PLAYBACK]: {
-    category: 'stt',
+  [CLIENT_TOKEN.WHISPER_PAUSED_FOR_PLAYBACK]: {
+    category: 'whisper',
     label: 'Playback mute',
-    description: 'Browser speech recognition is paused while archived transcript audio is playing.',
+    description: 'Local browser Whisper is paused while archived transcript audio is playing.',
     tone: 'state',
     priority: 22
   },

@@ -30,7 +30,7 @@ The default experience has a short setup gate: sign in for prepaid credits or pa
 1. User signs in or pastes a key.
 2. Ariadne opens or creates a branch.
 3. User speaks a line or action.
-4. Browser speech recognition detects speech start; it is not the transcript authority.
+4. Local in-browser Whisper detects speech turn boundaries; it is not the transcript authority.
 5. Gemini Live receives the user's audio and returns user transcript, model transcript, and model audio.
 6. Ariadne uploads compressed preserved per-turn user/model audio to GCS through one-time signed upload intents, verifies exact size, CRC32C, quality profile, and server-side SHA-256, commits the Live transcripts with audio asset links, canonizes the turn, and resumes listening.
 7. The user can open `/map` to navigate the story galaxy, search memory, fork timelines, replay branches, compare branches, export archives, or delete a story world.

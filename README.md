@@ -14,7 +14,7 @@ The hosted release supports Firebase Google sign-in with prepaid Ariadne credits
 - Paid usage ledger for prepaid credits, normal model token usage, and fixed 30-second Gemini Live sessions with one active paid Live session per user.
 - Server-side Gemini key rotation with per-key concurrency, minute/day limits, and cooldowns.
 - Per-branch mutation leases and expected-head checks so overlapping turns cannot corrupt branch history.
-- Transcript-only Gemini Live browser loop. Browser STT only detects speech start; Gemini Live supplies user/model transcripts and model audio. Live commits upload preserved user/model audio to GCS through one-time upload intents and link verified audio asset manifests to turn commits.
+- Transcript-only Gemini Live browser loop. A local in-browser Whisper detector identifies speech turn boundaries; Gemini Live supplies user/model transcripts and model audio. Live commits upload preserved user/model audio to GCS through one-time upload intents and link verified audio asset manifests to turn commits.
 - Player-facing **Ariadne Atlas** at `/map`: a Google Galaxy-style story universe where repos are galaxies, branches are orbits, turns are stars, canon state becomes landmarks, and users can search, rewind, fork, replay, compare, export, or delete from the map.
 - Server-side provider-key guardrails. BYOK keys are accepted only in `x-ariadne-provider-key`, rejected from query/body fields, redacted from logs, and never saved.
 - Production config safety checks. `NODE_ENV=production` requires Firestore, Firebase auth, paid usage, strict CORS, server Gemini keys, and no mock provider.
@@ -141,6 +141,7 @@ Transcript-only browser
   |-- signs in for credits or accepts a Google AI Studio key
   |-- validates BYOK keys through Ariadne backend
   |-- auto-creates/continues a branch
+  |-- uses local browser Whisper only to detect speech turn boundaries
   |-- sends Live audio to Gemini after speech is detected
   |-- uploads compressed preserved turn audio directly to GCS through short-lived one-time signed upload intents
   `-- renders Gemini user/model transcripts

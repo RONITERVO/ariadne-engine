@@ -145,8 +145,8 @@ for (const phrase of ['https://console.firebase.google.com/project/ariadne-engin
   }
 }
 
-const web = readFileSync('web/index.html', 'utf8') + readFileSync('web/src/app.ts', 'utf8');
-for (const phrase of ['Sign in for credits or paste a Gemini key', 'transcript', 'SpeechRecognition', 'GoogleGenAI', 'sendRealtimeInput']) {
+const web = readFileSync('web/index.html', 'utf8') + readFileSync('web/src/app.ts', 'utf8') + readFileSync('web/src/whisperWorker.ts', 'utf8');
+for (const phrase of ['Sign in for credits or paste a Gemini key', 'transcript', 'onnx-community/whisper-tiny.en', 'GoogleGenAI', 'sendRealtimeInput']) {
   if (!web.includes(phrase)) {
     console.error(`Transcript-only web app is missing: ${phrase}`);
     process.exit(1);
