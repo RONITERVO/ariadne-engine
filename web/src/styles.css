@@ -854,8 +854,6 @@ canvas#atlas-canvas.is-panning {
 .atlas-search *,
 .atlas-filter-nav,
 .atlas-filter-nav *,
-.atlas-time-machine,
-.atlas-time-machine *,
 .atlas-results,
 .atlas-results *,
 .atlas-scale-nav,
@@ -966,63 +964,13 @@ canvas#atlas-canvas.is-panning {
   box-shadow: 0 0 18px rgb(255 241 176 / 13%), inset 0 1px 0 rgb(255 255 255 / 8%);
 }
 
-.atlas-time-machine {
-  display: grid;
-  width: min(420px, calc(100vw - 48px));
-  gap: 9px;
-  border: 1px solid rgb(139 184 199 / 16%);
-  border-radius: 10px;
-  padding: 10px 11px;
-  color: #b8c7c8;
-  background: linear-gradient(180deg, rgb(9 13 22 / 68%), rgb(5 8 13 / 58%));
-  box-shadow: 0 16px 42px rgb(0 0 0 / 44%), inset 0 1px 0 rgb(255 255 255 / 5%);
-  font-size: 0.78rem;
-  backdrop-filter: blur(18px);
-}
-
-.atlas-time-machine summary {
-  color: #f3efe0;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.atlas-time-machine label {
-  display: grid;
-  gap: 6px;
-  margin-top: 9px;
-}
-
-.atlas-time-machine label span {
-  color: #8c9695;
-  font-size: 0.72rem;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.atlas-time-machine input {
-  min-height: 40px;
-  border-color: rgb(255 241 176 / 17%);
-  padding: 10px 11px;
-  background: rgb(0 0 0 / 36%);
-}
-
-.atlas-time-machine input:focus {
-  border-color: #fff1b0;
-  box-shadow: 0 0 0 3px rgb(255 241 176 / 12%);
-}
-
-.atlas-time-machine > button {
-  width: 100%;
-  min-height: 36px;
-  border-color: rgb(255 241 176 / 22%);
-  color: #fff7d4;
-  background: linear-gradient(135deg, rgb(70 58 28 / 70%), rgb(22 24 32 / 68%));
-  font-weight: 900;
-}
-
 .atlas-rewind-results {
   display: grid;
   gap: 8px;
+}
+
+.atlas-rewind-results:empty {
+  display: none;
 }
 
 .atlas-rewind-results > p {
@@ -1094,7 +1042,7 @@ canvas#atlas-canvas.is-panning {
 .atlas-search {
   display: grid;
   width: min(420px, calc(100vw - 48px));
-  gap: 6px;
+  gap: 8px;
   border: 1px solid rgb(255 255 255 / 9%);
   border-radius: 8px;
   padding: 12px;
@@ -1103,11 +1051,18 @@ canvas#atlas-canvas.is-panning {
   backdrop-filter: blur(20px);
 }
 
-.atlas-search span {
+.atlas-search label {
   color: #8c9695;
   font-size: 0.75rem;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.atlas-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 8px;
+  align-items: stretch;
 }
 
 .atlas-search input {
@@ -1118,6 +1073,22 @@ canvas#atlas-canvas.is-panning {
 .atlas-search input:focus {
   border-color: #8bb8c7;
   box-shadow: 0 0 0 3px rgb(139 184 199 / 14%);
+}
+
+.atlas-search button {
+  min-height: 42px;
+  border-color: rgb(255 241 176 / 22%);
+  padding: 0 12px;
+  color: #fff7d4;
+  background: linear-gradient(135deg, rgb(70 58 28 / 70%), rgb(22 24 32 / 68%));
+  font-size: 0.78rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.atlas-search button:hover {
+  border-color: rgb(255 241 176 / 42%);
+  background: linear-gradient(135deg, rgb(94 74 29 / 78%), rgb(32 34 42 / 72%));
 }
 
 .atlas-status {
@@ -1967,9 +1938,12 @@ canvas#atlas-canvas.is-panning {
   .atlas-search,
   .atlas-results,
   .atlas-scale-nav,
-  .atlas-filter-nav,
-  .atlas-time-machine {
+  .atlas-filter-nav {
     width: min(100%, calc(100vw - 32px));
+  }
+
+  .atlas-search-row {
+    grid-template-columns: 1fr;
   }
 
   .atlas-scale-nav {

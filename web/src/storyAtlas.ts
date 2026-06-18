@@ -418,20 +418,15 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
 
         <div class="atlas-controls-left">
           <nav id="atlas-scale-nav" class="atlas-scale-nav" aria-label="Cosmic zoom scale"></nav>
-          <label class="atlas-search">
-            <span>Search universe</span>
-            <input id="atlas-search" type="search" placeholder="Find a story world, galaxy, star, character, location, fact, or thread" autocomplete="off" />
-          </label>
-          <nav id="atlas-filter-nav" class="atlas-filter-nav" aria-label="Atlas story filters"></nav>
-          <details class="atlas-time-machine">
-            <summary>Time-machine</summary>
-            <label>
-              <span>Semantic rewind</span>
-              <input id="atlas-rewind" type="search" placeholder="e.g. before the betrayal at the inn" autocomplete="off" />
-            </label>
-            <button id="atlas-rewind-search" type="button">Find rewind point</button>
+          <form id="atlas-search-form" class="atlas-search" role="search">
+            <label for="atlas-search">Search universe</label>
+            <div class="atlas-search-row">
+              <input id="atlas-search" type="search" placeholder="Find a story world, galaxy, star, character, location, fact, or thread" autocomplete="off" />
+              <button id="atlas-rewind-search" type="submit" aria-label="Find semantic rewind point">Find rewind point</button>
+            </div>
             <div id="atlas-rewind-results" class="atlas-rewind-results" aria-live="polite"></div>
-          </details>
+          </form>
+          <nav id="atlas-filter-nav" class="atlas-filter-nav" aria-label="Atlas story filters"></nav>
           <div id="atlas-results" class="atlas-results" aria-live="polite"></div>
         </div>
 
@@ -461,13 +456,11 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
     atlasState.query = els.search.value.trim().toLowerCase();
     updateSearchHighlight();
     renderSearchResults();
+    els.rewindResults.replaceChildren();
   });
-  els.rewindSearch.addEventListener('click', () => void runTimeMachineSearch());
-  els.rewind.addEventListener('keydown', event => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      void runTimeMachineSearch();
-    }
+  els.searchForm.addEventListener('submit', event => {
+    event.preventDefault();
+    void runTimeMachineSearch();
   });
   if (isFirebaseConfigured() && !atlasState.simulated) {
     onFirebaseAuthStateChanged(user => {
@@ -2784,9 +2777,9 @@ function renderSearchResults(): void {
 
 async function runTimeMachineSearch(): Promise<void> {
   const els = atlasEls();
-  const query = els.rewind.value.trim();
+  const query = els.search.value.trim();
   if (!query) {
-    els.rewindResults.replaceChildren(paragraph('Describe the moment you want to find, like “before the betrayal at the inn.”'));
+    els.rewindResults.replaceChildren(paragraph('Describe the moment you want to find, like "before the betrayal at the inn."'));
     return;
   }
   setAtlasStatus('Searching story memory...');
@@ -2957,9 +2950,8 @@ function setAtlasStatus(text: string): void {
 
 function atlasEls(): {
   signIn: HTMLButtonElement;
+  searchForm: HTMLFormElement;
   search: HTMLInputElement;
-  rewind: HTMLInputElement;
-  rewindSearch: HTMLButtonElement;
   rewindResults: HTMLElement;
   status: HTMLElement;
   stats: HTMLElement;
@@ -2972,9 +2964,8 @@ function atlasEls(): {
 } {
   return {
     signIn: byId<HTMLButtonElement>('atlas-sign-in'),
+    searchForm: byId<HTMLFormElement>('atlas-search-form'),
     search: byId<HTMLInputElement>('atlas-search'),
-    rewind: byId<HTMLInputElement>('atlas-rewind'),
-    rewindSearch: byId<HTMLButtonElement>('atlas-rewind-search'),
     rewindResults: byId<HTMLElement>('atlas-rewind-results'),
     status: byId<HTMLElement>('atlas-status'),
     stats: byId<HTMLElement>('atlas-stats'),
