@@ -43,8 +43,8 @@ The first Google Galaxy release includes the controls needed for the app's adver
 - Open the canon debugger for current scene, entities, facts, threads, context budget, latest turn, and audio manifests.
 - Export a story world as JSON or Markdown.
 - Delete a story world from the map detail panel.
-- Filter the universe by current branch, branch heads, unresolved/open threads, and canon landmarks.
-- Use in-map help for keyboard, mouse, and touch navigation shortcuts.
+- Filter the universe by current path, path endings, open threads, and story memory.
+- Use direct mouse, touch, and keyboard navigation without adding persistent help chrome over the universe.
 
 ## Derived Read Model
 
@@ -58,6 +58,10 @@ StoryRepo
 ```
 
 No stored coordinates, indexes, or map tables are required for 1.0. The backend builds a compact read model on demand and caps very large collections defensively. When the app grows, the same response shape can be backed by cached materialized read models or vector/geospatial indexes without changing the frontend contract.
+
+## Long-term interface
+
+The preferred no-overlay interaction model, responsive inspector behavior, command dock, and object-by-object information hierarchy are specified in [`STORY_ATLAS_LONG_TERM_UI.md`](./STORY_ATLAS_LONG_TERM_UI.md).
 
 ## Long-term upgrade path
 

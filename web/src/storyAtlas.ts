@@ -189,6 +189,7 @@ type CanonDebugResponse = {
 
 type CosmicScaleKey = 'observable' | 'supercluster' | 'galactic' | 'stellar' | 'landmark';
 type AtlasFilterKey = 'all' | 'current-branch' | 'heads' | 'open-threads' | 'canon';
+type AtlasDockMode = 'idle' | 'search' | 'filters';
 
 type CosmicScale = {
   key: CosmicScaleKey;
@@ -312,10 +313,10 @@ const COSMIC_SCALES: CosmicScale[] = [
 
 const ATLAS_FILTERS: Array<{ key: AtlasFilterKey; label: string; hint: string }> = [
   { key: 'all', label: 'All', hint: 'Show the whole story universe.' },
-  { key: 'current-branch', label: 'Current branch', hint: 'Highlight the active branch route and its canon.' },
-  { key: 'heads', label: 'Branch heads', hint: 'Highlight each live branch endpoint.' },
-  { key: 'open-threads', label: 'Open threads', hint: 'Highlight unresolved signals and their branches.' },
-  { key: 'canon', label: 'Canon', hint: 'Highlight scenes, entities, facts, and story threads.' }
+  { key: 'current-branch', label: 'Current path', hint: 'Highlight the story path you are using now.' },
+  { key: 'heads', label: 'Path endings', hint: 'Highlight the latest moment on every story path.' },
+  { key: 'open-threads', label: 'Open threads', hint: 'Highlight unresolved story threads and their paths.' },
+  { key: 'canon', label: 'Story memory', hint: 'Highlight scenes, people, places, facts, and story threads.' }
 ];
 
 const STORAGE = {
@@ -358,6 +359,8 @@ const atlasState: {
   filterSet: Set<string>;
   filter: AtlasFilterKey;
   scale: CosmicScaleKey;
+  dockMode: AtlasDockMode;
+  inspectorOpen: boolean;
 } = {
   apiBase: '',
   graph: null,
@@ -372,7 +375,9 @@ const atlasState: {
   hitSet: new Set(),
   filterSet: new Set(),
   filter: 'all',
-  scale: 'observable'
+  scale: 'observable',
+  dockMode: 'idle',
+  inspectorOpen: false
 };
 
 let renderer: GalaxyRenderer | null = null;
@@ -390,38 +395,56 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   document.title = 'Ariadne Atlas';
   document.body.classList.add('atlas-body');
   document.body.innerHTML = `
-    <main class="atlas-shell" aria-label="Ariadne cosmic story map">
-      <section class="atlas-map-panel" aria-label="Interactive Google Galaxy style story universe">
-        <div id="atlas-map" class="atlas-map">
-          <canvas id="atlas-canvas" aria-hidden="true"></canvas>
-          <nav id="atlas-a11y" class="atlas-a11y sr-only" aria-label="Map nodes"></nav>
-        </div>
+    <main class="atlas-shell" data-inspector="closed" data-dock-mode="idle" data-dock-expanded="false" aria-label="Ariadne story universe">
+      <section class="atlas-workspace">
+        <section class="atlas-map-panel" aria-label="Interactive story universe">
+          <div id="atlas-map" class="atlas-map">
+            <canvas id="atlas-canvas" aria-hidden="true"></canvas>
+            <nav id="atlas-a11y" class="atlas-a11y sr-only" aria-label="Map objects"></nav>
+          </div>
+        </section>
+
+        <aside id="atlas-detail" class="atlas-detail" aria-label="Selected story object" hidden></aside>
       </section>
 
-      <section class="atlas-ui-layer">
-        <div class="atlas-controls-left">
-          <nav id="atlas-scale-nav" class="atlas-scale-nav" aria-label="Cosmic zoom scale"></nav>
+      <footer id="atlas-dock" class="atlas-dock" aria-label="Universe controls">
+        <div class="atlas-dock-row">
+          <button id="atlas-home" class="atlas-dock-button atlas-home-button" type="button" aria-label="Show the whole universe" title="Show all stories">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.25"></circle><circle cx="12" cy="12" r="7.25"></circle><path d="M4.4 9.2a8.2 8.2 0 0 1 11.2-4.3M19.6 14.8a8.2 8.2 0 0 1-11.2 4.3"></path></svg>
+          </button>
+
           <form id="atlas-search-form" class="atlas-search" role="search">
-            <label for="atlas-search">Search universe</label>
-            <div class="atlas-search-row">
-              <input id="atlas-search" type="search" placeholder="Find a story world, galaxy, star, character, location, fact, or thread" autocomplete="off" />
-              <button id="atlas-rewind-search" type="submit" aria-label="Find semantic rewind point">Find rewind point</button>
-            </div>
-            <div id="atlas-rewind-results" class="atlas-rewind-results" aria-live="polite"></div>
+            <svg class="atlas-search-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="5.75"></circle><path d="m15 15 4.5 4.5"></path></svg>
+            <label class="sr-only" for="atlas-search">Search the universe</label>
+            <input id="atlas-search" type="search" placeholder="Search" autocomplete="off" enterkeyhint="search" />
+            <button id="atlas-rewind-search" class="atlas-search-submit" type="submit" aria-label="Search story memory" title="Search story memory">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h13M13.5 6.5 19 12l-5.5 5.5"></path></svg>
+            </button>
           </form>
-          <nav id="atlas-filter-nav" class="atlas-filter-nav" aria-label="Atlas story filters"></nav>
-          <div id="atlas-results" class="atlas-results" aria-live="polite"></div>
+
+          <button id="atlas-filter-toggle" class="atlas-dock-button" type="button" aria-label="Filters" aria-expanded="false" aria-controls="atlas-filter-nav" title="Filters">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M7 12h10M10 17h4"></path></svg>
+          </button>
+
+          <button id="atlas-inspect-toggle" class="atlas-dock-button atlas-inspect-button" type="button" aria-label="Open details" title="Open details" hidden>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><path d="M12 10.5v5M12 7.5h.01"></path></svg>
+            <span id="atlas-inspect-label"></span>
+          </button>
         </div>
 
-        <aside id="atlas-detail" class="atlas-detail" aria-label="Selected atlas node"></aside>
-        <aside id="atlas-legend" class="atlas-legend" aria-label="Galaxy legend"></aside>
-      </section>
+        <div id="atlas-dock-tray" class="atlas-dock-tray">
+          <nav id="atlas-filter-nav" class="atlas-filter-nav" aria-label="Story filters"></nav>
+          <div id="atlas-results" class="atlas-results" aria-live="polite"></div>
+          <div id="atlas-rewind-results" class="atlas-rewind-results" aria-live="polite"></div>
+        </div>
+      </footer>
 
-      <div id="atlas-status" class="atlas-status" role="status">Loading atlas...</div>
-      <div id="atlas-stats" class="atlas-stats" aria-label="Atlas summary"></div>
+      <div id="atlas-status" class="sr-only" role="status">Loading atlas...</div>
+      <div id="atlas-stats" class="sr-only" aria-label="Atlas summary"></div>
+      <nav id="atlas-scale-nav" class="sr-only" aria-label="Cosmic zoom scale"></nav>
+      <aside id="atlas-legend" class="sr-only" aria-label="Galaxy legend"></aside>
     </main>
   `;
-
   const els = atlasEls();
   renderer?.destroy();
   renderer = new GalaxyRenderer(byId<HTMLCanvasElement>('atlas-canvas'));
@@ -431,14 +454,38 @@ export function startStoryAtlasApp(options: StoryAtlasOptions): void {
   renderLegend();
   window.addEventListener('keydown', handleAtlasKeydown);
   installAtlasAutoRefresh();
+
+  byId<HTMLButtonElement>('atlas-home').addEventListener('click', showWholeUniverse);
+  byId<HTMLButtonElement>('atlas-filter-toggle').addEventListener('click', () => {
+    setDockMode(atlasState.dockMode === 'filters' ? 'idle' : 'filters');
+  });
+  byId<HTMLButtonElement>('atlas-inspect-toggle').addEventListener('click', () => setInspectorOpen(true));
+
+  els.search.addEventListener('focus', () => {
+    setDockMode('search');
+    renderSearchResults();
+  });
   els.search.addEventListener('input', () => {
     atlasState.query = els.search.value.trim().toLowerCase();
+    setDockMode('search');
     updateSearchHighlight();
     renderSearchResults();
     els.rewindResults.replaceChildren();
+    updateDockExpansion();
+  });
+  els.search.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    if (els.search.value) {
+      clearAtlasSearch();
+      return;
+    }
+    els.search.blur();
+    setDockMode('idle');
   });
   els.searchForm.addEventListener('submit', event => {
     event.preventDefault();
+    setDockMode('search');
     void runTimeMachineSearch();
   });
   if (isFirebaseConfigured() && !atlasState.simulated) {
@@ -489,6 +536,9 @@ async function loadAtlasInternal(options: { quiet?: boolean } = {}): Promise<voi
     atlasState.query = atlasEls().search.value.trim().toLowerCase();
     atlasState.filter = 'all';
     atlasState.scale = 'observable';
+    atlasState.inspectorOpen = false;
+    setInspectorOpen(false);
+    setDockMode(atlasState.query ? 'search' : 'idle');
     updateSearchHighlight();
     updateFilterHighlight();
     renderAtlasStats(graph);
@@ -498,6 +548,7 @@ async function loadAtlasInternal(options: { quiet?: boolean } = {}): Promise<voi
     renderA11yLayer(graph);
     renderSearchResults();
     renderDetail(graph.rootId);
+    renderDockSelection();
     resetAtlasView(true);
     renderer?.start();
     setAtlasStatus(graph.nodes.length ? `${atlasState.simulated ? 'Simulating' : 'Tracking'} ${graph.nodes.length} celestial bodies.` : 'No saved story graph yet.');
@@ -509,6 +560,8 @@ async function loadAtlasInternal(options: { quiet?: boolean } = {}): Promise<voi
     renderAtlasStats(null);
     renderA11yLayer(null);
     renderDetail('');
+    setInspectorOpen(false);
+    renderDockSelection();
     renderer?.stop();
     setAtlasStatus(messageFrom(error));
   }
@@ -586,6 +639,7 @@ class GalaxyRenderer {
   private yawVelocity = 0;
   private pitchVelocity = 0;
   private panVelocity: Vec3 = { x: 0, y: 0, z: 0 };
+  private resizeObserver: ResizeObserver | null = null;
 
   private readonly colors: Record<StoryMapNodeKind, { core: number; fill: number; glow: number; ring: number }> = {
     library: { core: 0xfff7d4, fill: 0xf1ead0, glow: 0xfff1b0, ring: 0x8bb8c7 },
@@ -621,6 +675,10 @@ class GalaxyRenderer {
     this.handleResize = this.handleResize.bind(this);
     this.loop = this.loop.bind(this);
     window.addEventListener('resize', this.handleResize);
+    if ('ResizeObserver' in window && this.canvas.parentElement) {
+      this.resizeObserver = new ResizeObserver(() => this.handleResize());
+      this.resizeObserver.observe(this.canvas.parentElement);
+    }
     this.handleResize();
     this.initStarfield();
     this.initNebulae();
@@ -640,6 +698,8 @@ class GalaxyRenderer {
   destroy(): void {
     this.stop();
     window.removeEventListener('resize', this.handleResize);
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     this.events.abort();
     this.clearGraph();
     while (this.backgroundGroup.children.length) {
@@ -651,8 +711,8 @@ class GalaxyRenderer {
 
   private handleResize(): void {
     const rect = this.canvas.parentElement?.getBoundingClientRect();
-    const width = Math.max(320, rect?.width ?? 1200);
-    const height = Math.max(320, rect?.height ?? 760);
+    const width = Math.max(240, rect?.width ?? 1200);
+    const height = Math.max(160, rect?.height ?? 760);
     this.renderer.setPixelRatio(Math.max(1, Math.min(2, window.devicePixelRatio || 1)));
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
@@ -800,7 +860,11 @@ class GalaxyRenderer {
       this.gesture = null;
       this.canvas.classList.remove('is-panning');
       this.updateHover(event.clientX, event.clientY);
-      if (wasClick && atlasState.hoveredId) selectNode(atlasState.hoveredId, true);
+      if (wasClick && atlasState.hoveredId) {
+        const openInspector = atlasState.inspectorOpen || atlasState.selectedId === atlasState.hoveredId;
+        setDockMode('idle');
+        selectNode(atlasState.hoveredId, true, openInspector);
+      }
     }
   }
 
@@ -1677,7 +1741,7 @@ function radiusFor(node: StoryMapNode): number {
   return Math.max(5, base[node.kind] + Math.sqrt(Math.max(1, node.weight)) * 2.2);
 }
 
-function selectNode(nodeId: string, center: boolean): void {
+function selectNode(nodeId: string, center: boolean, openInspector = atlasState.inspectorOpen): void {
   const node = atlasState.positioned.get(nodeId);
   if (!atlasState.graph || !node) return;
   atlasState.selectedId = nodeId;
@@ -1686,7 +1750,87 @@ function selectNode(nodeId: string, center: boolean): void {
   renderScaleNav();
   renderFilterNav();
   renderDetail(nodeId);
+  renderDockSelection();
   if (center) centerOnNode(nodeId);
+  if (openInspector) setInspectorOpen(true);
+}
+
+function setInspectorOpen(open: boolean): void {
+  const shell = document.querySelector<HTMLElement>('.atlas-shell');
+  const detail = document.getElementById('atlas-detail');
+  if (!shell || !detail) return;
+  atlasState.inspectorOpen = open;
+  shell.dataset.inspector = open ? 'open' : 'closed';
+  detail.hidden = !open;
+  const toggle = document.getElementById('atlas-inspect-toggle');
+  toggle?.setAttribute('aria-pressed', String(open));
+  if (open) setDockMode('idle');
+}
+
+function renderDockSelection(): void {
+  const button = document.getElementById('atlas-inspect-toggle') as HTMLButtonElement | null;
+  const label = document.getElementById('atlas-inspect-label');
+  const node = atlasState.graph?.nodes.find(item => item.id === atlasState.selectedId) ?? null;
+  if (!button || !label) return;
+  button.hidden = !node;
+  if (!node) {
+    label.textContent = '';
+    button.removeAttribute('data-kind');
+    return;
+  }
+  const actionLabel = `Open ${playerKindLabel(node.kind)} details for ${node.label}`;
+  button.dataset.kind = node.kind;
+  button.setAttribute('aria-label', actionLabel);
+  button.title = actionLabel;
+  label.textContent = node.label;
+}
+
+function setDockMode(mode: AtlasDockMode): void {
+  const shell = document.querySelector<HTMLElement>('.atlas-shell');
+  if (!shell) return;
+  atlasState.dockMode = mode;
+  shell.dataset.dockMode = mode;
+  const filterToggle = document.getElementById('atlas-filter-toggle');
+  filterToggle?.setAttribute('aria-expanded', String(mode === 'filters'));
+  if (mode === 'idle') {
+    const search = document.getElementById('atlas-search');
+    if (search && document.activeElement === search) (search as HTMLInputElement).blur();
+  }
+  updateDockExpansion();
+}
+
+function updateDockExpansion(): void {
+  const shell = document.querySelector<HTMLElement>('.atlas-shell');
+  if (!shell) return;
+  const hasSearchContent = Boolean(atlasEls().results.childElementCount || atlasEls().rewindResults.childElementCount);
+  const expanded = atlasState.dockMode === 'filters' || (atlasState.dockMode === 'search' && hasSearchContent);
+  shell.dataset.dockExpanded = String(expanded);
+}
+
+function clearAtlasSearch(): void {
+  const els = atlasEls();
+  els.search.value = '';
+  atlasState.query = '';
+  atlasState.hitSet.clear();
+  els.results.replaceChildren();
+  els.rewindResults.replaceChildren();
+  setDockMode('idle');
+}
+
+function showWholeUniverse(): void {
+  clearAtlasSearch();
+  atlasState.filter = 'all';
+  updateFilterHighlight();
+  renderFilterNav(true);
+  setInspectorOpen(false);
+  const rootId = atlasState.graph?.rootId;
+  if (rootId) {
+    atlasState.selectedId = rootId;
+    renderDetail(rootId);
+    renderDockSelection();
+  }
+  resetAtlasView();
+  setAtlasStatus('Showing the whole story universe.');
 }
 
 function centerOnNode(nodeId: string, snap = false): void {
@@ -1776,6 +1920,20 @@ function cosmicNounForKind(kind: StoryMapNodeKind): string {
   return labels[kind];
 }
 
+function playerKindLabel(kind: StoryMapNodeKind): string {
+  const labels: Record<StoryMapNodeKind, string> = {
+    library: 'story library',
+    repo: 'story world',
+    branch: 'story path',
+    turn: 'story moment',
+    scene: 'scene',
+    entity: 'character or place',
+    thread: 'open thread',
+    fact: 'story fact'
+  };
+  return labels[kind];
+}
+
 function focusCosmicScale(key: CosmicScaleKey, snap = false): void {
   const scale = scaleByKey(key);
   atlasState.scale = scale.key;
@@ -1786,11 +1944,13 @@ function focusCosmicScale(key: CosmicScaleKey, snap = false): void {
     atlasState.targetView.distance = scale.distance;
     if (atlasState.graph?.rootId) atlasState.selectedId = atlasState.graph.rootId;
     renderDetail(atlasState.selectedId);
+    renderDockSelection();
     renderScaleNav();
     return;
   }
   atlasState.selectedId = node.id;
   renderDetail(node.id);
+  renderDockSelection();
   atlasState.targetView.cx = node.x;
   atlasState.targetView.cy = node.y;
   atlasState.targetView.cz = node.z;
@@ -1873,6 +2033,28 @@ function handleAtlasKeydown(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null;
   const tag = target?.tagName.toLowerCase();
   if (tag === 'input' || tag === 'textarea' || target?.isContentEditable) return;
+  if (event.key === '/') {
+    event.preventDefault();
+    setDockMode('search');
+    atlasEls().search.focus();
+    return;
+  }
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    if (atlasState.inspectorOpen) setInspectorOpen(false);
+    else setDockMode('idle');
+    return;
+  }
+  if (event.key === 'Enter' && atlasState.selectedId) {
+    event.preventDefault();
+    setInspectorOpen(true);
+    return;
+  }
+  if (event.key.toLowerCase() === 'f') {
+    event.preventDefault();
+    setDockMode(atlasState.dockMode === 'filters' ? 'idle' : 'filters');
+    return;
+  }
   const index = Number(event.key) - 1;
   if (Number.isInteger(index) && index >= 0 && index < COSMIC_SCALES.length) {
     event.preventDefault();
@@ -1989,6 +2171,13 @@ function renderFilterNav(force = false): void {
     button.addEventListener('click', () => setAtlasFilter(filter.key));
     return button;
   }));
+  const toggle = document.getElementById('atlas-filter-toggle');
+  if (toggle) {
+    toggle.dataset.active = String(atlasState.filter !== 'all');
+    const selected = ATLAS_FILTERS.find(filter => filter.key === atlasState.filter);
+    toggle.setAttribute('aria-label', atlasState.filter === 'all' ? 'Filters' : `Filters, ${selected?.label ?? atlasState.filter} selected`);
+  }
+  updateDockExpansion();
 }
 
 function renderA11yLayer(graph: StoryMapResponse | null): void {
@@ -1999,8 +2188,8 @@ function renderA11yLayer(graph: StoryMapResponse | null): void {
     const button = document.createElement('button');
     button.type = 'button';
     button.textContent = `${node.kind}: ${node.label}`;
-    button.addEventListener('click', () => selectNode(node.id, true));
-    button.addEventListener('focus', () => selectNode(node.id, true));
+    button.addEventListener('click', () => selectNode(node.id, true, true));
+    button.addEventListener('focus', () => selectNode(node.id, true, false));
     nav.append(button);
   }
 }
@@ -2044,71 +2233,120 @@ function renderDetail(nodeId: string): void {
 
   const header = document.createElement('div');
   header.className = 'atlas-detail-header';
+  const heading = document.createElement('div');
+  heading.className = 'atlas-detail-heading';
   const kicker = document.createElement('span');
-  const scale = scaleByKey(cosmicScaleForKind(node.kind));
-  kicker.textContent = `${scale.label} · ${cosmicNounForKind(node.kind)}`;
+  kicker.textContent = detailContextLabel(node, graph);
   const title = document.createElement('h2');
   title.textContent = node.label;
-  header.append(kicker, title);
+  heading.append(kicker, title);
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'atlas-detail-close';
+  close.setAttribute('aria-label', 'Close details');
+  close.title = 'Close details';
+  close.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"></path></svg>';
+  close.addEventListener('click', () => setInspectorOpen(false));
+  header.append(heading, close);
 
   const body = document.createElement('div');
   body.className = 'atlas-detail-body';
   if (node.summary) {
     const summary = document.createElement('p');
+    summary.className = 'atlas-detail-summary';
     summary.textContent = node.summary;
     body.append(summary);
   }
-  body.append(scaleContextCard(node, graph));
-  if (node.tags.length) body.append(tagList(node.tags));
-
-  const meta = metaList(node);
-  if (meta) body.append(meta);
 
   const actions = actionList(node, graph);
   if (actions) body.append(actions);
 
+  const overview = overviewGrid(node, graph);
+  if (overview) body.append(overview);
+
+  const meta = metaList(node);
+  if (node.tags.length || meta) {
+    const content = document.createElement('div');
+    content.className = 'atlas-disclosure-body';
+    if (node.tags.length) content.append(tagList(node.tags));
+    if (meta) content.append(meta);
+    body.append(detailDisclosure('Details', content));
+  }
+
   const neighbors = neighborList(node, graph);
-  if (neighbors) body.append(neighbors);
+  if (neighbors) body.append(detailDisclosure('Related', neighbors));
 
   if (node.kind === 'library' && graph.warnings.length) {
-    const warningBlock = document.createElement('details');
-    warningBlock.className = 'atlas-warning-list';
-    const summary = document.createElement('summary');
-    summary.textContent = `${graph.warnings.length} atlas warning${graph.warnings.length === 1 ? '' : 's'}`;
-    const list = document.createElement('ul');
+    const content = document.createElement('ul');
     for (const warning of graph.warnings.slice(0, 20)) {
       const item = document.createElement('li');
       item.textContent = warning;
-      list.append(item);
+      content.append(item);
     }
-    warningBlock.append(summary, list);
-    body.append(warningBlock);
+    body.append(detailDisclosure(`${graph.warnings.length} data warning${graph.warnings.length === 1 ? '' : 's'}`, content));
   }
 
   detail.replaceChildren(header, body);
 }
 
-function scaleContextCard(node: StoryMapNode, graph: StoryMapResponse): HTMLElement {
-  const scale = scaleByKey(cosmicScaleForKind(node.kind));
-  const card = document.createElement('div');
-  card.className = 'atlas-scale-context';
-  const rows: Array<[string, string]> = [
-    ['Cosmic scale', scale.label],
-    ['Ariadne object', labelize(node.kind)],
-    ['Map metaphor', cosmicNounForKind(node.kind)]
-  ];
-  if (node.repoId) rows.push(['Story world', repoTitle(node.repoId, graph)]);
-  if (node.branchId) rows.push(['Local galaxy', branchTitle(node.branchId, graph)]);
-  for (const [label, value] of rows) {
+function detailContextLabel(node: StoryMapNode, graph: StoryMapResponse): string {
+  if (node.kind === 'library') return 'Your stories';
+  if (node.kind === 'repo') return 'Story world';
+
+  const parts: string[] = [];
+  if (node.repoId) parts.push(repoTitle(node.repoId, graph));
+  if (node.branchId && node.kind !== 'branch') parts.push(branchTitle(node.branchId, graph));
+  parts.push(playerKindLabel(node.kind));
+  return parts.join(' · ');
+}
+
+function overviewGrid(node: StoryMapNode, graph: StoryMapResponse): HTMLElement | null {
+  const rows: Array<[string, string | number]> = [];
+  if (node.kind === 'library') {
+    rows.push(['Worlds', graph.stats.repos], ['Paths', graph.stats.branches], ['Moments', graph.stats.turns], ['Open threads', graph.stats.threads]);
+  } else if (node.kind === 'repo' && node.repoId) {
+    const summary = graph.repos.find(repo => repo.id === node.repoId);
+    if (summary) rows.push(['Paths', summary.branchCount], ['Moments', summary.turnCount], ['People & places', summary.entityCount], ['Threads', summary.threadCount]);
+  } else if (node.kind === 'branch' && node.branchId) {
+    const branchNodes = graph.nodes.filter(item => item.branchId === node.branchId);
+    rows.push(
+      ['Moments', branchNodes.filter(item => item.kind === 'turn').length],
+      ['People & places', branchNodes.filter(item => item.kind === 'entity').length],
+      ['Open threads', branchNodes.filter(item => item.kind === 'thread' && isOpenThread(item)).length]
+    );
+  } else if (node.kind === 'turn') {
+    const turnIndex = numberFrom(node.meta?.turnIndex);
+    if (turnIndex) rows.push(['Moment', turnIndex]);
+    if (node.createdAt) rows.push(['Saved', formatDate(node.createdAt)]);
+  } else {
+    if (node.status) rows.push(['Status', labelize(node.status)]);
+    const priority = numberFrom(node.meta?.priority);
+    if (priority) rows.push(['Priority', priority]);
+    if (node.updatedAt) rows.push(['Updated', formatDate(node.updatedAt)]);
+  }
+  if (!rows.length) return null;
+  const grid = document.createElement('div');
+  grid.className = 'atlas-mini-grid atlas-overview-grid';
+  for (const [label, value] of rows.slice(0, 4)) {
     const item = document.createElement('div');
     const strong = document.createElement('strong');
-    strong.textContent = label;
+    strong.textContent = String(value);
     const span = document.createElement('span');
-    span.textContent = value;
+    span.textContent = label;
     item.append(strong, span);
-    card.append(item);
+    grid.append(item);
   }
-  return card;
+  return grid;
+}
+
+function detailDisclosure(label: string, content: HTMLElement): HTMLDetailsElement {
+  const disclosure = document.createElement('details');
+  disclosure.className = 'atlas-disclosure';
+  const summary = document.createElement('summary');
+  summary.textContent = label;
+  disclosure.append(summary, content);
+  return disclosure;
 }
 
 function repoTitle(repoId: string, graph: StoryMapResponse): string {
@@ -2120,50 +2358,81 @@ function branchTitle(branchId: string, graph: StoryMapResponse): string {
 }
 
 function actionList(node: StoryMapNode, graph: StoryMapResponse): HTMLElement | null {
-  const actions = document.createElement('div');
-  actions.className = 'atlas-action-stack';
+  type ActionSpec = { label: string; className: string; run: () => void };
+  const primary: ActionSpec[] = [];
+  const quick: ActionSpec[] = [];
+  const more: ActionSpec[] = [];
+  const add = (bucket: ActionSpec[], label: string, className: string, run: () => void): void => {
+    bucket.push({ label, className, run });
+  };
 
   if (node.kind === 'library') {
-    actions.classList.add('atlas-action-stack--library');
-    appendAction(actions, 'Start new story', 'atlas-primary-action', () => void startNewStoryFromAtlas());
-    appendAction(actions, 'Return', 'atlas-secondary-action', () => returnToStartPage());
+    add(primary, 'Start a story', 'atlas-primary-action', () => void startNewStoryFromAtlas());
+    add(more, 'Leave the map', 'atlas-secondary-action', () => returnToStartPage());
   }
 
   const continueTarget = continueTargetFor(node, graph);
   if (continueTarget) {
-    appendAction(actions, 'Continue this branch', 'atlas-primary-action', () => continueBranch(continueTarget.repoId, continueTarget.branchId));
+    const label = node.kind === 'branch' ? 'Continue this path' : node.kind === 'repo' ? 'Continue story' : 'Continue this story';
+    add(primary, label, 'atlas-primary-action', () => continueBranch(continueTarget.repoId, continueTarget.branchId));
   }
 
   const branchId = branchIdForNode(node, graph);
   if (branchId) {
-    appendAction(actions, 'Show timeline route', 'atlas-secondary-action', () => void showTimelineRoute(branchId));
-    appendAction(actions, 'Open canon debugger', 'atlas-secondary-action', () => void showCanonDebug(branchId));
+    add(quick, 'View timeline', 'atlas-secondary-action', () => void showTimelineRoute(branchId));
+    add(more, 'Inspect story memory', 'atlas-secondary-action', () => void showCanonDebug(branchId));
     const active = activeBranchId(graph);
     if (active && active !== branchId) {
-      appendAction(actions, 'Compare with active branch', 'atlas-secondary-action', () => void showBranchCompare(active, branchId));
+      add(more, 'Compare with current path', 'atlas-secondary-action', () => void showBranchCompare(active, branchId));
     }
   }
 
   const forkTarget = forkTargetFor(node);
   if (forkTarget) {
-    appendAction(
-      actions,
-      node.kind === 'branch' ? 'Fork from branch head' : 'Fork from this star',
+    add(
+      quick,
+      node.kind === 'branch' ? 'Create a new path here' : 'Branch from this moment',
       'atlas-secondary-action atlas-fork-action',
       () => void forkFromTurn(forkTarget.repoId, forkTarget.sourceTurnId, node.label)
     );
   }
 
   if (node.repoId && (node.kind === 'repo' || node.kind === 'branch')) {
-    appendAction(actions, 'Export offline archive', 'atlas-secondary-action', () => void exportRepoArchive(node.repoId!, 'json'));
-    appendAction(actions, 'Export readable story', 'atlas-secondary-action', () => void exportRepoArchive(node.repoId!, 'markdown'));
+    add(more, 'Download backup', 'atlas-secondary-action', () => void exportRepoArchive(node.repoId!, 'json'));
+    add(more, 'Download readable story', 'atlas-secondary-action', () => void exportRepoArchive(node.repoId!, 'markdown'));
   }
 
   if (node.kind === 'repo' && node.repoId) {
-    appendAction(actions, 'Delete story world', 'atlas-secondary-action atlas-danger-action', () => void deleteRepoFromAtlas(node.repoId!, node.label));
+    add(more, 'Delete story', 'atlas-secondary-action atlas-danger-action', () => void deleteRepoFromAtlas(node.repoId!, node.label));
   }
 
-  return actions.childElementCount ? actions : null;
+  if (!primary.length && !quick.length && !more.length) return null;
+  const actions = document.createElement('section');
+  actions.className = 'atlas-action-stack';
+  for (const spec of primary.slice(0, 1)) appendAction(actions, spec.label, spec.className, spec.run);
+
+  const extraPrimary = primary.slice(1);
+  const quickActions = [...extraPrimary, ...quick];
+  if (quickActions.length) {
+    const row = document.createElement('div');
+    row.className = 'atlas-quick-actions';
+    for (const spec of quickActions.slice(0, 2)) appendAction(row, spec.label, spec.className, spec.run);
+    actions.append(row);
+    more.unshift(...quickActions.slice(2));
+  }
+
+  if (more.length) {
+    const disclosure = document.createElement('details');
+    disclosure.className = 'atlas-more-actions';
+    const summary = document.createElement('summary');
+    summary.textContent = 'More';
+    const stack = document.createElement('div');
+    for (const spec of more) appendAction(stack, spec.label, spec.className, spec.run);
+    disclosure.append(summary, stack);
+    actions.append(disclosure);
+  }
+
+  return actions;
 }
 
 function appendAction(parent: HTMLElement, label: string, className: string, onClick: () => void): HTMLButtonElement {
@@ -2244,23 +2513,93 @@ function persistStoryCursor(repoId: string, branchId: string): void {
 }
 
 async function forkFromTurn(repoId: string, sourceTurnId: string, selectedLabel: string): Promise<void> {
+  setInspectorOpen(true);
+  const flow = document.createElement('section');
+  flow.className = 'atlas-inline-flow';
+  const heading = document.createElement('div');
+  heading.className = 'atlas-inline-flow-heading';
+  const title = document.createElement('h3');
+  title.textContent = 'Create a new path';
+  const copy = document.createElement('p');
+  copy.textContent = `Start a different future from ${selectedLabel}. The original path stays unchanged.`;
+  heading.append(title, copy);
+
   if (atlasState.simulated) {
-    setAtlasStatus('Demo galaxy cannot create persisted forks. Open a real story map to fork from a star.');
+    const note = paragraph('This preview is read-only. A saved story can create a new path here.');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'atlas-secondary-action';
+    close.textContent = 'Done';
+    close.addEventListener('click', () => flow.remove());
+    flow.append(heading, note, close);
+    mountInlineFlow(flow);
     return;
   }
-  const fallbackName = `fork-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')}`;
-  const name = window.prompt(`Name the new branch from ${selectedLabel}`, fallbackName)?.trim();
-  if (!name) return;
-  const forkReason = window.prompt('Optional fork reason', 'Explore this moment differently')?.trim() || undefined;
-  setAtlasStatus(`Creating branch ${name}...`);
-  try {
-    const result = await atlasPost<ForkBranchResponse>('/v1/branches/fork', { repoId, sourceTurnId, name, forkReason });
-    persistStoryCursor(result.branch.repoId, result.branch.id);
-    setAtlasStatus(`Forked ${result.branch.name}. Opening the new branch.`);
-    window.location.href = storyEntryUrl(result.branch.repoId, result.branch.id);
-  } catch (error) {
-    setAtlasStatus(messageFrom(error));
-  }
+
+  const form = document.createElement('form');
+  form.className = 'atlas-inline-form';
+  const nameLabel = document.createElement('label');
+  nameLabel.textContent = 'Path name';
+  const name = document.createElement('input');
+  name.name = 'name';
+  name.required = true;
+  name.maxLength = 80;
+  name.value = `fork-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-')}`;
+  nameLabel.append(name);
+
+  const reasonLabel = document.createElement('label');
+  reasonLabel.textContent = 'What changes? (optional)';
+  const reason = document.createElement('input');
+  reason.name = 'reason';
+  reason.maxLength = 240;
+  reason.placeholder = 'Explore this moment differently';
+  reasonLabel.append(reason);
+
+  const status = document.createElement('p');
+  status.className = 'atlas-inline-status';
+  status.setAttribute('role', 'status');
+
+  const controls = document.createElement('div');
+  controls.className = 'atlas-inline-controls';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'atlas-secondary-action';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => flow.remove());
+  const create = document.createElement('button');
+  create.type = 'submit';
+  create.className = 'atlas-primary-action';
+  create.textContent = 'Create path';
+  controls.append(cancel, create);
+  form.append(nameLabel, reasonLabel, status, controls);
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const branchName = name.value.trim();
+    if (!branchName) {
+      name.focus();
+      return;
+    }
+    create.disabled = true;
+    cancel.disabled = true;
+    status.textContent = `Creating ${branchName}…`;
+    void atlasPost<ForkBranchResponse>('/v1/branches/fork', {
+      repoId,
+      sourceTurnId,
+      name: branchName,
+      forkReason: reason.value.trim() || undefined
+    }).then(result => {
+      persistStoryCursor(result.branch.repoId, result.branch.id);
+      window.location.href = storyEntryUrl(result.branch.repoId, result.branch.id);
+    }).catch(error => {
+      status.textContent = messageFrom(error);
+      create.disabled = false;
+      cancel.disabled = false;
+    });
+  });
+
+  flow.append(heading, form);
+  mountInlineFlow(flow);
+  requestAnimationFrame(() => name.focus());
 }
 
 function storyEntryUrl(repoId: string, branchId: string): string {
@@ -2292,23 +2631,90 @@ async function exportRepoArchive(repoId: string, format: 'json' | 'markdown'): P
 }
 
 async function deleteRepoFromAtlas(repoId: string, label: string): Promise<void> {
+  setInspectorOpen(true);
+  const flow = document.createElement('section');
+  flow.className = 'atlas-inline-flow atlas-inline-flow--danger';
+  const heading = document.createElement('div');
+  heading.className = 'atlas-inline-flow-heading';
+  const title = document.createElement('h3');
+  title.textContent = 'Delete this story?';
+  const copy = document.createElement('p');
+  copy.textContent = `${label} and every path inside it will be permanently removed. Download a backup first if you may need it later.`;
+  heading.append(title, copy);
+
   if (atlasState.simulated) {
-    setAtlasStatus('Demo galaxy cannot delete persisted story worlds.');
+    const note = paragraph('This preview is read-only, so nothing can be deleted.');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'atlas-secondary-action';
+    close.textContent = 'Done';
+    close.addEventListener('click', () => flow.remove());
+    flow.append(heading, note, close);
+    mountInlineFlow(flow);
     return;
   }
-  const confirmation = window.prompt(`Type DELETE to permanently delete ${label}. Export first if you need an archive.`)?.trim();
-  if (confirmation !== 'DELETE') return;
-  setAtlasStatus(`Deleting ${label}...`);
-  try {
-    await atlasDelete<{ ok: boolean }>(`/v1/repos/${encodeURIComponent(repoId)}`);
-    setAtlasStatus(`${label} deleted.`);
-    await loadAtlas();
-  } catch (error) {
-    setAtlasStatus(messageFrom(error));
-  }
+
+  const form = document.createElement('form');
+  form.className = 'atlas-inline-form';
+  const confirmLabel = document.createElement('label');
+  confirmLabel.textContent = 'Type DELETE to confirm';
+  const confirmation = document.createElement('input');
+  confirmation.name = 'confirmation';
+  confirmation.autocomplete = 'off';
+  confirmation.spellcheck = false;
+  confirmLabel.append(confirmation);
+  const status = document.createElement('p');
+  status.className = 'atlas-inline-status';
+  status.setAttribute('role', 'status');
+  const controls = document.createElement('div');
+  controls.className = 'atlas-inline-controls';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.className = 'atlas-secondary-action';
+  cancel.textContent = 'Cancel';
+  cancel.addEventListener('click', () => flow.remove());
+  const remove = document.createElement('button');
+  remove.type = 'submit';
+  remove.className = 'atlas-danger-action';
+  remove.textContent = 'Delete forever';
+  remove.disabled = true;
+  confirmation.addEventListener('input', () => {
+    remove.disabled = confirmation.value.trim() !== 'DELETE';
+  });
+  controls.append(cancel, remove);
+  form.append(confirmLabel, status, controls);
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    if (confirmation.value.trim() !== 'DELETE') return;
+    remove.disabled = true;
+    cancel.disabled = true;
+    status.textContent = `Deleting ${label}…`;
+    void atlasDelete<{ ok: boolean }>(`/v1/repos/${encodeURIComponent(repoId)}`).then(async () => {
+      setInspectorOpen(false);
+      await loadAtlas();
+    }).catch(error => {
+      status.textContent = messageFrom(error);
+      remove.disabled = false;
+      cancel.disabled = false;
+    });
+  });
+  flow.append(heading, form);
+  mountInlineFlow(flow);
+  requestAnimationFrame(() => confirmation.focus());
+}
+
+function mountInlineFlow(flow: HTMLElement): void {
+  const body = atlasEls().detail.querySelector('.atlas-detail-body');
+  if (!body) return;
+  body.querySelector('.atlas-inline-flow')?.remove();
+  const actions = body.querySelector('.atlas-action-stack');
+  if (actions) actions.after(flow);
+  else body.prepend(flow);
+  flow.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 async function showTimelineRoute(branchId: string): Promise<void> {
+  setInspectorOpen(true);
   const body = atlasEls().detail.querySelector('.atlas-detail-body');
   if (!body) return;
   body.querySelector('.atlas-timeline-panel')?.remove();
@@ -2392,6 +2798,7 @@ function stopReplay(status?: string): void {
 }
 
 async function showBranchCompare(leftBranchId: string, rightBranchId: string): Promise<void> {
+  setInspectorOpen(true);
   const body = atlasEls().detail.querySelector('.atlas-detail-body');
   if (!body) return;
   body.querySelector('.atlas-compare-panel')?.remove();
@@ -2462,6 +2869,7 @@ function compareSideBlock(label: string, side: BranchCompareResponse['left'], br
 }
 
 async function showCanonDebug(branchId: string): Promise<void> {
+  setInspectorOpen(true);
   const body = atlasEls().detail.querySelector('.atlas-detail-body');
   if (!body) return;
   body.querySelector('.atlas-canon-panel')?.remove();
@@ -2692,28 +3100,26 @@ function neighborList(node: StoryMapNode, graph: StoryMapResponse): HTMLElement 
     .filter((value, index, values) => values.indexOf(value) === index)
     .slice(0, 10);
   if (!linkedIds.length) return null;
-  const block = document.createElement('section');
+  const block = document.createElement('div');
   block.className = 'atlas-neighbors';
-  const heading = document.createElement('h3');
-  heading.textContent = 'Nearby';
   const list = document.createElement('div');
   for (const linkedId of linkedIds) {
     const linked = graph.nodes.find(item => item.id === linkedId);
     if (!linked) continue;
     const button = document.createElement('button');
     button.type = 'button';
-    button.textContent = `${linked.kind}: ${linked.label}`;
+    button.textContent = `${linked.label} · ${playerKindLabel(linked.kind)}`;
     button.addEventListener('click', () => selectNode(linked.id, true));
     list.append(button);
   }
-  block.append(heading, list);
+  block.append(list);
   return block;
 }
 
 function detailEmpty(): HTMLElement {
   const empty = document.createElement('div');
   empty.className = 'atlas-detail-empty';
-  empty.textContent = 'Select a planet, branch, turn, or landmark.';
+  empty.textContent = 'Choose something in the universe.';
   return empty;
 }
 
@@ -2723,6 +3129,7 @@ function renderSearchResults(): void {
   const query = atlasState.query;
   if (!graph || !query) {
     results.replaceChildren();
+    updateDockExpansion();
     return;
   }
   const hits = graph.nodes
@@ -2731,33 +3138,45 @@ function renderSearchResults(): void {
     .slice(0, 12);
   if (!hits.length) {
     const empty = document.createElement('p');
-    empty.textContent = 'No matches.';
+    empty.className = 'atlas-tray-message';
+    empty.textContent = 'No exact matches. Press search to look through story memory.';
     results.replaceChildren(empty);
+    updateDockExpansion();
     return;
   }
   const list = document.createElement('div');
-  list.className = 'atlas-result-list';
+  list.className = 'atlas-result-strip';
   for (const hit of hits) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.innerHTML = `<strong></strong><span></span>`;
+    button.className = 'atlas-result-chip';
+    button.innerHTML = '<strong></strong><span></span>';
     button.querySelector('strong')!.textContent = hit.label;
-    button.querySelector('span')!.textContent = hit.kind;
-    button.addEventListener('click', () => selectNode(hit.id, true));
+    button.querySelector('span')!.textContent = playerKindLabel(hit.kind);
+    button.addEventListener('click', () => {
+      selectNode(hit.id, true, true);
+      setDockMode('idle');
+    });
     list.append(button);
   }
   results.replaceChildren(list);
+  updateDockExpansion();
 }
 
 async function runTimeMachineSearch(): Promise<void> {
   const els = atlasEls();
   const query = els.search.value.trim();
   if (!query) {
-    els.rewindResults.replaceChildren(paragraph('Describe the moment you want to find, like "before the betrayal at the inn."'));
+    els.search.focus();
     return;
   }
   setAtlasStatus('Searching story memory...');
-  els.rewindResults.replaceChildren(paragraph('Searching committed timelines and canon landmarks...'));
+  els.results.replaceChildren();
+  const loading = document.createElement('p');
+  loading.className = 'atlas-tray-message';
+  loading.textContent = 'Searching story memory…';
+  els.rewindResults.replaceChildren(loading);
+  updateDockExpansion();
   try {
     const selected = atlasState.graph?.nodes.find(node => node.id === atlasState.selectedId) ?? null;
     const params = new URLSearchParams({ q: query, limit: '12' });
@@ -2769,28 +3188,38 @@ async function runTimeMachineSearch(): Promise<void> {
     renderTimeMachineResults(response.results, query);
     setAtlasStatus(response.results.length ? `Found ${response.results.length} rewind candidate${response.results.length === 1 ? '' : 's'}.` : 'No rewind candidates found.');
   } catch (error) {
-    els.rewindResults.replaceChildren(paragraph(messageFrom(error)));
+    const message = document.createElement('p');
+    message.className = 'atlas-tray-message';
+    message.textContent = messageFrom(error);
+    els.rewindResults.replaceChildren(message);
+    updateDockExpansion();
     setAtlasStatus(messageFrom(error));
   }
 }
 
 function renderTimeMachineResults(results: StorySearchResult[], query: string): void {
   const target = atlasEls().rewindResults;
+  atlasEls().results.replaceChildren();
   if (!results.length) {
-    target.replaceChildren(paragraph(`No memory matched “${query}”. Try a character, place, object, or phrase from the scene.`));
+    const empty = document.createElement('p');
+    empty.className = 'atlas-tray-message';
+    empty.textContent = `No memory matched “${query}”. Try a person, place, object, or phrase.`;
+    target.replaceChildren(empty);
+    updateDockExpansion();
     return;
   }
   const list = document.createElement('div');
-  list.className = 'atlas-rewind-list';
+  list.className = 'atlas-result-strip atlas-rewind-strip';
   for (const result of results.slice(0, 12)) {
-    const item = document.createElement('article');
+    const item = document.createElement('div');
+    item.className = 'atlas-rewind-chip';
     const title = document.createElement('button');
     title.type = 'button';
-    title.className = 'atlas-rewind-select';
-    title.innerHTML = '<strong></strong><span></span><small></small>';
+    title.className = 'atlas-result-chip';
+    title.innerHTML = '<strong></strong><span></span>';
     title.querySelector('strong')!.textContent = result.label;
-    title.querySelector('span')!.textContent = `${result.repoTitle}${result.branchName ? ` / ${result.branchName}` : ''}${result.turnIndex ? ` / turn ${result.turnIndex}` : ''}`;
-    title.querySelector('small')!.textContent = clipText(result.excerpt || result.kind, 180);
+    title.querySelector('span')!.textContent = `${result.branchName ?? result.repoTitle}${result.turnIndex ? ` · moment ${result.turnIndex}` : ''}`;
+    title.title = clipText(result.excerpt || result.label, 180);
     title.addEventListener('click', () => selectSearchResult(result));
     item.append(title);
 
@@ -2798,14 +3227,20 @@ function renderTimeMachineResults(results: StorySearchResult[], query: string): 
       const fork = document.createElement('button');
       fork.type = 'button';
       fork.className = 'atlas-rewind-fork';
-      fork.textContent = result.rewindMode === 'before' ? 'Fork before this' : 'Fork here';
-      fork.disabled = atlasState.simulated;
-      fork.addEventListener('click', () => void forkFromTurn(result.repoId, result.forkSourceTurnId!, result.label));
+      fork.setAttribute('aria-label', result.rewindMode === 'before' ? `Create a path before ${result.label}` : `Create a path from ${result.label}`);
+      fork.title = result.rewindMode === 'before' ? 'Create a path before this moment' : 'Create a path here';
+      fork.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 5v8a4 4 0 0 0 4 4h6M13 7l4-2v4l-4-2Z"></path></svg>';
+      fork.addEventListener('click', () => {
+        const node = nodeForSearchResult(result);
+        if (node) selectNode(node.id, true, true);
+        void forkFromTurn(result.repoId, result.forkSourceTurnId!, result.label);
+      });
       item.append(fork);
     }
     list.append(item);
   }
   target.replaceChildren(list);
+  updateDockExpansion();
 }
 
 function selectSearchResult(result: StorySearchResult): void {
@@ -2814,7 +3249,8 @@ function selectSearchResult(result: StorySearchResult): void {
     setAtlasStatus('This memory exists in the archive but is outside the current visible graph cap.');
     return;
   }
-  selectNode(node.id, true);
+  selectNode(node.id, true, true);
+  setDockMode('idle');
 }
 
 function nodeForSearchResult(result: StorySearchResult): StoryMapNode | null {
