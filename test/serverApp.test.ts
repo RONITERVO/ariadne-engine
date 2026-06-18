@@ -97,26 +97,50 @@ test('live transcript commits do not wait for background audio verification', as
   const committed = liveTurn.json() as { turn: { id: string; userAudioAssetId: string | null } };
   assert.equal(committed.turn.userAudioAssetId, null);
 
-  const upload = await app.inject({
+  const audioUploadPayload = {
+    repoId: repo.repo.id,
+    branchId: repo.branch.id,
+    turnId: committed.turn.id,
+    role: 'user',
+    contentType: 'audio/webm;codecs=opus',
+    sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    crc32c: 'AAAAAA==',
+    codec: 'opus',
+    container: 'webm',
+    qualityProfile: 'voice-hifi',
+    bitrateKbps: 96,
+    channelCount: 1,
+    sampleRate: 48000,
+    durationMs: 250,
+    byteLength: 12000
+  };
+
+  const turnUploadWithoutBranch = await app.inject({
     method: 'POST',
     url: '/v1/audio-assets/upload-url',
     payload: {
-      repoId: repo.repo.id,
-      branchId: repo.branch.id,
-      turnId: committed.turn.id,
-      role: 'user',
-      contentType: 'audio/webm;codecs=opus',
-      sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-      crc32c: 'AAAAAA==',
-      codec: 'opus',
-      container: 'webm',
-      qualityProfile: 'voice-hifi',
-      bitrateKbps: 96,
-      channelCount: 1,
-      sampleRate: 48000,
-      durationMs: 250,
-      byteLength: 12000
+      ...audioUploadPayload,
+      branchId: null
     }
+  });
+  assert.equal(turnUploadWithoutBranch.statusCode, 400);
+  assert.match(turnUploadWithoutBranch.json().message, /turnId audio uploads require branchId/);
+
+  const systemTurnUpload = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets/upload-url',
+    payload: {
+      ...audioUploadPayload,
+      role: 'system'
+    }
+  });
+  assert.equal(systemTurnUpload.statusCode, 400);
+  assert.match(systemTurnUpload.json().message, /system audio cannot be linked/);
+
+  const upload = await app.inject({
+    method: 'POST',
+    url: '/v1/audio-assets/upload-url',
+    payload: audioUploadPayload
   });
   assert.equal(upload.statusCode, 201);
   const uploadPayload = upload.json() as { audioUpload: PreparedAudioUpload; tokens: { activeTokens: string[] } };

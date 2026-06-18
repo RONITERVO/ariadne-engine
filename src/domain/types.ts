@@ -127,6 +127,7 @@ export interface TurnCommit {
   stateStatus: TurnStateStatus;
   modelMetadata?: ModelInvocationMetadata[];
   createdAt: string;
+  updatedAt?: string | null;
   committedAt?: string | null;
 }
 

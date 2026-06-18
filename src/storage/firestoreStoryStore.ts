@@ -472,7 +472,7 @@ export class FirestoreStoryStore implements StoryStore {
       if (asset.turnId && asset.turnId !== input.turnId) throw new StoreError('audio asset does not belong to turn', 'invalid');
       if (asset.role !== input.role) throw new StoreError('audio asset role does not match turn transcript role', 'invalid');
       const now = new Date().toISOString();
-      const linkedTurn = { ...turn, [field]: asset.id };
+      const linkedTurn = { ...turn, [field]: asset.id, updatedAt: now };
       tx.set(this.turnRef(turnLoc), { [field]: asset.id, updatedAt: now }, { merge: true });
       tx.set(this.turnIndexRef(input.turnId), { [field]: asset.id, updatedAt: now }, { merge: true });
       tx.set(this.repoRef(repoLoc), { updatedAt: now }, { merge: true });
@@ -569,6 +569,7 @@ export class FirestoreStoryStore implements StoryStore {
         stateStatus: 'pending',
         modelMetadata: input.modelMetadata ?? [],
         createdAt: now,
+        updatedAt: now,
         committedAt: now
       };
       const turnLoc: TurnLoc = { ...branchLoc, turnId: turn.id };
@@ -964,6 +965,7 @@ function cleanTurn(data: DocumentData | undefined): TurnCommit | null {
     stateStatus: (stringFrom(data.stateStatus) || 'pending') as TurnCommit['stateStatus'],
     modelMetadata: Array.isArray(data.modelMetadata) ? data.modelMetadata : [],
     createdAt: stringFrom(data.createdAt),
+    updatedAt: nullableString(data.updatedAt),
     committedAt: nullableString(data.committedAt)
   });
 }

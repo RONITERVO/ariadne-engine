@@ -328,7 +328,7 @@ List backup schedules:
 firebase firestore:backups:schedules:list --project ariadne-engine-rt
 ```
 
-Delete tester/admin data only when the team intentionally wants a clean empty production project. Do not run this after real users exist. Prefer the reset script because it recursively removes user subcollections and global index documents:
+Delete tester/admin data only when the team intentionally wants a clean empty production project. Do not run this after real users exist. Prefer the reset script because it recursively removes user subcollections, global index documents, and known legacy tester schemas:
 
 ```powershell
 node scripts/clear-firestore-data.mjs ariadne-engine-rt --dry-run

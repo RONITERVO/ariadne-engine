@@ -226,6 +226,19 @@ export class InMemoryStoryStore implements StoryStore {
       this.audioUploads.set(intent.id, intent);
       throw new StoreError('audio upload URL has expired', 'conflict');
     }
+    if (input.verification.byteLength !== intent.byteLength) {
+      throw new StoreError('audio object byte length does not match upload intent', 'invalid');
+    }
+    let linkedTurn: TurnCommit | undefined;
+    let turnLinkField: 'userAudioAssetId' | 'assistantAudioAssetId' | null = null;
+    if (intent.turnId) {
+      turnLinkField = audioFieldForRole(intent.role);
+      if (!turnLinkField) throw new StoreError('system audio cannot be linked to a turn transcript', 'invalid');
+      linkedTurn = this.turns.get(intent.turnId);
+      if (!linkedTurn) throw new StoreError(`turn not found: ${intent.turnId}`, 'not_found');
+      if (linkedTurn.repoId !== intent.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
+      if (intent.branchId && linkedTurn.branchId !== intent.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
+    }
     const now = new Date().toISOString();
     const asset: AudioAsset = {
       id: randomUUID(),
@@ -261,13 +274,11 @@ export class InMemoryStoryStore implements StoryStore {
     intent.audioAssetId = asset.id;
     intent.verifiedAt = now;
     this.audioUploads.set(intent.id, intent);
-    if (intent.turnId) await this.linkAudioAssetToTurn({
-      repoId: intent.repoId,
-      branchId: intent.branchId ?? asset.branchId ?? '',
-      turnId: intent.turnId,
-      role: intent.role,
-      audioAssetId: asset.id
-    });
+    if (linkedTurn && turnLinkField) {
+      linkedTurn[turnLinkField] = asset.id;
+      linkedTurn.updatedAt = now;
+      this.turns.set(linkedTurn.id, linkedTurn);
+    }
     const repo = this.repos.get(intent.repoId);
     if (repo) this.repos.set(repo.id, { ...repo, updatedAt: now });
     return structuredClone(asset);
@@ -277,16 +288,21 @@ export class InMemoryStoryStore implements StoryStore {
     const repo = this.repos.get(input.repoId);
     if (!repo) throw new StoreError(`repo not found: ${input.repoId}`, 'not_found');
     const turn = input.turnId ? this.turns.get(input.turnId) : undefined;
+    let turnLinkField: 'userAudioAssetId' | 'assistantAudioAssetId' | null = null;
     if (input.turnId && !turn) throw new StoreError(`turn not found: ${input.turnId}`, 'not_found');
     if (turn && turn.repoId !== input.repoId) throw new StoreError('turn does not belong to repo', 'invalid');
     if (turn && input.branchId && turn.branchId !== input.branchId) throw new StoreError('turn does not belong to branch', 'invalid');
-    if (turn && input.role === 'system') throw new StoreError('system audio cannot be linked to a turn transcript', 'invalid');
+    if (turn) {
+      turnLinkField = audioFieldForRole(input.role);
+      if (!turnLinkField) throw new StoreError('system audio cannot be linked to a turn transcript', 'invalid');
+    }
     const branchId = input.branchId ?? turn?.branchId ?? null;
     if (input.branchId) {
       const branch = this.branches.get(input.branchId);
       if (!branch) throw new StoreError(`branch not found: ${input.branchId}`, 'not_found');
       if (branch.repoId !== input.repoId) throw new StoreError('branch does not belong to repo', 'invalid');
     }
+    const now = new Date().toISOString();
     const asset: AudioAsset = {
       id: randomUUID(),
       repoId: input.repoId,
@@ -314,16 +330,15 @@ export class InMemoryStoryStore implements StoryStore {
       encryptionKeyRef: input.encryptionKeyRef ?? null,
       uploadedAt: input.uploadedAt ?? null,
       verifiedAt: input.verifiedAt ?? null,
-      createdAt: new Date().toISOString()
+      createdAt: now
     };
     this.audioAssets.set(asset.id, asset);
-    if (asset.turnId) await this.linkAudioAssetToTurn({
-      repoId: asset.repoId,
-      branchId: asset.branchId ?? branchId ?? '',
-      turnId: asset.turnId,
-      role: asset.role,
-      audioAssetId: asset.id
-    });
+    if (turn && turnLinkField) {
+      turn[turnLinkField] = asset.id;
+      turn.updatedAt = now;
+      this.turns.set(turn.id, turn);
+    }
+    this.repos.set(repo.id, { ...repo, updatedAt: now });
     return structuredClone(asset);
   }
 
@@ -365,9 +380,11 @@ export class InMemoryStoryStore implements StoryStore {
     if (asset.branchId && asset.branchId !== input.branchId) throw new StoreError('audio asset does not belong to branch', 'invalid');
     if (asset.turnId && asset.turnId !== input.turnId) throw new StoreError('audio asset does not belong to turn', 'invalid');
     if (asset.role !== input.role) throw new StoreError('audio asset role does not match turn transcript role', 'invalid');
+    const now = new Date().toISOString();
     turn[field] = asset.id;
+    turn.updatedAt = now;
     const repo = this.repos.get(input.repoId);
-    if (repo) repo.updatedAt = new Date().toISOString();
+    if (repo) repo.updatedAt = now;
     return structuredClone(turn);
   }
 
@@ -429,6 +446,7 @@ export class InMemoryStoryStore implements StoryStore {
       stateStatus: 'pending',
       modelMetadata: input.modelMetadata ?? [],
       createdAt: now,
+      updatedAt: now,
       committedAt: now
     };
 

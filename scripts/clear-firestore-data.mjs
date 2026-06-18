@@ -16,7 +16,27 @@ const rootCollections = [
   'storyRepoIndex',
   'storyBranchIndex',
   'storyTurnIndex',
-  'billingEventIndex'
+  'billingEventIndex',
+
+  // Older tester/experimental schemas; kept here so a clean reset really removes old data.
+  'storyRepos',
+  'branches',
+  'turns',
+  'branchStates',
+  'branchSnapshots',
+  'eventPatches',
+  'continuityWarnings',
+  'branchMutationLocks',
+  'entitlements',
+  'usage',
+  'billingEvents',
+  'repos',
+  'repoIndex',
+  'branchIndex',
+  'turnIndex',
+  '_repoLookup',
+  '_branchLookup',
+  '_turnLookup'
 ];
 
 let deleted = 0;
