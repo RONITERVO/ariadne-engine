@@ -36,6 +36,7 @@ const LOAD_PROFILES: WhisperLoadProfile[] = [
 let modelId = DEFAULT_MODEL;
 let transcriberPromise: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
 let activeProfile = LOAD_PROFILES[0].label;
+let readyEmitted = false;
 
 env.allowLocalModels = false;
 
@@ -54,10 +55,14 @@ async function loadTranscriber(): Promise<AutomaticSpeechRecognitionPipeline> {
 
   try {
     const transcriber = await transcriberPromise;
-    self.postMessage({ type: 'ready', model: `${modelId}:${activeProfile}` });
+    if (!readyEmitted) {
+      readyEmitted = true;
+      self.postMessage({ type: 'ready', model: `${modelId}:${activeProfile}` });
+    }
     return transcriber;
   } catch (error) {
     transcriberPromise = null;
+    readyEmitted = false;
     self.postMessage({ type: 'error', message: messageFrom(error) });
     throw error;
   }

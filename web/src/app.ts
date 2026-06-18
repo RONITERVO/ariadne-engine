@@ -1876,7 +1876,11 @@ function startWhisperTurnDetection(): void {
   whisperWorker = new Worker(new URL('./whisperWorker.ts', import.meta.url), { type: 'module' });
   whisperWorker.onmessage = event => onWhisperWorkerMessage(event.data as WhisperWorkerToMainMessage);
   whisperWorker.onerror = event => {
+    whisperReady = false;
+    whisperBusy = false;
+    whisperWorker = null;
     removeLocalToken(CLIENT_TOKEN.WHISPER_LOADING);
+    removeLocalToken(CLIENT_TOKEN.WHISPER_READY);
     removeLocalToken(CLIENT_TOKEN.WHISPER_TRANSCRIBING);
     addLine('system', `local Whisper unavailable: ${event.message || 'worker failed'}`);
   };
